@@ -1,3 +1,6 @@
+import { DECKWISE_SAVE_REQUEST_EVENT, isDeckWiseMode } from '../../embed-mode';
+import { hasPendingEmbeddedSaveRequest } from '../save-stream';
+
 /**
  * 5. Serverless save semantics. The SDK's coauthoring autosave loop
  * (autoSaveGap, ticking every 40ms) pushes each edit to a Document Server and,
@@ -47,9 +50,20 @@ export function installServerlessSaveSemantics(win: Window): boolean {
       this.autoSaveGap = 0;
     };
     const origSave = saveApi.asc_Save;
+    const origDownloadAs = saveApi.asc_DownloadAs;
     const DownloadOptions = saveWin.Asc.asc_CDownloadOptions;
+    if (typeof origDownloadAs === 'function') {
+      saveApi.asc_DownloadAs = function (options: unknown) {
+        if (isDeckWiseMode() && !hasPendingEmbeddedSaveRequest()) return;
+        origDownloadAs.call(this, options);
+      };
+    }
     saveApi.asc_Save = function (isAutoSave?: boolean, isUndoRequest?: boolean) {
       if (isAutoSave) return origSave.call(this, isAutoSave, isUndoRequest);
+      if (isDeckWiseMode()) {
+        window.dispatchEvent(new Event(DECKWISE_SAVE_REQUEST_EVENT));
+        return true;
+      }
       const format = typeof this.documentFormatSave === 'number' ? this.documentFormatSave : undefined;
       if (format === undefined || typeof this.asc_DownloadAs !== 'function') {
         return origSave.call(this, isAutoSave, isUndoRequest);

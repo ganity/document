@@ -23,6 +23,7 @@ import { markDocumentDirty, markDocumentSaved, resetUnsavedChanges } from './uns
 import { getSdkEditorApi, ASC_RESTRICTION_VIEW } from './onlyoffice/sdk-api';
 import { getReadonlyMode, setReadonlyState } from './onlyoffice/readonly';
 import { resolveUiTheme } from './onlyoffice/ui-theme';
+import { isDeckWiseMode } from './embed-mode';
 import {
   describeMemoryVerdict,
   isWasmAllocationFailure,
@@ -197,7 +198,7 @@ function createPersonalEditorInstance(config: {
         // one-way door that only a full editor rebuild could reopen.
         edit: true,
         download: true,
-        print: true,
+        print: !isDeckWiseMode(),
         chat: false,
         protect: false,
       },

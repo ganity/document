@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { looksLikeUrl } from '../../lib/onlyoffice/guards/x2t-worker';
+import { looksLikeUrl, resolveX2tWorkerUrl } from '../../lib/onlyoffice/guards/x2t-worker';
 
 /**
  * Which strings the worker proxy resolves itself, and which it hands over.
@@ -34,5 +34,19 @@ describe('what the x2t proxy treats as a location', () => {
     for (const text of ['DOCY;v5;7372;AAAA', 'plain text', '', '   ', 'Editor.bin']) {
       expect(looksLikeUrl(text), JSON.stringify(text)).toBe(false);
     }
+  });
+});
+
+describe('x2t worker URL resolution', () => {
+  it('preserves a deployment path prefix', () => {
+    expect(
+      resolveX2tWorkerUrl('https://trainwise.efrobot.com/wiseoffice/web-apps/apps/presentationeditor/main/index.html'),
+    ).toBe('https://trainwise.efrobot.com/wiseoffice/sdkjs/common/wasm/x2t/x2t.worker.js');
+  });
+
+  it('still resolves correctly at the origin root', () => {
+    expect(resolveX2tWorkerUrl('https://edit.example.test/web-apps/apps/presentationeditor/main/index.html')).toBe(
+      'https://edit.example.test/sdkjs/common/wasm/x2t/x2t.worker.js',
+    );
   });
 });

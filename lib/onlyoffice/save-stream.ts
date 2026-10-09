@@ -53,6 +53,10 @@ type EmbeddedSaveRequest = {
 
 let embeddedSaveRequest: EmbeddedSaveRequest | null = null;
 
+export function hasPendingEmbeddedSaveRequest(): boolean {
+  return embeddedSaveRequest !== null && !embeddedSaveRequest.settled;
+}
+
 // requestSaveDocument budget. Readiness (onDocumentReady) may take long on a
 // cold, slow link: the editor first downloads and inflates x2t.wasm
 // (~10 MB) before it can import the document. The hard timeout stays above

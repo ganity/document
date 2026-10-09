@@ -44,7 +44,12 @@ import { waitForFontSystem, type FontSystemWindow } from '../font-system';
 /** How long an idle worker is kept before its heap is handed back. */
 const IDLE_TERMINATE_MS = 30_000;
 
-const WORKER_URL = '/sdkjs/common/wasm/x2t/x2t.worker.js';
+const WORKER_PATH = '../../../../sdkjs/common/wasm/x2t/x2t.worker.js';
+
+/** Resolve from the OnlyOffice editor frame so deployments may live below a prefix. */
+export function resolveX2tWorkerUrl(frameHref: string): string {
+  return new URL(WORKER_PATH, frameHref).href;
+}
 
 /** Style suffixes the vendor's own fetchFonts uses, keyed by the info field. */
 const FONT_STYLE_SUFFIX: Record<string, string> = {
@@ -90,7 +95,7 @@ class WorkerChannel {
     if (!WorkerCtor) throw new Error('X2T worker unavailable: this engine has no Worker');
     // Constructed through the frame's own Worker so the realm dies with the
     // frame even if nothing terminates it first.
-    const worker = new WorkerCtor(WORKER_URL);
+    const worker = new WorkerCtor(resolveX2tWorkerUrl(this.win.location.href));
     worker.onmessage = (event: MessageEvent) => {
       const data = (event.data ?? {}) as { id?: number; ok?: boolean; result?: unknown; error?: string };
       if (data.id === undefined) return; // the worker's initial ready ping

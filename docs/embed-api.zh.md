@@ -16,6 +16,19 @@
 ></iframe>
 ```
 
+### DeckWise 受限模式
+
+增加 `deckwise=1` 后，编辑器保留内部保存按钮和 Ctrl+S，同时隐藏并阻止下载、另存为、
+其他格式导出和打印：
+
+```html
+<iframe src="https://your-deployment/editor?embed=1&deckwise=1&embedOrigin=https://your-system.example.com"></iframe>
+```
+
+该模式只接受带 `.pptx` 文件的 `document:open-buffer`，并且只允许保存为 PPTX。用户点击
+内部保存按钮时，编辑器会向宿主发送 `document:save-requested`；宿主随后发送正常的
+`document:save` 命令，编辑后的 PPTX 最终通过 `document:saved` 返回。
+
 > 编辑器位于 `/editor`，首页 `/` 是纯静态落地页。旧链接 `/?embed=1`、`/?src=`、`/?file=`、`/?new=` 仍然有效——`/` 会带同样的参数跳转到 `/editor`。
 
 如需限制只接受指定来源的消息，增加 `embedOrigin`：

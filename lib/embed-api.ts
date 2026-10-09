@@ -4,6 +4,7 @@ import { openDocumentFromUrl } from './document';
 import { getReadonlyMode, requestSaveDocument, setReadonlyMode } from './onlyoffice-editor';
 import { captureSavePoint, commitSavePoint } from './onlyoffice/save-point';
 import { hasUnsavedChanges, markDocumentSaved, onUnsavedChangesChange } from './unsaved-guard';
+import { DECKWISE_SAVE_REQUEST_EVENT, isDeckWiseMode } from './embed-mode';
 
 type EmbedMessageType =
   | 'document:open'
@@ -151,7 +152,11 @@ async function handleOpen(payload: Record<string, any>): Promise<void> {
     return;
   }
 
-  await openFile(makeFileFromPayload(payload), readonly);
+  const file = makeFileFromPayload(payload);
+  if (isDeckWiseMode() && !file.name.toLowerCase().endsWith('.pptx')) {
+    throw new Error('DeckWise only accepts PPTX files');
+  }
+  await openFile(file, readonly);
 }
 
 async function handleMessage(event: MessageEvent): Promise<void> {
@@ -173,6 +178,9 @@ async function handleMessage(event: MessageEvent): Promise<void> {
       case 'document:open-url':
       case 'document:open-file':
       case 'document:open-buffer':
+        if (isDeckWiseMode() && message.type !== 'document:open-buffer') {
+          throw new Error('DeckWise only accepts document:open-buffer');
+        }
         await handleOpen(payload);
         postToParent('document:opened', { readonly: getReadonlyMode() }, message.id);
         break;
@@ -191,11 +199,15 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         const currentExt = (getDocmentObj()?.fileName || '').split('.').pop()?.toUpperCase() || '';
         const LEGACY_TARGET: Record<string, string> = { XLS: 'XLSX', DOC: 'DOCX', PPT: 'PPTX' };
         const defaultExt = LEGACY_TARGET[currentExt] || currentExt || 'XLSX';
+        const targetExt = isDeckWiseMode() ? 'PPTX' : payload.targetExt || defaultExt;
+        if (isDeckWiseMode() && payload.targetExt && String(payload.targetExt).toUpperCase() !== 'PPTX') {
+          throw new Error('DeckWise only permits PPTX save');
+        }
         const returnOriginalOnTimeout = Boolean(payload.returnOriginalOnTimeout);
         // Taken before the export starts: edits made while it runs are not in
         // the bytes the host receives, so they must keep the document dirty.
         const savePoint = captureSavePoint();
-        const file = await requestSaveDocument(payload.targetExt || defaultExt, {
+        const file = await requestSaveDocument(targetExt, {
           returnOriginalOnTimeout,
         });
         // The host now holds the edited bytes. A timeout fallback may have
@@ -258,6 +270,12 @@ export function initEmbedApi(): void {
   onUnsavedChangesChange((dirty) => {
     postToParent('document:dirty-changed', { dirty });
   });
+  if (isDeckWiseMode()) {
+    document.body.classList.add('deckwise-mode');
+    window.addEventListener(DECKWISE_SAVE_REQUEST_EVENT, () => {
+      postToParent('document:save-requested');
+    });
+  }
   window.addEventListener('message', (event) => {
     void handleMessage(event);
   });

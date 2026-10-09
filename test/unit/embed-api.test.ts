@@ -120,6 +120,20 @@ describe('embed-api', () => {
         expect.any(String),
       );
     });
+
+    it('forwards the OnlyOffice save button to the DeckWise host', async () => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1');
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+
+      window.dispatchEvent(new Event('deckwise:save-requested'));
+
+      expect(postMessageSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'document:save-requested' }),
+        expect.any(String),
+      );
+      expect(document.body.classList.contains('deckwise-mode')).toBe(true);
+    });
   });
 
   describe('message handling', () => {
@@ -239,6 +253,50 @@ describe('embed-api', () => {
       await dispatchMessage({ type: 'document:save', id: 'err-1', payload: {} });
 
       expectMessagePosted(postMessageSpy, 'document:error', 'err-1', { message: 'Save failed' });
+    });
+
+    it('allows only PPTX save in DeckWise mode', async () => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1');
+      const savedFile = new File(['pptx bytes'], 'course.pptx');
+      mockRequestSaveDocument.mockResolvedValueOnce(savedFile);
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+
+      await dispatchMessage({ type: 'document:save', id: 'deckwise-pptx', payload: {} });
+      await dispatchMessage({ type: 'document:save', id: 'deckwise-pdf', payload: { targetExt: 'PDF' } });
+
+      expect(mockRequestSaveDocument).toHaveBeenCalledWith(
+        'PPTX',
+        expect.objectContaining({ returnOriginalOnTimeout: false }),
+      );
+      expectMessagePosted(postMessageSpy, 'document:saved', 'deckwise-pptx');
+      expectMessagePosted(postMessageSpy, 'document:error', 'deckwise-pdf', {
+        message: 'DeckWise only permits PPTX save',
+      });
+    });
+
+    it('allows only PPTX buffers in DeckWise mode', async () => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1');
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+
+      await dispatchMessage({
+        type: 'document:open-buffer',
+        id: 'deckwise-docx',
+        payload: { fileName: 'course.docx', buffer: new ArrayBuffer(4) },
+      });
+      await dispatchMessage({
+        type: 'document:open-url',
+        id: 'deckwise-url',
+        payload: { fileName: 'course.pptx', url: 'https://example.com/course.pptx' },
+      });
+
+      expectMessagePosted(postMessageSpy, 'document:error', 'deckwise-docx', {
+        message: 'DeckWise only accepts PPTX files',
+      });
+      expectMessagePosted(postMessageSpy, 'document:error', 'deckwise-url', {
+        message: 'DeckWise only accepts document:open-buffer',
+      });
     });
 
     // GitHub #4 "save to remote server": the parent page's documented recovery path

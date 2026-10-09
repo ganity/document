@@ -384,6 +384,19 @@ describe('onlyoffice-editor', () => {
       expect(config.document.permissions.download).toBe(true);
     });
 
+    it('keeps internal PPTX export available but disables printing in DeckWise mode', async () => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1');
+      const config = await createAndGetConfig({
+        fileName: 'course.pptx',
+        fileType: 'pptx',
+        binData: new ArrayBuffer(8),
+      });
+
+      expect(config.document.permissions.download).toBe(true);
+      expect(config.document.permissions.print).toBe(false);
+      window.history.pushState({}, '', '/');
+    });
+
     it('routes PDF straight to the pdf editor (isForm:false) so the /apps/common loader is skipped', async () => {
       // The common loader re-navigates via href.match(/common\/index.html/),
       // which never matches behind a static host that 308s index.html to the

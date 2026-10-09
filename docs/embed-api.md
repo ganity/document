@@ -16,6 +16,20 @@ A working demo is available at `/embed-demo.html` (includes sha256 logging for d
 ></iframe>
 ```
 
+### DeckWise restricted mode
+
+Add `deckwise=1` to keep the editor's Save button and Ctrl+S while hiding and
+blocking Download, Save As, other-format export, and Print:
+
+```html
+<iframe src="https://your-deployment/editor?embed=1&deckwise=1&embedOrigin=https://your-system.example.com"></iframe>
+```
+
+In this mode the editor accepts only `document:open-buffer` with a `.pptx`
+file and only `document:save` targeting PPTX. Clicking the internal Save button
+posts `document:save-requested`; the host should answer by sending the normal
+`document:save` command so the edited PPTX returns through `document:saved`.
+
 > The editor lives at `/editor`; the homepage `/` is a static landing page. Older links to `/?embed=1`, `/?src=`, `/?file=` and `/?new=` still work -- `/` redirects them to `/editor` with the same query.
 
 To restrict messages to a specific origin, add `embedOrigin`:
