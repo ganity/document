@@ -32,7 +32,10 @@ posts `document:save-requested`; the host should answer by sending the normal
 
 > The editor lives at `/editor`; the homepage `/` is a static landing page. Older links to `/?embed=1`, `/?src=`, `/?file=` and `/?new=` still work -- `/` redirects them to `/editor` with the same query.
 
-To restrict messages to a specific origin, add `embedOrigin`:
+Commands are accepted only from the immediate parent window. Without
+`embedOrigin`, the first accepted parent command fixes the origin for the lifetime
+of the editor page; later commands from a different origin are ignored.
+To restrict messages to a specific origin from startup, add `embedOrigin`:
 
 ```html
 <iframe

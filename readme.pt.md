@@ -37,9 +37,9 @@ quem visita, por isso os documentos nunca são enviados para lado nenhum e não 
 
 - 🔒 **Nada é enviado** — cada conversão, edição e exportação acontece dentro do separador
 - 📝 **Edição a sério, não pré-visualização** — DOCX, XLSX, PPTX e CSV, além de ODF, RTF, TXT e os antigos formatos binários; os PDF abrem e podem ser anotados
-- 🕓 **Nada se perde ao fechar o separador** — o que edita é guardado no seu próprio navegador, mantido 7 dias e apagável a qualquer momento ([pormenores](#-os-seus-dados-ficam-no-seu-dispositivo))
-- 📴 **Funciona sem ligação** — instalável como PWA; depois da primeira visita não precisa de rede
-- 🌍 **Multilingue** — 8 idiomas de interface para o site e 45 para o editor
+- 🕓 **Nada se perde ao fechar o separador** — o que edita é guardado no seu próprio navegador, mantido 7 dias e apagável a qualquer momento ([pormenores](#-edição-local-e-tratamento-de-dados))
+- 📴 **Funciona sem ligação** — instalável como PWA; os recursos do editor em cache podem ser reutilizados offline; recursos não guardados e ficheiros remotos precisam de rede
+- 🌍 **Multilingue** — 7 idiomas de interface para o site e 45 para o editor
 - 🧩 **Incorporável** — API completa de postMessage para integração em iframe
 - 🤖 **Pronto para agentes** — expõe ferramentas WebMCP para que um agente de IA do navegador abra, converta e leia documentos
 - 🚀 **Implanta-se em qualquer lado** — uma compilação estática; uma pasta de ficheiros atrás de qualquer servidor web
@@ -104,9 +104,9 @@ Parâmetros de `/editor`:
 
 ---
 
-## 🔐 Os seus dados ficam no seu dispositivo
+## 🔐 Edição local e tratamento de dados
 
-Os documentos não são enviados para lugar nenhum. Só ficam duas coisas guardadas localmente,
+A edição e a conversão são realizadas localmente. Só ficam duas coisas guardadas localmente,
 e ambas pode remover:
 
 - **Cópias daquilo que editou.** Enquanto trabalha, o editor guarda o documento neste
@@ -121,6 +121,8 @@ e ambas pode remover:
 eliminar em cada linha, um para eliminar tudo e um interruptor para desligar por completo a
 gravação automática. Eliminar ali tem efeito imediato. Num computador partilhado, é a página
 a visitar.
+
+Desativado por padrão · Só este navegador. Os módulos de IA no repositório são experimentais e não significam que o assistente esteja pronto. Testes de desenvolvimento com um provedor na nuvem podem transmitir instruções e resultados das ferramentas. No modo incorporado, o app anfitrião recebe os arquivos exportados e controla seus envios posteriores.
 
 ---
 
@@ -159,16 +161,6 @@ de origens permitidas, o modo de leitura e o fluxo de gravação.
 Também disponível como componente: é este projeto que move a pré-visualização de documentos
 do [@ranui/preview](https://www.npmjs.com/package/@ranui/preview)
 ([documentação](https://chaxus.github.io/ran/src/ranui/preview/)).
-
----
-
-## 🤖 Agentes de IA no navegador (WebMCP)
-
-Onde o navegador o suporta, a página regista ferramentas que um agente pode invocar
-diretamente em vez de manobrar a interface: `open_document_url`, `open_document_buffer`,
-`create_document`, `save_document`, `get_document_text`, `set_readonly`,
-`get_document_state`. Também aqui os documentos não saem do dispositivo — é o próprio
-navegador que os obtém e converte. Onde a API não existe, nada acontece.
 
 ---
 
@@ -250,6 +242,32 @@ vale a pena ler antes de mexer na integração do editor.
 
 ---
 
+## Assistente de documentos com IA (Experimental Beta)
+
+Diga o que quer fazer: consultar conteúdo, trabalhar em textos ou organizar dados. Revise as alterações antes de aplicar.
+
+Ative o assistente e escolha um modelo local ou conecte seu serviço de IA. Os arquivos do modelo ficam neste navegador; outro documento pode exigir uma nova preparação, reutilizando arquivos já armazenados.
+
+Word: consulte conteúdo, crie textos ou melhore parágrafos selecionados. Excel e CSV: leia tabelas, preencha dados, crie sequências, calcule totais ou ordene. PowerPoint: consulte textos, adicione texto e crie, duplique ou mude slides. PDF: consulte, resuma ou traduza texto selecionável da página atual; adicione uma nota a uma página específica.
+
+As sugestões mostram o local e o conteúdo. Edite ou peça ajustes antes de aplicar. Cancele o que não quiser; depois de aplicar, use Desfazer no editor. Limpar ou sobrescrever conteúdo exige confirmação. Arquivos somente leitura permitem apenas consulta.
+
+O assistente lê a página atual, não o PDF inteiro. Texto em imagens digitalizadas não é reconhecido; a indisponibilidade é informada. Notas são anexadas à página e não reescrevem o texto do PDF. Para alterar a disposição do texto, use o Word original.
+
+[Como usar](https://edit.chaxus.com/pt/ai-document-assistant)
+
+---
+
+## 🤖 Agentes de IA no navegador (WebMCP)
+
+Onde o navegador o suporta, a página regista ferramentas que um agente pode invocar
+diretamente em vez de manobrar a interface: `open_document_url`, `open_document_buffer`,
+`create_document`, `save_document`, `get_document_text`, `set_readonly`,
+`get_document_state`. Também aqui os documentos não saem do dispositivo — é o próprio
+navegador que os obtém e converte. Onde a API não existe, nada acontece.
+
+---
+
 ## 📚 Construído sobre
 
 - [sdkjs](https://github.com/ONLYOFFICE/sdkjs) e [web-apps](https://github.com/ONLYOFFICE/web-apps) — os editores do OnlyOffice
@@ -267,12 +285,21 @@ desenvolvimento, comportamento do Cloudflare Pages e imagem Docker de produção
 
 [AGPL-3.0](LICENSE).
 
-Este projeto é uma obra derivada do ONLYOFFICE (sdkjs e web-apps, (c) Ascensio System
-SIA). O original é distribuído sob a AGPL com termos adicionais da sua Seção 7: o
-logotipo original do produto deve ser mantido e nenhum direito de marca é concedido. Por
-isso o logotipo do ONLYOFFICE no cabeçalho do editor e o painel Sobre continuam
-intactos. O texto completo, a versão do vendor e todas as alterações que fizemos nele
-estão em [NOTICE](NOTICE).
+Este projeto é uma versão modificada dos editores ONLYOFFICE (sdkjs e web-apps,
+copyright de Ascensio System SIA). A interface usa nomes funcionais neutros, sem
+logótipos de produtos ou promoção de marcas. Os avisos de copyright, licenças,
+modificações e ligações ao código-fonte permanecem no painel Sobre e em
+[NOTICE](NOTICE). Os recursos GUI e as fontes de terceiros mantêm as suas licenças.
 
-ONLYOFFICE é uma marca da Ascensio System SIA. Este projeto não é um produto oficial do
-ONLYOFFICE nem tem afiliação ou endosso da Ascensio System SIA.
+A decisão de não apresentar logótipos segue a interpretação publicada pela FSF
+da secção 7 da AGPLv3. Não é apresentada como uma decisão judicial nem como uma
+garantia de conformidade legal. A posição do projeto original e os fundamentos
+da decisão estão documentados em NOTICE.
+
+ONLYOFFICE é uma marca da Ascensio System SIA. Este projeto não é um produto
+oficial e não tem afiliação, patrocínio ou aprovação dessa empresa. Os nomes nos
+avisos legais e nas referências ao código identificam a tecnologia original,
+não a marca deste projeto.
+
+A instalação PWA e as abas do navegador usam um ícone de documento neutro desenhado
+de forma independente, sem logótipos, marcas ou iniciais do projeto.

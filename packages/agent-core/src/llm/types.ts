@@ -19,12 +19,23 @@ export interface LLMToolDef {
 export type LLMContent =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean };
+  | {
+      type: 'tool_result';
+      toolUseId: string;
+      content: string;
+      isError?: boolean;
+      /** Host guard metadata for restored UI; provider converters send the standard result only. */
+      guardReason?: 'repeated_call' | 'tool_budget';
+    };
 
 /** A conversation message. `content` is plain text or a list of blocks. */
 export interface LLMMessage {
   role: 'user' | 'assistant';
   content: string | LLMContent[];
+  /** Visible partial prose preserved after cancellation; never a complete answer. */
+  interrupted?: true;
+  /** Host-created document body; never inferred from generic assistant prose. */
+  documentArtifact?: true;
 }
 
 /** A tool call the model requested. */
@@ -36,6 +47,24 @@ export interface LLMToolCall {
 
 /** A normalised model response. */
 export interface LLMResponse {
+  /** Provider removed complete old turns to fit the measured context. */
+  contextTrimmed?: boolean;
+  /** Actual backend statistics, absent when unsupported; never estimated from chunks. */
+  usage?: {
+    /** Backend-measured prompt processing and decoding durations, when available. */
+    promptProcessingDurationMs?: number;
+    decodingDurationMs?: number;
+    completionTokens?: number;
+    promptTokens?: number;
+    decodeTokensPerSecond?: number;
+    timeToFirstTokenMs?: number;
+    /** Provider wall clock from execution start, excluding queue/model load. */
+    responseDurationMs?: number;
+    /** First nonempty text delta; distinct from the backend's first token time. */
+    timeToFirstTextMs?: number;
+    /** Actual completion token count divided by total response time, including prefill. */
+    endToEndTokensPerSecond?: number;
+  };
   /** Concatenated assistant text (may be empty when the turn is only tool calls). */
   text: string;
   /** Tool calls the model wants executed (empty when none). */
@@ -52,10 +81,25 @@ export interface LLMProvider {
   readonly name: string;
   /** True when the provider can make a request (e.g. an API key is present). */
   isReady(): boolean;
+  /** Native tool protocol supported by this transport; not a model-quality certification. */
+  readonly toolCallingMode?: 'native' | 'schema';
+  /** Trusted adapter emits answer text only, never tool prose or arguments. */
+  readonly streamingTextMode?: 'answer-only';
+  /** True when the ready engine budgets the complete request using actual tokens. */
+  hasExactContextBudget?(): boolean;
   /**
    * Run one model turn over the conversation with the given tools available.
    * `signal` (optional) aborts the in-flight request so Stop works mid-call.
    */
+  /** Optional schema-constrained, tool-free generation for bounded tasks. */
+  generateJSON?(messages: LLMMessage[], schema: Record<string, unknown>, signal?: AbortSignal): Promise<LLMResponse>;
+  /** Schema-constrained JSON deltas; callers must validate the complete result. */
+  generateJSONStream?(
+    messages: LLMMessage[],
+    schema: Record<string, unknown>,
+    onDelta: (jsonDelta: string) => void,
+    signal?: AbortSignal,
+  ): Promise<LLMResponse>;
   chat(messages: LLMMessage[], tools: LLMToolDef[], signal?: AbortSignal): Promise<LLMResponse>;
   /**
    * Optional streaming variant: emit assistant text deltas via `onDelta` as they
@@ -69,4 +113,14 @@ export interface LLMProvider {
     onDelta: (textDelta: string) => void,
     signal?: AbortSignal,
   ): Promise<LLMResponse>;
+}
+
+/** Explicit lifecycle shared by browser-local inference backends. */
+export interface LocalLLMProvider extends LLMProvider {
+  /** Adjust future requests without reloading model weights. */
+  setGenerationOptions?(options: import('./generation').GenerationOptions): void;
+  /** Load weights/runtime only when the host requests it. */
+  preload(): Promise<void>;
+  /** Abort work and release runtime resources. */
+  dispose(): Promise<void>;
 }

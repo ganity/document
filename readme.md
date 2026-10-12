@@ -39,8 +39,8 @@ device, so documents are never uploaded, and no account is involved.
 - 🔒 **Nothing is uploaded** — every conversion, edit and export happens in the tab
 - 📝 **Real editing, not preview** — DOCX, XLSX, PPTX and CSV, plus ODF, RTF, TXT and the legacy binary formats; PDFs open and can be annotated
 - 💾 **Saves into your own file** — pick it once, every save after writes back to it (Chromium; elsewhere it downloads as before)
-- 🕓 **Nothing is lost if you close the tab** — edits autosave into your own browser, kept for 7 days, deletable any time ([details](#-your-data-stays-on-your-device))
-- 📴 **Works offline** — installable as a PWA; after the first visit no network is needed
+- 🕓 **Nothing is lost if you close the tab** — edits autosave into your own browser, kept for 7 days, deletable any time ([details](#-local-editing-and-data-handling))
+- 📴 **Works offline** — installable as a PWA; cached editor resources can be reused offline; uncached assets and remote files still require a network
 - 🌍 **Multi-language** — 7 languages end to end (English, 中文, 日本語, Deutsch, Español, 한국어, Português): the pages, the app UI and the editor all follow the one you pick; the editor itself ships 45
 - 🧩 **Embeddable** — full postMessage API for iframe integration
 - 🤖 **Agent-ready** — exposes WebMCP tools so a browser AI agent can open, convert and read documents
@@ -106,9 +106,9 @@ Parameters on `/editor`:
 
 ---
 
-## 🔐 Your data stays on your device
+## 🔐 Local editing and data handling
 
-Documents are never sent anywhere. Where the browser allows it, saving writes
+Editing and conversion run locally. Where the browser allows it, saving writes
 straight back into the file you picked, so the document lives in your own file
 system and not in a downloads folder. Two things are kept in the browser
 itself, and both are yours to remove:
@@ -125,6 +125,8 @@ itself, and both are yours to remove:
 delete on every row, a delete-all, and a switch to turn autosave off entirely.
 Deleting there takes effect immediately. On a shared machine, that is the page
 to visit.
+
+Off by default · This browser only. Selected text goes to the destination you choose. In embed mode, exported files are returned to the parent application, which controls subsequent uploads.
 
 ---
 
@@ -163,17 +165,6 @@ allowlist, read-only mode and the save flow.
 Also available as a component: this project powers the document preview in
 [@ranui/preview](https://www.npmjs.com/package/@ranui/preview)
 ([docs](https://chaxus.github.io/ran/src/ranui/preview/)).
-
----
-
-## 🤖 Browser AI agents (WebMCP)
-
-Where the browser supports it, the page registers tools an in-browser agent can
-call directly instead of driving the UI: `open_document_url`,
-`open_document_buffer`, `create_document`, `save_document`, `get_document_text`,
-`set_readonly`, `get_document_state`. Documents still never leave the device —
-the browser fetches and converts them itself. Where the API is absent, this is
-a no-op.
 
 ---
 
@@ -255,6 +246,53 @@ worth a look before changing the editor integration.
 
 ---
 
+## AI document assistant (Experimental Beta)
+
+**Experimental Beta:** The AI assistant is still being developed. Answers and edits can be incomplete or incorrect; review suggestions and verify important changes. Speed and capabilities vary by model and device.
+
+**Watch the AI assistant in action** · English screen recordings. Play the videos below; caption files and text descriptions are linked in the demo details.
+
+**Word · Draft, insert and undo**
+
+https://github.com/user-attachments/assets/89b21740-0c96-4b21-885f-27efa6e7fa53
+
+**Excel · Fill cells and calculate**
+
+https://github.com/user-attachments/assets/18dbe96f-bb07-46e9-88f7-5a7a6370b630
+
+**PowerPoint · Review and create a slide**
+
+https://github.com/user-attachments/assets/3450551b-b557-4a0b-8a2a-5b05d2c458fe
+
+**PDF · Read a page and review a note**
+
+https://github.com/user-attachments/assets/e786a45c-f73a-48c0-8334-19544fa32c7e
+
+[Demo details and text descriptions](docs/media/ai-demos/README.md). Recorded with the local Qwen3 4B model and fictional documents; model preparation is omitted.
+
+Say what you want to do: ask about content, work on text or organize data. Review changes before applying them. Off by default · This browser only.
+
+Choose a local model or connect your AI service. Model files stay in this browser and cached files can be reused when preparing the model for another document.
+
+Word supports drafting and selected-text work; Excel and CSV support data operations; PowerPoint supports slide text and pages. PDF supports questions, summaries and translations of selectable text on the current page, plus reviewed page notes. Scanned image text is not recognized, and page notes do not rewrite PDF body text.
+
+Suggestions show their location and content. Edit them or ask for adjustments before applying. Cancel unwanted changes, or use editor Undo after applying. Clearing or overwriting content requires confirmation; read-only files can only be viewed.
+
+[How to use it](https://edit.chaxus.com/ai-document-assistant)
+
+---
+
+## 🤖 Browser AI agents (WebMCP)
+
+Where the browser supports it, the page registers tools an in-browser agent can
+call directly instead of driving the UI: `open_document_url`,
+`open_document_buffer`, `create_document`, `save_document`, `get_document_text`,
+`set_readonly`, `get_document_state`. Documents still never leave the device —
+the browser fetches and converts them itself. Where the API is absent, this is
+a no-op.
+
+---
+
 ## 📚 Built on
 
 - [sdkjs](https://github.com/ONLYOFFICE/sdkjs) and [web-apps](https://github.com/ONLYOFFICE/web-apps) — the OnlyOffice editors
@@ -272,11 +310,21 @@ Cloudflare Pages semantics, and the production Docker image).
 
 [AGPL-3.0](LICENSE).
 
-This is a derivative work of ONLYOFFICE (sdkjs and web-apps, (c) Ascensio System SIA),
-distributed under the AGPL with additional terms under its Section 7: the original
-product logo must be retained, and no rights under trademark law are granted. The
-editor therefore keeps the ONLYOFFICE logo in its header and its About pane. See
-[NOTICE](NOTICE) for the full text, the vendor version and every change made to it.
+This project is a modified version of the ONLYOFFICE editors (sdkjs and web-apps,
+copyright Ascensio System SIA). Its interface uses neutral descriptions without
+product logos or promotional branding. Copyright, license, modification and
+source information remain available in the editor's About pane and in
+[NOTICE](NOTICE). Third-party GUI assets and fonts retain their respective
+licenses; removing product marks does not change those licenses.
+
+The decision to omit product logos follows the FSF's published interpretation
+of AGPLv3 Section 7. It is not described as a court ruling or a guarantee of
+legal compliance; the upstream position and the rationale are recorded in NOTICE.
 
 ONLYOFFICE is a trademark of Ascensio System SIA. This project is not an official
-ONLYOFFICE product and is not affiliated with or endorsed by Ascensio System SIA.
+ONLYOFFICE product and is not affiliated with, sponsored by or endorsed by
+Ascensio System SIA. Names in legal notices and source references identify the
+upstream technology, not this project's brand.
+
+PWA installation and browser tabs use an independently drawn, neutral document
+icon. It contains no upstream logo, trademark or project initials.
