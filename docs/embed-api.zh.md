@@ -25,9 +25,14 @@
 <iframe src="https://your-deployment/editor?embed=1&deckwise=1&embedOrigin=https://your-system.example.com"></iframe>
 ```
 
-该模式只接受带 `.pptx` 文件的 `document:open-buffer`，并且只允许保存为 PPTX。用户点击
+该模式接受所有已支持格式的 `document:open-buffer`：Word（`docx`、`doc`、`odt`、`rtf`、`txt`）、
+Excel（`xlsx`、`xls`、`ods`、`csv`）、PowerPoint（`pptx`、`ppt`、`odp`）及 PDF（`pdf`）。
+设置 `readonly: true` 即可预览。不支持的格式返回 `document:error`，由宿主提供系统默认应用打开入口。
+格式识别不保证所有文件都能转换；部分较大的 PPT、ODP 文件仍可能被底层转换引擎拒绝。
+URL 输入仍被禁止。保存使用文档自身格式，旧版 `doc`、`xls`、`ppt` 分别保存为 `docx`、`xlsx`、`pptx`，
+禁止导出成其他格式。用户点击
 内部保存按钮时，编辑器会向宿主发送 `document:save-requested`；宿主随后发送正常的
-`document:save` 命令，编辑后的 PPTX 最终通过 `document:saved` 返回。
+`document:save` 命令，编辑后的文件最终通过 `document:saved` 返回。
 
 > 编辑器位于 `/editor`，首页 `/` 是纯静态落地页。旧链接 `/?embed=1`、`/?src=`、`/?file=`、`/?new=` 仍然有效——`/` 会带同样的参数跳转到 `/editor`。
 

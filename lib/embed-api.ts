@@ -1,4 +1,5 @@
 import { getDocmentObj, setDocmentObj } from '@ranuts/shared/store';
+import { getDocumentType } from '@ranuts/shared/document-utils';
 import { handleDocumentOperation, loadEditorApi } from './converter';
 import { openDocumentFromUrl } from './document';
 import { getReadonlyMode, requestSaveDocument, setReadonlyMode } from './onlyoffice-editor';
@@ -152,8 +153,8 @@ async function handleOpen(payload: Record<string, any>): Promise<void> {
   }
 
   const file = makeFileFromPayload(payload);
-  if (isDeckWiseMode() && !file.name.toLowerCase().endsWith('.pptx')) {
-    throw new Error('DeckWise only accepts PPTX files');
+  if (isDeckWiseMode() && !getDocumentType(file.name.split('.').pop() || '')) {
+    throw new Error('Unsupported document format');
   }
   await openFile(file, readonly);
 }
@@ -183,7 +184,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
       case 'document:open-url':
       case 'document:open-file':
       case 'document:open-buffer':
-        if (isDeckWiseMode() && message.type !== 'document:open-buffer') {
+        if (isDeckWiseMode() && (message.type !== 'document:open-buffer' || payload.url)) {
           throw new Error('DeckWise only accepts document:open-buffer');
         }
         await handleOpen(payload);
@@ -204,9 +205,9 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         const currentExt = (getDocmentObj()?.fileName || '').split('.').pop()?.toUpperCase() || '';
         const LEGACY_TARGET: Record<string, string> = { XLS: 'XLSX', DOC: 'DOCX', PPT: 'PPTX' };
         const defaultExt = LEGACY_TARGET[currentExt] || currentExt || 'XLSX';
-        const targetExt = isDeckWiseMode() ? 'PPTX' : payload.targetExt || defaultExt;
-        if (isDeckWiseMode() && payload.targetExt && String(payload.targetExt).toUpperCase() !== 'PPTX') {
-          throw new Error('DeckWise only permits PPTX save');
+        const targetExt = isDeckWiseMode() ? defaultExt : payload.targetExt || defaultExt;
+        if (isDeckWiseMode() && payload.targetExt && String(payload.targetExt).toUpperCase() !== defaultExt) {
+          throw new Error(`DeckWise only permits ${defaultExt} save for this document`);
         }
         const returnOriginalOnTimeout = Boolean(payload.returnOriginalOnTimeout);
         // Taken before the export starts: edits made while it runs are not in

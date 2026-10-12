@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DOCUMENT_TYPE_MAP } from '@ranuts/shared/document-utils';
 
 const mockOpenDocumentFromUrl = vi.fn().mockResolvedValue(undefined);
 const mockLoadEditorApi = vi.fn().mockResolvedValue(undefined);
 const mockHandleDocumentOperation = vi.fn().mockResolvedValue(undefined);
-const mockSetDocmentObj = vi.fn();
 const mockGetReadonlyMode = vi.fn().mockReturnValue(false);
 const mockSetReadonlyMode = vi.fn();
 const mockRequestSaveDocument = vi.fn();
@@ -13,7 +13,6 @@ vi.mock('../../lib/converter', () => ({
   loadEditorApi: mockLoadEditorApi,
   handleDocumentOperation: mockHandleDocumentOperation,
 }));
-vi.mock('../../store', () => ({ setDocmentObj: mockSetDocmentObj }));
 vi.mock('../../lib/onlyoffice-editor', () => ({
   getReadonlyMode: mockGetReadonlyMode,
   setReadonlyMode: mockSetReadonlyMode,
@@ -298,49 +297,82 @@ describe('embed-api', () => {
       expectMessagePosted(postMessageSpy, 'document:error', 'err-1', { message: 'Save failed' });
     });
 
-    it('allows only PPTX save in DeckWise mode', async () => {
+    it.each(Object.keys(DOCUMENT_TYPE_MAP))('saves %s in its natural format in DeckWise mode', async (ext) => {
       window.history.pushState({}, '', '/?embed=1&deckwise=1');
-      const savedFile = new File(['pptx bytes'], 'course.pptx');
+      const legacy: Record<string, string> = { doc: 'docx', xls: 'xlsx', ppt: 'pptx' };
+      const target = (legacy[ext] || ext).toUpperCase();
+      const { setDocmentObj } = await import('@ranuts/shared/store');
+      setDocmentObj({ fileName: `course.${ext}` });
+      const savedFile = new File(['saved bytes'], `course.${target.toLowerCase()}`);
       mockRequestSaveDocument.mockResolvedValueOnce(savedFile);
       const { initEmbedApi } = await import('../../lib/embed-api');
       initEmbedApi();
 
-      await dispatchMessage({ type: 'document:save', id: 'deckwise-pptx', payload: {} });
-      await dispatchMessage({ type: 'document:save', id: 'deckwise-pdf', payload: { targetExt: 'PDF' } });
+      await dispatchMessage({ type: 'document:save', id: 'deckwise-save', payload: {} });
+      const otherFormat = target === 'PDF' ? 'PPTX' : 'PDF';
+      await dispatchMessage({ type: 'document:save', id: 'deckwise-export', payload: { targetExt: otherFormat } });
 
       expect(mockRequestSaveDocument).toHaveBeenCalledWith(
-        'PPTX',
+        target,
         expect.objectContaining({ returnOriginalOnTimeout: false }),
       );
-      expectMessagePosted(postMessageSpy, 'document:saved', 'deckwise-pptx');
-      expectMessagePosted(postMessageSpy, 'document:error', 'deckwise-pdf', {
-        message: 'DeckWise only permits PPTX save',
+      expectMessagePosted(postMessageSpy, 'document:saved', 'deckwise-save', { fileName: savedFile.name });
+      expectMessagePosted(postMessageSpy, 'document:error', 'deckwise-export', {
+        message: `DeckWise only permits ${target} save for this document`,
       });
     });
 
-    it('allows only PPTX buffers in DeckWise mode', async () => {
+    it.each(Object.keys(DOCUMENT_TYPE_MAP))('opens %s buffers for preview in DeckWise mode', async (ext) => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1');
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+
+      const fileName = `course.${ext.toUpperCase()}`;
+      await dispatchMessage({
+        type: 'document:open-buffer',
+        id: 'deckwise-preview',
+        payload: { fileName, buffer: new ArrayBuffer(4), readonly: true },
+      });
+
+      expect(mockHandleDocumentOperation).toHaveBeenCalledWith(expect.objectContaining({ fileName, readonly: true }));
+      expectMessagePosted(postMessageSpy, 'document:opened', 'deckwise-preview');
+    });
+
+    it.each(['unknown', 'constructor', 'toString'])('rejects unsupported %s buffers in DeckWise mode', async (ext) => {
       window.history.pushState({}, '', '/?embed=1&deckwise=1');
       const { initEmbedApi } = await import('../../lib/embed-api');
       initEmbedApi();
 
       await dispatchMessage({
         type: 'document:open-buffer',
-        id: 'deckwise-docx',
-        payload: { fileName: 'course.docx', buffer: new ArrayBuffer(4) },
+        id: 'deckwise-unsupported',
+        payload: { fileName: `course.${ext}`, buffer: new ArrayBuffer(4) },
       });
-      await dispatchMessage({
-        type: 'document:open-url',
-        id: 'deckwise-url',
-        payload: { fileName: 'course.pptx', url: 'https://example.com/course.pptx' },
-      });
-
-      expectMessagePosted(postMessageSpy, 'document:error', 'deckwise-docx', {
-        message: 'DeckWise only accepts PPTX files',
-      });
-      expectMessagePosted(postMessageSpy, 'document:error', 'deckwise-url', {
-        message: 'DeckWise only accepts document:open-buffer',
+      expect(mockHandleDocumentOperation).not.toHaveBeenCalled();
+      expectMessagePosted(postMessageSpy, 'document:error', 'deckwise-unsupported', {
+        message: 'Unsupported document format',
       });
     });
+
+    it.each(['document:open-url', 'document:open-buffer'])(
+      'rejects URL payloads via %s in DeckWise mode',
+      async (type) => {
+        window.history.pushState({}, '', '/?embed=1&deckwise=1');
+        const { initEmbedApi } = await import('../../lib/embed-api');
+        initEmbedApi();
+
+        await dispatchMessage({
+          type,
+          id: 'deckwise-url',
+          payload: { fileName: 'course.pptx', url: 'https://example.com/course.pptx' },
+        });
+
+        expect(mockOpenDocumentFromUrl).not.toHaveBeenCalled();
+        expectMessagePosted(postMessageSpy, 'document:error', 'deckwise-url', {
+          message: 'DeckWise only accepts document:open-buffer',
+        });
+      },
+    );
 
     // GitHub #4 "save to remote server": the parent page's documented recovery path
     // is listening for this success payload and uploading `file` itself.

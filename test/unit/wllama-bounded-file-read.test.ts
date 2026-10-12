@@ -25,6 +25,12 @@ const asyncHelper = (self: unknown, _: unknown, generator: () => Generator) =>
     step();
   });
 
+function modelBytes(offset: number, size: number): Uint8Array {
+  const bytes = new Uint8Array(size);
+  for (let i = 0; i < size; i++) bytes[i] = (offset + i) % 251;
+  return bytes;
+}
+
 it('transfers exact requested model bytes while each backing Blob read stays within 8 MiB', async () => {
   expect(method).toBeDefined();
   const limit = 8 * 1024 * 1024;
@@ -39,7 +45,7 @@ it('transfers exact requested model bytes while each backing Blob read stays wit
     async arrayBuffer() {
       reads.push(end - start);
       if (end - start > limit) throw new DOMException('Large backing read failed', 'NotReadableError');
-      return Uint8Array.from({ length: end - start }, (_, i) => (start + i) % 251).buffer;
+      return modelBytes(start, end - start).buffer;
     },
   });
   let transferred: ArrayBuffer | undefined;
@@ -61,7 +67,7 @@ it('transfers exact requested model bytes while each backing Blob read stays wit
   await read.call(receiver, 'model', offset, size);
   expect(aborted).toBeUndefined();
   expect(transferred?.byteLength).toBe(size);
-  const expected = Uint8Array.from({ length: size }, (_, i) => (offset + i) % 251);
+  const expected = modelBytes(offset, size);
   expect(createHash('sha256').update(new Uint8Array(transferred!)).digest('hex')).toBe(
     createHash('sha256').update(expected).digest('hex'),
   );
