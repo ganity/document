@@ -69,6 +69,7 @@ describe('DeckWise restricted embed mode', () => {
   it('allows the host-requested PPTX save through the export guard', async () => {
     window.history.pushState({}, '', '/?embed=1&deckwise=1');
     const iframe = document.createElement('iframe');
+    iframe.name = 'frameEditor';
     document.body.appendChild(iframe);
     const originalDownloadAs = vi.fn();
     class DownloadOptions {
@@ -106,6 +107,8 @@ describe('DeckWise restricted embed mode', () => {
     await vi.waitFor(() => expect(originalDownloadAs).toHaveBeenCalledOnce());
     window.dispatchEvent(
       new MessageEvent('message', {
+        origin: window.location.origin,
+        source: child,
         data: { type: 'onlyoffice-file-stream', fileType: 'pptx', buffer: new ArrayBuffer(8) },
       }),
     );

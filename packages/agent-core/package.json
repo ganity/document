@@ -29,7 +29,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "vendor"
   ],
   "sideEffects": false,
   "scripts": {
@@ -39,7 +40,11 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",
-    "@mlc-ai/web-llm": "^0.2.84"
+    "@cfworker/json-schema": "^4.1.1",
+    "@mlc-ai/web-llm": "0.2.85",
+    "@streamparser/json": "0.0.22",
+    "@wllama/wllama": "3.6.1",
+    "@wllama/wllama-compat": "3.6.1"
   },
   "devDependencies": {
     "typescript": "^6.0.3"

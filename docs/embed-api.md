@@ -25,14 +25,24 @@ blocking Download, Save As, other-format export, and Print:
 <iframe src="https://your-deployment/editor?embed=1&deckwise=1&embedOrigin=https://your-system.example.com"></iframe>
 ```
 
-In this mode the editor accepts only `document:open-buffer` with a `.pptx`
-file and only `document:save` targeting PPTX. Clicking the internal Save button
+In this mode the editor accepts `document:open-buffer` for all supported formats:
+Word (`docx`, `doc`, `odt`, `rtf`, `txt`), Excel (`xlsx`, `xls`, `ods`, `csv`),
+PowerPoint (`pptx`, `ppt`, `odp`), and PDF (`pdf`). Set `readonly: true` for preview.
+Unsupported formats return `document:error`; the host can offer the system's default application.
+Recognizing a format does not guarantee conversion of every file; the underlying
+converter may still reject some larger PPT and ODP files.
+URL payloads remain disabled. Saving uses the document's own format, with legacy
+`doc`, `xls`, and `ppt` saved as `docx`, `xlsx`, and `pptx`; exporting to another
+format is blocked. Clicking the internal Save button
 posts `document:save-requested`; the host should answer by sending the normal
-`document:save` command so the edited PPTX returns through `document:saved`.
+`document:save` command so the edited file returns through `document:saved`.
 
 > The editor lives at `/editor`; the homepage `/` is a static landing page. Older links to `/?embed=1`, `/?src=`, `/?file=` and `/?new=` still work -- `/` redirects them to `/editor` with the same query.
 
-To restrict messages to a specific origin, add `embedOrigin`:
+Commands are accepted only from the immediate parent window. Without
+`embedOrigin`, the first accepted parent command fixes the origin for the lifetime
+of the editor page; later commands from a different origin are ignored.
+To restrict messages to a specific origin from startup, add `embedOrigin`:
 
 ```html
 <iframe

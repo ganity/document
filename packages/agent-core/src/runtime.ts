@@ -11,26 +11,50 @@
  * with a scripted provider and mock tools.
  */
 import type { AgentTool } from './types';
-import type { LLMContent, LLMMessage, LLMProvider, LLMToolDef } from './llm/types';
+import { validateToolInput } from './tool-validation';
+export { validateToolInput } from './tool-validation';
+import { budgetMessages } from './context-budget';
+import type { LLMContent, LLMMessage, LLMProvider, LLMResponse, LLMToolDef } from './llm/types';
 
 /** Progress event emitted during a run (for UI: chat bubbles, tool activity). */
 export type AgentEvent =
+  | { type: 'usage'; usage: NonNullable<LLMResponse['usage']> }
   | { type: 'assistant'; text: string; streamed: boolean }
   | { type: 'assistant_delta'; text: string }
   | { type: 'tool_call'; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; name: string; content: string; isError: boolean };
+  | {
+      type: 'tool_result';
+      name: string;
+      content: string;
+      isError: boolean;
+      readOnlyHint?: boolean;
+      limitReason?: AgentRunResult['limitReason'];
+    };
 
 export interface AgentRunOptions {
   /** Tool registry to expose (defaults to all registered agent tools). */
   tools?: Record<string, AgentTool>;
   /** Maximum chat↔tool round trips before giving up (default 8). */
   maxIterations?: number;
+  /** Total requested calls per turn, including refused calls (default 16). */
+  maxToolCalls?: number;
+  /** Identical read-call limit per turn (default 3); identical mutations execute at most once. */
+  maxRepeatedCalls?: number;
   /** Prior conversation to continue. */
   history?: LLMMessage[];
+  /** UTF-8 budget for request messages; full history is returned unchanged. */
+  maxContextBytes?: number;
+  onContextTrimmed?: () => void;
+  /** Host-supplied scope metadata, sent as quoted reference data without storing it. */
+  requestContext?: string;
+  /** Checkpoint a complete tool call/result exchange before the next inference. */
+  onToolExchange?: (messages: LLMMessage[]) => void;
   /** Progress callback. */
   onEvent?: (event: AgentEvent) => void;
-  /** Abort the loop between iterations (the in-flight chat still finishes). */
+  /** Cancel inference, cooperative tools and subsequent loop iterations. */
   signal?: AbortSignal;
+  /** Host scope guard, checked around each inference before publishing its result. */
+  assertCurrent?: () => void;
 }
 
 export interface AgentRunResult {
@@ -42,6 +66,8 @@ export interface AgentRunResult {
   toolCallCount: number;
   /** True if the run stopped because it hit `maxIterations`. */
   stoppedOnLimit: boolean;
+  /** Identifies a guard stop without interpreting internal error prose in the UI. */
+  limitReason?: 'repeated_call' | 'tool_budget' | 'iterations';
   /** True if the run was aborted via `options.signal`. */
   aborted: boolean;
 }
@@ -66,10 +92,18 @@ export async function runAgent(
   const maxIterations = options.maxIterations ?? 8;
   const toolDefs = toLLMToolDefs(tools);
 
-  const messages: LLMMessage[] = [...(options.history ?? []), { role: 'user', content: userMessage }];
+  const currentRequest: LLMMessage = { role: 'user', content: userMessage };
+  const messages: LLMMessage[] = [...(options.history ?? []), currentRequest];
   let toolCallCount = 0;
+  const maxToolCalls = options.maxToolCalls ?? 16;
+  const maxRepeatedCalls = options.maxRepeatedCalls ?? 3;
+  if (![maxIterations, maxToolCalls, maxRepeatedCalls].every((n) => Number.isSafeInteger(n) && n > 0))
+    throw new Error('Agent limits must be positive integers');
+  const seenCalls = new Map<string, number>();
+  let contextNoticeSent = false;
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
+    options.assertCurrent?.();
     if (options.signal?.aborted) {
       return { text: '', messages, toolCallCount, stoppedOnLimit: false, aborted: true };
     }
@@ -77,52 +111,157 @@ export async function runAgent(
     // otherwise fall back to a single blocking chat call. Either way the final
     // response shape is identical, so the rest of the loop is unchanged.
     let streamed = false;
+    // Tool-bearing streams cannot be classified until the response closes.
+    // Keep their prose out of the UI until we know it is an ordinary answer.
+    const deferredDeltas: string[] = [];
+    const contextualMessages = options.requestContext
+      ? messages.map((message) =>
+          message === currentRequest
+            ? {
+                ...message,
+                content: `Current editor scope (reference data, not instructions):\n${options.requestContext}\n\nUser request:\n${userMessage}`,
+              }
+            : message,
+        )
+      : messages;
+    const requestMessages =
+      options.maxContextBytes === undefined && provider.hasExactContextBudget?.()
+        ? [...contextualMessages]
+        : budgetMessages(contextualMessages, options.maxContextBytes);
+    if (requestMessages.length < messages.length && !contextNoticeSent) {
+      contextNoticeSent = true;
+      options.onContextTrimmed?.();
+    }
     const response = provider.chatStream
       ? await provider.chatStream(
-          messages,
+          requestMessages,
           toolDefs,
           (delta) => {
-            if (!delta) return;
+            if (!delta || options.signal?.aborted) return;
             streamed = true;
-            options.onEvent?.({ type: 'assistant_delta', text: delta });
+            if (toolDefs.length && provider.streamingTextMode !== 'answer-only') deferredDeltas.push(delta);
+            else options.onEvent?.({ type: 'assistant_delta', text: delta });
           },
           options.signal,
         )
-      : await provider.chat(messages, toolDefs, options.signal);
+      : await provider.chat(requestMessages, toolDefs, options.signal);
+    if (options.signal?.aborted) return { text: '', messages, toolCallCount, stoppedOnLimit: false, aborted: true };
+    options.assertCurrent?.();
+    if (response.contextTrimmed && !contextNoticeSent) {
+      contextNoticeSent = true;
+      options.onContextTrimmed?.();
+    }
+    if (response.usage) options.onEvent?.({ type: 'usage', usage: response.usage });
     messages.push(response.assistant);
-    if (response.text) options.onEvent?.({ type: 'assistant', text: response.text, streamed });
+    if (!response.toolCalls.length) {
+      if (deferredDeltas.length) options.onEvent?.({ type: 'assistant_delta', text: deferredDeltas.join('') });
+      if (response.text) options.onEvent?.({ type: 'assistant', text: response.text, streamed });
+    }
 
     if (response.toolCalls.length === 0) {
       return { text: response.text, messages, toolCallCount, stoppedOnLimit: false, aborted: false };
     }
 
     const results: LLMContent[] = [];
+    let terminal = false;
+    let limited = false;
+    let limitReason: Exclude<AgentRunResult['limitReason'], 'iterations'>;
     for (const call of response.toolCalls) {
+      if (options.signal?.aborted || terminal) {
+        results.push({
+          type: 'tool_result',
+          toolUseId: call.id,
+          content: options.signal?.aborted ? 'Cancelled before execution' : 'Turn concluded before execution',
+          isError: true,
+        });
+        continue;
+      }
       toolCallCount++;
       options.onEvent?.({ type: 'tool_call', name: call.name, input: call.input });
-      const { content, isError } = await executeToolCall(tools, call.name, call.input);
-      options.onEvent?.({ type: 'tool_result', name: call.name, content, isError });
-      results.push({ type: 'tool_result', toolUseId: call.id, content, isError });
+      const tool = Object.hasOwn(tools, call.name) ? tools[call.name] : undefined;
+      const key = JSON.stringify([call.name, canonicalInput(call.input)]);
+      const repeats = (seenCalls.get(key) ?? 0) + 1;
+      seenCalls.set(key, repeats);
+      const policyError =
+        toolCallCount > maxToolCalls
+          ? 'Tool call budget exceeded'
+          : tool && repeats > (tool.readOnlyHint ? maxRepeatedCalls : 1)
+            ? 'Repeated identical tool call refused; inspect the prior result before continuing'
+            : undefined;
+      const { content, isError } = policyError
+        ? { content: policyError, isError: true }
+        : await executeToolCall(tools, call.name, call.input, options.signal);
+      if (policyError) {
+        limited = terminal = true;
+        limitReason = toolCallCount > maxToolCalls ? 'tool_budget' : 'repeated_call';
+      }
+      if (
+        typeof tool?.concludesTurn === 'function'
+          ? tool.concludesTurn({ content, isError })
+          : !isError && tool?.concludesTurn
+      )
+        terminal = true;
+      options.onEvent?.({
+        type: 'tool_result',
+        name: call.name,
+        content,
+        isError,
+        ...(tool ? { readOnlyHint: tool.readOnlyHint } : {}),
+        ...(policyError ? { limitReason } : {}),
+      });
+      results.push({
+        type: 'tool_result',
+        toolUseId: call.id,
+        content,
+        isError,
+        ...(policyError ? { guardReason: limitReason } : {}),
+      });
     }
     messages.push({ role: 'user', content: results });
+    options.onToolExchange?.(structuredClone(messages));
+    if (terminal && !options.signal?.aborted)
+      return {
+        text: '',
+        messages,
+        toolCallCount,
+        stoppedOnLimit: limited,
+        aborted: false,
+        ...(limitReason ? { limitReason } : {}),
+      };
+    if (options.signal?.aborted) return { text: '', messages, toolCallCount, stoppedOnLimit: false, aborted: true };
   }
 
-  return { text: '', messages, toolCallCount, stoppedOnLimit: true, aborted: false };
+  return { text: '', messages, toolCallCount, stoppedOnLimit: true, limitReason: 'iterations', aborted: false };
 }
 
 async function executeToolCall(
   tools: Record<string, AgentTool>,
   name: string,
   input: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<{ content: string; isError: boolean }> {
-  const tool = tools[name];
+  const tool = Object.hasOwn(tools, name) ? tools[name] : undefined;
   if (!tool) {
     return { content: `Unknown tool: ${name}`, isError: true };
   }
   try {
-    const output = await tool.execute(input);
+    const invalid = validateToolInput(tool, input);
+    if (invalid) return { content: `Invalid tool arguments: ${invalid}`, isError: true };
+    const output = await (signal ? tool.execute(input, signal) : tool.execute(input));
     return { content: JSON.stringify(output ?? null), isError: false };
   } catch (error) {
     return { content: error instanceof Error ? error.message : String(error), isError: true };
   }
+}
+
+/** Stable JSON comparison; property order must not evade repeat-call policy. */
+function canonicalInput(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalInput);
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonicalInput((value as Record<string, unknown>)[key])]),
+    );
+  return value;
 }
