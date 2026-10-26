@@ -33,6 +33,7 @@ export async function handleDocumentOperation(options: {
   file?: File;
   readonly?: boolean;
   isCurrent?: () => boolean;
+  onContentReady?: () => void;
 }): Promise<void> {
   try {
     // The DocsAPI loader is no longer a render-blocking <script> in
@@ -100,6 +101,7 @@ export async function handleDocumentOperation(options: {
       binData,
       readonly,
       isCurrent: options.isCurrent,
+      ...(options.onContentReady ? { onContentReady: options.onContentReady } : {}),
     });
   } catch (error: any) {
     if (error?.name === 'AbortError') throw error;

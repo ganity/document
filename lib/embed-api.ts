@@ -2,11 +2,17 @@ import { clearActiveSource } from './active-document-source';
 import { clearDocumentSession } from './history/autosave';
 import { beginDocumentOpen, commitDocumentOpen, isMountedDocumentOpen } from './document-open';
 import { getDocmentObj, setDocmentObj } from '@ranuts/shared/store';
+import { getDocumentType } from '@ranuts/shared/document-utils';
 import { handleDocumentOperation, loadEditorApi } from './converter';
 import { openDocumentFromUrl } from './document';
 import { getReadonlyMode, requestSaveDocument, setReadonlyMode } from './onlyoffice-editor';
-import { captureSavePoint, commitSavePoint } from './onlyoffice/save-point';
-import { hasUnsavedChanges, markDocumentSaved, onUnsavedChangesChange } from './unsaved-guard';
+import { hasPendingEmbeddedSaveRequest } from './onlyoffice/save-stream';
+import { captureSavePoint, commitSavePoint, invalidateSavedPoint, isSavePointCurrent } from './onlyoffice/save-point';
+import { hasUnsavedChanges, markDocumentDirty, markDocumentSaved, onUnsavedChangesChange } from './unsaved-guard';
+import { DECKWISE_SAVE_REQUEST_EVENT, isDeckWiseMode } from './embed-mode';
+import { deckwiseEditorBridge } from './deckwise-editor-bridge';
+import { deckwisePageLineage } from './deckwise-page-lineage';
+import { renderDeckWiseCurrentSlidePreview } from './deckwise-slide-preview';
 
 type EmbedMessageType =
   | 'document:open'
@@ -15,6 +21,15 @@ type EmbedMessageType =
   | 'document:open-buffer'
   | 'document:set-readonly'
   | 'document:save'
+  | 'document:commit-save'
+  | 'document:get-context'
+  | 'document:execute'
+  | 'document:review-image'
+  | 'document:review-image-target'
+  | 'document:execute-image'
+  | 'document:review-fade'
+  | 'document:execute-fade'
+  | 'document:render-page-preview'
   | 'document:get-state';
 
 type EmbedMessage = {
@@ -31,6 +46,8 @@ let initialized = false;
 let parentOrigin = '*';
 let acceptedParentOrigin: string | null = null;
 let isEmbedMode = false;
+let pendingHostSave: { id: string; point: ReturnType<typeof captureSavePoint>; exported: boolean } | null = null;
+let saveOutcomeUncertain = false;
 
 function getQueryValue(key: string): string | null {
   return new URLSearchParams(window.location.search).get(key);
@@ -127,9 +144,12 @@ function makeFileFromPayload(payload: Record<string, any>): File {
   throw new Error('document:open requires url, file, blob, buffer, arrayBuffer, bytes, data, or base64');
 }
 
-async function openFile(file: File, readonly = false): Promise<void> {
+async function openFile(file: File, readonly = false, lineageBinding?: unknown): Promise<void> {
   const opening = beginDocumentOpen();
   await loadEditorApi();
+  opening.assertCurrent();
+  const onContentReady =
+    lineageBinding !== undefined ? await deckwisePageLineage.begin(lineageBinding, file) : undefined;
   opening.assertCurrent();
   setDocmentObj({
     fileName: file.name,
@@ -141,6 +161,7 @@ async function openFile(file: File, readonly = false): Promise<void> {
     isNew: false,
     readonly,
     isCurrent: opening.isCurrent,
+    ...(onContentReady ? { onContentReady } : {}),
   });
   if (!commitDocumentOpen(opening.id)) throw new DOMException('Document open superseded', 'AbortError');
   clearDocumentSession();
@@ -159,7 +180,15 @@ async function handleOpen(payload: Record<string, any>): Promise<void> {
     return;
   }
 
-  await openFile(makeFileFromPayload(payload), readonly);
+  const file = makeFileFromPayload(payload);
+  if (isDeckWiseMode() && !getDocumentType(file.name.split('.').pop() || '')) {
+    throw new Error('Unsupported document format');
+  }
+  const lineageBinding =
+    isDeckWiseMode() && payload.trackPageLineage === true && /\.pptx$/i.test(file.name)
+      ? payload.editorBinding
+      : undefined;
+  await openFile(file, readonly, lineageBinding);
 }
 
 async function handleMessage(event: MessageEvent): Promise<void> {
@@ -182,14 +211,127 @@ async function handleMessage(event: MessageEvent): Promise<void> {
   const payload = message.payload || {};
 
   try {
+    if (['document:save', 'document:commit-save', 'document:set-readonly'].includes(String(message.type)))
+      deckwiseEditorBridge.revokeFade();
     switch (message.type) {
       case 'document:open':
       case 'document:open-url':
       case 'document:open-file':
       case 'document:open-buffer':
+        if (isDeckWiseMode() && (message.type !== 'document:open-buffer' || payload.url)) {
+          throw new Error('DeckWise only accepts document:open-buffer');
+        }
+        if (pendingHostSave || (isDeckWiseMode() && hasPendingEmbeddedSaveRequest()))
+          throw new Error('Finish the current save before opening another document');
+        if (isDeckWiseMode()) {
+          deckwiseEditorBridge.reset();
+          deckwisePageLineage.reset();
+        }
         await handleOpen(payload);
+        saveOutcomeUncertain = false;
+        if (isDeckWiseMode() && payload.editorBinding !== undefined) {
+          deckwiseEditorBridge.reset(payload.editorBinding);
+        }
         postToParent('document:opened', { readonly: getReadonlyMode() }, message.id);
         break;
+
+      case 'document:get-context':
+      case 'document:execute':
+      case 'document:review-image':
+      case 'document:review-image-target':
+      case 'document:execute-image':
+      case 'document:review-fade':
+      case 'document:execute-fade': {
+        if (!isDeckWiseMode()) throw new Error('Editor commands require DeckWise mode');
+        if (hasPendingEmbeddedSaveRequest() || pendingHostSave || saveOutcomeUncertain)
+          throw new Error('Finish or recover the current save before using editor tools');
+        if (typeof message.id !== 'string' || !/^[\w-]{1,128}$/.test(message.id))
+          throw new Error('Invalid editor request ID');
+        if (message.type === 'document:review-fade') {
+          if (Object.keys(payload).some((key) => !['binding', 'authorization'].includes(key)))
+            throw new Error('Invalid fade review payload');
+          if (payload.authorization !== null && hasUnsavedChanges()) {
+            deckwiseEditorBridge.revokeFade();
+            throw new Error('Save the latest PPTX before fade inspection');
+          }
+          postToParent(
+            'document:context',
+            deckwiseEditorBridge.reviewFade(payload.binding, payload.authorization),
+            message.id,
+          );
+        } else if (message.type === 'document:execute-fade') {
+          if (Object.keys(payload).some((key) => !['command', 'authorization'].includes(key)))
+            throw new Error('Invalid fade execution payload');
+          if (hasUnsavedChanges()) {
+            deckwiseEditorBridge.revokeFade();
+            throw new Error('Save the latest PPTX before fade inspection');
+          }
+          postToParent(
+            'document:command-result',
+            await deckwiseEditorBridge.executeFade(payload.command, payload.authorization, message.id),
+            message.id,
+          );
+        } else if (message.type === 'document:review-image-target') {
+          if (Object.keys(payload).sort().join(',') !== 'asset,binding,target')
+            throw new Error('Invalid image target review payload');
+          postToParent(
+            'document:image-target-reviewed',
+            deckwiseEditorBridge.reviewImageTarget(payload.binding, payload.asset, payload.target),
+            message.id,
+          );
+        } else if (message.type === 'document:review-image') {
+          if (Object.keys(payload).some((key) => !['binding', 'asset'].includes(key)))
+            throw new Error('Invalid image review payload');
+          postToParent(
+            'document:context',
+            deckwiseEditorBridge.reviewImage(payload.binding, payload.asset),
+            message.id,
+          );
+        } else if (message.type === 'document:execute-image') {
+          if (Object.keys(payload).some((key) => !['command', 'bytes'].includes(key)))
+            throw new Error('Invalid image execution payload');
+          postToParent(
+            'document:command-result',
+            await deckwiseEditorBridge.executeImage(payload.command, payload.bytes, message.id),
+            message.id,
+          );
+        } else if (message.type === 'document:get-context') {
+          const context = deckwiseEditorBridge.getContext(payload);
+          const pageLineage = deckwisePageLineage.context();
+          postToParent('document:context', { ...context, ...(pageLineage ? { pageLineage } : {}) }, message.id);
+        } else {
+          postToParent('document:command-result', await deckwiseEditorBridge.execute(payload, message.id), message.id);
+        }
+        break;
+      }
+
+      case 'document:render-page-preview': {
+        if (!isDeckWiseMode()) throw new Error('Page previews require DeckWise mode');
+        if (hasPendingEmbeddedSaveRequest() || pendingHostSave || saveOutcomeUncertain)
+          throw new Error('Finish or recover the current save before rendering a page preview');
+        if (typeof message.id !== 'string' || !/^[\w-]{1,128}$/.test(message.id))
+          throw new Error('Invalid editor request ID');
+        if (
+          Object.keys(payload).some((key) => !['binding', 'editGeneration', 'omitNativeText', 'page'].includes(key)) ||
+          (payload.omitNativeText !== undefined && typeof payload.omitNativeText !== 'boolean') ||
+          (payload.page !== undefined &&
+            (!Number.isSafeInteger(payload.page) || payload.page < 1 || payload.page > 5000))
+        )
+          throw new Error('Invalid page preview request');
+        postToParent(
+          'document:page-preview',
+          payload.page === undefined
+            ? renderDeckWiseCurrentSlidePreview(payload.binding, payload.editGeneration, payload.omitNativeText)
+            : renderDeckWiseCurrentSlidePreview(
+                payload.binding,
+                payload.editGeneration,
+                payload.omitNativeText,
+                payload.page,
+              ),
+          message.id,
+        );
+        break;
+      }
 
       case 'document:set-readonly':
         setReadonlyMode(Boolean(payload.readonly));
@@ -197,6 +339,8 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         break;
 
       case 'document:save': {
+        if (isDeckWiseMode() && deckwiseEditorBridge.isExecuting)
+          throw new Error('Finish the current editor command before saving');
         // Default to the open document's own format: a bare document:save on
         // a docx/pptx used to ask x2t for XLSX, which fails (code 88) and
         // only surfaced as a save timeout.
@@ -205,17 +349,43 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         const currentExt = (getDocmentObj()?.fileName || '').split('.').pop()?.toUpperCase() || '';
         const LEGACY_TARGET: Record<string, string> = { XLS: 'XLSX', DOC: 'DOCX', PPT: 'PPTX' };
         const defaultExt = LEGACY_TARGET[currentExt] || currentExt || 'XLSX';
-        const returnOriginalOnTimeout = Boolean(payload.returnOriginalOnTimeout);
+        const targetExt = isDeckWiseMode() ? defaultExt : payload.targetExt || defaultExt;
+        if (isDeckWiseMode() && payload.targetExt && String(payload.targetExt).toUpperCase() !== defaultExt) {
+          throw new Error(`DeckWise only permits ${defaultExt} save for this document`);
+        }
+        const hostManaged = payload.requireHostCommit === true;
+        if (hostManaged && (typeof message.id !== 'string' || !/^[\w-]{1,128}$/.test(message.id))) {
+          throw new Error('Invalid save request ID');
+        }
+        if (pendingHostSave) throw new Error('A host save is still pending');
+        if (isDeckWiseMode() && hasPendingEmbeddedSaveRequest())
+          throw new Error('A save request is already in progress');
+        if (saveOutcomeUncertain) throw new Error('Export outcome is uncertain; reopen before saving again');
+        const returnOriginalOnTimeout = hostManaged ? false : Boolean(payload.returnOriginalOnTimeout);
         // Taken before the export starts: edits made while it runs are not in
         // the bytes the host receives, so they must keep the document dirty.
         const savePoint = captureSavePoint();
-        const file = await requestSaveDocument(payload.targetExt || defaultExt, {
-          returnOriginalOnTimeout,
-        });
+        const captureLineage = hostManaged && isDeckWiseMode() ? deckwisePageLineage.captureSave() : undefined;
+        const pending = hostManaged ? { id: message.id!, point: savePoint, exported: false } : null;
+        pendingHostSave = pending;
+        let file: File;
+        let pageLineage: Awaited<ReturnType<NonNullable<typeof captureLineage>>> | undefined;
+        try {
+          file = await requestSaveDocument(targetExt, { returnOriginalOnTimeout });
+          pageLineage = captureLineage
+            ? await captureLineage(file, message.id!, () => isSavePointCurrent(savePoint))
+            : undefined;
+        } catch (error) {
+          pendingHostSave = null;
+          // An untagged SDK stream may still arrive after an export timeout.
+          if (hostManaged) saveOutcomeUncertain = true;
+          throw error;
+        }
+        if (pending) pending.exported = true;
         // The host now holds the edited bytes. A timeout fallback may have
         // handed it the original file instead, which saves nothing -- the
         // request cannot tell the two apart, so that mode never clears the flag.
-        if (!returnOriginalOnTimeout && commitSavePoint(savePoint)) {
+        if (!hostManaged && !returnOriginalOnTimeout && commitSavePoint(savePoint)) {
           markDocumentSaved();
         }
         postToParent(
@@ -226,9 +396,26 @@ async function handleMessage(event: MessageEvent): Promise<void> {
             mimeType: file.type,
             size: file.size,
             dirty: hasUnsavedChanges(),
+            ...(pageLineage ? { pageLineage } : {}),
           },
           message.id,
         );
+        break;
+      }
+
+      case 'document:commit-save': {
+        if (!pendingHostSave || pendingHostSave.id !== message.id || !pendingHostSave.exported) break;
+        if (typeof payload.success !== 'boolean') throw new Error('Invalid save acknowledgement');
+        const pending = pendingHostSave;
+        pendingHostSave = null;
+        if (payload.success) {
+          if (commitSavePoint(pending.point)) markDocumentSaved();
+          else {
+            invalidateSavedPoint(pending.point);
+            markDocumentDirty();
+          }
+        }
+        postToParent('document:save-committed', { dirty: hasUnsavedChanges(), success: payload.success }, message.id);
         break;
       }
 
@@ -274,6 +461,12 @@ export function initEmbedApi(): void {
   onUnsavedChangesChange((dirty) => {
     postToParent('document:dirty-changed', { dirty });
   });
+  if (isDeckWiseMode()) {
+    document.body.classList.add('deckwise-mode');
+    window.addEventListener(DECKWISE_SAVE_REQUEST_EVENT, () => {
+      postToParent('document:save-requested');
+    });
+  }
   window.addEventListener('message', (event) => {
     void handleMessage(event);
   });

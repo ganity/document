@@ -1,3 +1,4 @@
+import { setSlideFontFamilyTool } from './slide-font-family';
 import { bindCompletedPaste } from './completed-paste';
 import { getPdfTextTool, addPdfCommentTool } from './pdf-tools';
 import { setDocumentReviewMode } from './review-mode';
@@ -21,6 +22,12 @@ import { requireEditorApi, requireEditorContext } from './editor-bridge';
 import type { AgentTool } from '@ranuts/agent-core/types';
 import { createSlideTool } from './presentation-content';
 import { setBoldTool, setParagraphAlignmentTool } from './formatting-tools';
+import { setSlideFontSizeTool } from './slide-font-size';
+import { setSlideTextBoldTool } from './slide-text-bold';
+import { setSlideTextItalicTool } from './slide-text-italic';
+import { setSlideTextBoxPositionTool } from './slide-text-box-position';
+import { setSlideTextBoxSizeTool } from './slide-text-box-size';
+import { setSlideTextColorTool } from './slide-text-color';
 import { readPresentationShapeText } from './slide-text-read';
 import {
   getRangesTool,
@@ -349,6 +356,13 @@ export const getCellTool: AgentTool<GetCellParams, { cell: string; text: string 
 
 /** All registered agent tools, keyed by name for lookup by the runtime. */
 export const agentTools: Record<string, AgentTool> = {
+  [setSlideTextBoxPositionTool.name]: setSlideTextBoxPositionTool as unknown as AgentTool,
+  [setSlideTextBoxSizeTool.name]: setSlideTextBoxSizeTool as unknown as AgentTool,
+  [setSlideTextColorTool.name]: setSlideTextColorTool as unknown as AgentTool,
+  [setSlideFontFamilyTool.name]: setSlideFontFamilyTool as unknown as AgentTool,
+  [setSlideFontSizeTool.name]: setSlideFontSizeTool as unknown as AgentTool,
+  [setSlideTextBoldTool.name]: setSlideTextBoldTool as unknown as AgentTool,
+  [setSlideTextItalicTool.name]: setSlideTextItalicTool as unknown as AgentTool,
   [createSlideTool.name]: createSlideTool as unknown as AgentTool,
   [getPdfTextTool.name]: getPdfTextTool,
   [addPdfCommentTool.name]: addPdfCommentTool,

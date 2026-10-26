@@ -152,7 +152,8 @@ function executeSlideTextInNativeFixture(input: { text: string }, signal?: Abort
   return addSlideTextTool.execute(input, signal);
 }
 
-function selectedSlideFixture(selected = true) {
+function selectedSlideFixture(selected = true, range = { start: 6, end: 11 }) {
+  const original = 'Alpha Alpha\n';
   const makeItems = (text: string) =>
     [...text].map((value) =>
       value === '\n'
@@ -168,13 +169,13 @@ function selectedSlideFixture(selected = true) {
       Content: [
         {
           Type: 39,
-          Selection: { Use: selected, StartPos: 6, EndPos: 11 },
+          Selection: { Use: selected, StartPos: range.start, EndPos: Math.min(range.end, 11) },
           Content: makeItems(text),
           Get_CompiledPr: () => ({ RFonts: fonts }),
         },
         {
           Type: 39,
-          Selection: { Use: false, StartPos: 0, EndPos: 0 },
+          Selection: { Use: selected && range.end === original.length, StartPos: 0, EndPos: 1 },
           Content: makeItems('\n'),
           Get_CompiledPr: () => ({ RFonts: fonts }),
         },
@@ -190,7 +191,7 @@ function selectedSlideFixture(selected = true) {
   };
   const content = {
     GetText: () => 'lossy',
-    GetSelectedText: () => (selected ? 'Alpha' : ''),
+    GetSelectedText: () => (selected ? original.slice(range.start, range.end) : ''),
     GetSelectionState: () => [{ start: 6, end: 11 }],
     Content: [makeParagraph('Alpha Alpha', selected)],
   };
@@ -207,7 +208,12 @@ function selectedSlideFixture(selected = true) {
     WordControl: { m_oLogicDocument: logic },
     getCurrentPage: () => 0,
     pluginMethod_PasteText: (text: string) => {
-      content.Content = ('Alpha ' + text).split('\n').map((line) => makeParagraph(line));
+      text = text.replace(/\r\n?/g, '\n').replace(/\n$/, '');
+      const replaced = original.slice(0, range.start) + text + original.slice(Math.min(range.end, original.length - 1));
+      content.Content = replaced
+        .slice(0, -1)
+        .split('\n')
+        .map((line) => makeParagraph(line));
     },
   };
   installNativeSlideGeometry();
@@ -230,6 +236,72 @@ it('materializes inserted paragraph-end fonts within a PPT replacement without c
   expect(fixture.content.Content[0].TextPr.Value.RFonts).toEqual({ EastAsia: { Name: 'Arial' } });
   expect(fixture.content.Content[1].TextPr.Value.RFonts).toBeUndefined();
 });
+
+it.each(['Alex', 'First\nSecond', 'Alex\n', 'Alex\n\n', '  Alex 😀\t  ', ' '])(
+  'replaces a full PPT text selection including the mandatory final paragraph end: %j',
+  async (text) => {
+    const fixture = selectedSlideFixture(true, { start: 0, end: 12 });
+    await expect(replaceSlideText(text)).resolves.toEqual({ page: 1, verified: true });
+    expect(fixture.content.Content).toHaveLength(text.split('\n').length);
+    expect(fixture.controller.resetSelection).not.toHaveBeenCalled();
+  },
+);
+
+it('keeps unselected prefix text when a PPT selection includes the final paragraph end', async () => {
+  selectedSlideFixture(true, { start: 6, end: 12 });
+  await expect(replaceSlideText('Alex')).resolves.toEqual({ page: 1, verified: true });
+});
+
+it('accepts native hundredth-millimetre rounding of the replaced text box', async () => {
+  const fixture = selectedSlideFixture(true, { start: 0, end: 12 });
+  const paste = state.api.pluginMethod_PasteText as (text: string) => void;
+  state.api.pluginMethod_PasteText = (text: string) => {
+    paste(text);
+    fixture.shape.bounds.r += 0.01;
+  };
+  await expect(replaceSlideText('Longer replacement')).resolves.toEqual({ page: 1, verified: true });
+});
+
+it.each(['target-resize', 'target-move', 'neighbor-rounding'])(
+  'rejects replacement with an unrelated geometry change: %s',
+  async (change) => {
+    const fixture = selectedSlideFixture(true, { start: 0, end: 12 });
+    const paste = state.api.pluginMethod_PasteText as (text: string) => void;
+    state.api.pluginMethod_PasteText = (text: string) => {
+      paste(text);
+      if (change === 'target-resize') fixture.shape.bounds.r += 0.021;
+      if (change === 'target-move') fixture.shape.bounds.l += 1;
+      if (change === 'neighbor-rounding') fixture.neighbor.bounds.r += 0.01;
+    };
+    vi.useFakeTimers();
+    try {
+      const result = expect(replaceSlideText('Longer replacement')).rejects.toThrow('could not be verified');
+      await vi.runAllTimersAsync();
+      await result;
+      expect((state.api.nativeHistory as { cancelGroupPoints: unknown }).cancelGroupPoints).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
+
+it.each(['Alex\n', 'Alex  '])(
+  'rejects a full-selection replacement that loses requested whitespace: %j',
+  async (text) => {
+    selectedSlideFixture(true, { start: 0, end: 12 });
+    const paste = state.api.pluginMethod_PasteText as (text: string) => void;
+    state.api.pluginMethod_PasteText = (value: string) => paste(value.trimEnd());
+    vi.useFakeTimers();
+    try {
+      const result = expect(replaceSlideText(text)).rejects.toThrow('could not be verified');
+      await vi.runAllTimersAsync();
+      await result;
+      expect((state.api.nativeHistory as { cancelGroupPoints: unknown }).cancelGroupPoints).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
 
 it('rejects PPT replacement without an exact text selection before starting a native action', async () => {
   selectedSlideFixture(false);
@@ -498,7 +570,7 @@ it('verifies added slide count and rejects invalid navigation', async () => {
   await expect(slideActionTool.execute({ action: 'navigate', page: 3 })).rejects.toThrow();
 });
 
-it.each(['New content', 'New content  '])(
+it.each(['New content', 'New content  ', 'First\nSecond\n', 'First\r\nSecond\r\n', 'First\rSecond\r'])(
   'adds exact slide text without replacing existing shapes: %s',
   async (text) => {
     const shapes = [{ getText: () => 'Existing title' }];
@@ -513,7 +585,8 @@ it.each(['New content', 'New content  '])(
       ...state.api,
       WordControl: { m_oLogicDocument: logic },
       getCurrentPage: () => 0,
-      pluginMethod_PasteText: (text: string) => shapes.push({ getText: () => text + '\r\n' }),
+      pluginMethod_PasteText: (text: string) =>
+        shapes.push({ getText: () => text.replace(/\r\n?/g, '\n').replace(/\n$/, '') + '\r\n' }),
     };
     await expect(executeSlideTextInNativeFixture({ text })).resolves.toEqual({ page: 1, verified: true });
     expect(resetSelection).toHaveBeenCalledOnce();

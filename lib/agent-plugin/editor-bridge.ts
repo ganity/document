@@ -101,6 +101,7 @@ export interface EditorCommon {
 }
 
 export interface EditorContext {
+  AscFormat?: Record<string, unknown>;
   presentationBuilder?: PresentationBuilder;
   AscDFH?: {
     historydescription_GroupPoints: number;
@@ -123,6 +124,7 @@ export interface EditorContext {
  * from either. `Asc` also carries the namespace used to build SDK objects.
  */
 interface EditorWindow {
+  AscFormat?: EditorContext['AscFormat'];
   AscBuilder?: { Slide?: { Api?: PresentationBuilder } };
   AscPDF?: EditorContext['AscPDF'];
   AscDFH?: EditorContext['AscDFH'];
@@ -203,6 +205,7 @@ export function getEditorContext(): EditorContext | null {
     ? {
         api,
         Asc: win.Asc,
+        ...(win.AscFormat ? { AscFormat: win.AscFormat } : {}),
         ...(win.AscBuilder?.Slide?.Api ? { presentationBuilder: win.AscBuilder.Slide.Api } : {}),
         ...(win.AscPDF ? { AscPDF: win.AscPDF } : {}),
         ...(win.AscCommon ? { AscCommon: win.AscCommon } : {}),

@@ -1,4 +1,5 @@
 import { COMPACT_VIEWPORT_MAX_WIDTH } from '../viewport';
+import { isDeckWiseMode } from '../../embed-mode';
 
 /**
  * 1. Strip the OnlyOffice chrome that has no place in a single-user local editor
@@ -19,8 +20,18 @@ export function injectLocalChromeCss(doc: Document): void {
     // afford stays gone no matter which orientation the document was
     // opened in. The JS side (syncCompactLayout) only handles what CSS
     // cannot: the thumbnails panel and the SDK's own canvas geometry.
+    const deckWiseRules = isDeckWiseMode()
+      ? [
+          '#slot-hbtn-download, #fm-btn-download, #fm-btn-save-copy, #fm-btn-save-desktop,',
+          '#panel-saveas, #fm-btn-print, #fm-btn-print-with-preview, #slot-hbtn-print,',
+          '#slot-hbtn-print-quick, #slot-btn-print, #slot-btn-dt-print, #slot-btn-dt-print-quick {',
+          '  display: none !important;',
+          '}',
+        ]
+      : [];
     style.textContent = [
       '.btn-current-user, #tlb-box-users { display: none !important; }',
+      ...deckWiseRules,
       '#header-logo, .brand-logo, .asc-about-office, #id-about-company-logo { display: none !important; }',
       '#id-about-licensor-logo .asc-about-version:not(#id-about-licensor-version-name) { display: none !important; }',
       `@media (max-width: ${COMPACT_VIEWPORT_MAX_WIDTH}px), (pointer: coarse) and (max-height: ${COMPACT_VIEWPORT_MAX_WIDTH}px) {`,

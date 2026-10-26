@@ -1,23 +1,34 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { webcrypto, createHash } from 'node:crypto';
+import { File as NodeFile } from 'node:buffer';
+import { DOCUMENT_TYPE_MAP } from '@ranuts/shared/document-utils';
 
 const mockOpenDocumentFromUrl = vi.fn().mockResolvedValue(undefined);
 const mockLoadEditorApi = vi.fn().mockResolvedValue(undefined);
 const mockHandleDocumentOperation = vi.fn().mockResolvedValue(undefined);
-const mockSetDocmentObj = vi.fn();
 const mockGetReadonlyMode = vi.fn().mockReturnValue(false);
 const mockSetReadonlyMode = vi.fn();
 const mockRequestSaveDocument = vi.fn();
+const mockHasPendingEmbeddedSaveRequest = vi.fn().mockReturnValue(false);
+const mockRenderDeckWiseCurrentSlidePreview = vi.fn();
 
 vi.mock('../../lib/document', () => ({ openDocumentFromUrl: mockOpenDocumentFromUrl }));
+vi.mock('../../lib/deckwise-slide-preview', () => ({
+  renderDeckWiseCurrentSlidePreview: mockRenderDeckWiseCurrentSlidePreview,
+}));
 vi.mock('../../lib/converter', () => ({
   loadEditorApi: mockLoadEditorApi,
   handleDocumentOperation: mockHandleDocumentOperation,
 }));
-vi.mock('../../store', () => ({ setDocmentObj: mockSetDocmentObj }));
 vi.mock('../../lib/onlyoffice-editor', () => ({
   getReadonlyMode: mockGetReadonlyMode,
   setReadonlyMode: mockSetReadonlyMode,
   requestSaveDocument: mockRequestSaveDocument,
+}));
+
+vi.mock('../../lib/onlyoffice/save-stream', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/onlyoffice/save-stream')>()),
+  hasPendingEmbeddedSaveRequest: mockHasPendingEmbeddedSaveRequest,
 }));
 
 async function dispatchMessage(
@@ -77,6 +88,7 @@ describe('embed-api', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    mockHasPendingEmbeddedSaveRequest.mockReturnValue(false);
     postMessageSpy = vi.spyOn(window, 'postMessage');
     listenerSpy = vi.spyOn(window, 'addEventListener');
     document.body.classList.remove('embed-mode');
@@ -88,6 +100,288 @@ describe('embed-api', () => {
     listenerSpy.mockRestore();
     postMessageSpy.mockRestore();
     delete (window as any).editor;
+  });
+
+  describe('DeckWise command messages', () => {
+    const owner = { projectId: 'project', documentId: 'document', sessionId: 'session' };
+    it('renders a page preview only from the bound parent and outside save transitions', async () => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1&embedOrigin=https%3A%2F%2Fparent.example.com');
+      const png = new Uint8Array([137, 80, 78, 71]);
+      mockRenderDeckWiseCurrentSlidePreview.mockReturnValue({ page: 2, png });
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+      const payload = { binding: owner, editGeneration: 8 };
+      await dispatchMessage(
+        { id: 'preview-foreign', type: 'document:render-page-preview', payload },
+        'https://evil.example',
+      );
+      expect(mockRenderDeckWiseCurrentSlidePreview).not.toHaveBeenCalled();
+      await dispatchMessage({ id: 'preview-current', type: 'document:render-page-preview', payload });
+      expect(mockRenderDeckWiseCurrentSlidePreview).toHaveBeenCalledWith(owner, 8, undefined);
+      expectMessagePosted(postMessageSpy, 'document:page-preview', 'preview-current', { page: 2 });
+      await dispatchMessage({
+        id: 'preview-textless',
+        type: 'document:render-page-preview',
+        payload: { ...payload, omitNativeText: true },
+      });
+      expect(mockRenderDeckWiseCurrentSlidePreview).toHaveBeenCalledWith(owner, 8, true);
+      await dispatchMessage({
+        id: 'preview-page-two',
+        type: 'document:render-page-preview',
+        payload: { ...payload, page: 2 },
+      });
+      expect(mockRenderDeckWiseCurrentSlidePreview).toHaveBeenCalledWith(owner, 8, undefined, 2);
+      mockRenderDeckWiseCurrentSlidePreview.mockClear();
+      for (const page of [0, -1, 1.5, '2', 5001]) {
+        await dispatchMessage({
+          id: 'preview-bad-page',
+          type: 'document:render-page-preview',
+          payload: { ...payload, page },
+        });
+      }
+      expect(mockRenderDeckWiseCurrentSlidePreview).not.toHaveBeenCalled();
+      await dispatchMessage({
+        id: 'preview-malformed',
+        type: 'document:render-page-preview',
+        payload: { ...payload, omitNativeText: 'true' },
+      });
+      expect(mockRenderDeckWiseCurrentSlidePreview).not.toHaveBeenCalled();
+      expectMessagePosted(postMessageSpy, 'document:error', 'preview-malformed', {
+        message: 'Invalid page preview request',
+      });
+      await dispatchMessage({
+        id: 'preview-unknown-field',
+        type: 'document:render-page-preview',
+        payload: { ...payload, path: '/tmp/source.pptx' },
+      });
+      expectMessagePosted(postMessageSpy, 'document:error', 'preview-unknown-field', {
+        message: 'Invalid page preview request',
+      });
+      mockHasPendingEmbeddedSaveRequest.mockReturnValueOnce(true);
+      await dispatchMessage({ id: 'preview-saving', type: 'document:render-page-preview', payload });
+      expectMessagePosted(postMessageSpy, 'document:error', 'preview-saving', {
+        message: 'Finish or recover the current save before rendering a page preview',
+      });
+      mockHasPendingEmbeddedSaveRequest.mockReturnValue(false);
+    });
+    it('routes Host-only fade review/execution and rejects dirty, saving or foreign messages', async () => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1&embedOrigin=https%3A%2F%2Fparent.example.com');
+      const { deckwiseEditorBridge } = await import('../../lib/deckwise-editor-bridge');
+      const { markDocumentDirty, markDocumentSaved } = await import('../../lib/unsaved-guard');
+      markDocumentSaved();
+      const review = vi.spyOn(deckwiseEditorBridge, 'reviewFade').mockReturnValue({ ...owner } as never);
+      const execute = vi.spyOn(deckwiseEditorBridge, 'executeFade').mockResolvedValue({ ...owner } as never);
+      const revoke = vi.spyOn(deckwiseEditorBridge, 'revokeFade');
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+      const authorization = {
+        editGeneration: 1,
+        page: 1,
+        sourceHash: 'sha256:' + 'a'.repeat(64),
+        slideHash: 'sha256:' + 'b'.repeat(64),
+      };
+      const command = { ...owner, tool: 'set_slide_fade', editGeneration: 1, requestId: 'fade-execute', input: {} };
+      const payload = { binding: owner, authorization };
+      await dispatchMessage({ id: 'fade-foreign', type: 'document:review-fade', payload }, 'https://evil.example');
+      expect(review).not.toHaveBeenCalled();
+      await dispatchMessage({ id: 'fade-review', type: 'document:review-fade', payload });
+      expect(review).toHaveBeenCalledWith(owner, authorization);
+      expectMessagePosted(postMessageSpy, 'document:context', 'fade-review');
+      await dispatchMessage({ id: 'fade-execute', type: 'document:execute-fade', payload: { command, authorization } });
+      expect(execute).toHaveBeenCalledWith(command, authorization, 'fade-execute');
+      expectMessagePosted(postMessageSpy, 'document:command-result', 'fade-execute');
+      review.mockClear();
+      execute.mockClear();
+      for (const type of ['document:review-fade', 'document:execute-fade']) {
+        const correct = type === 'document:review-fade' ? payload : { command, authorization };
+        await dispatchMessage({
+          id: 'fade-extra-' + type.replace(':', '-'),
+          type,
+          payload: { ...correct, script: 'bad' },
+        });
+        expectMessagePosted(postMessageSpy, 'document:error', 'fade-extra-' + type.replace(':', '-'));
+        markDocumentDirty();
+        await dispatchMessage({ id: 'fade-dirty-' + type.replace(':', '-'), type, payload: correct });
+        expectMessagePosted(postMessageSpy, 'document:error', 'fade-dirty-' + type.replace(':', '-'), {
+          message: 'Save the latest PPTX before fade inspection',
+        });
+        markDocumentSaved();
+        mockHasPendingEmbeddedSaveRequest.mockReturnValue(true);
+        await dispatchMessage({ id: 'fade-saving-' + type.replace(':', '-'), type, payload: correct });
+        expectMessagePosted(postMessageSpy, 'document:error', 'fade-saving-' + type.replace(':', '-'));
+        mockHasPendingEmbeddedSaveRequest.mockReturnValue(false);
+      }
+      expect(review).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(revoke).toHaveBeenCalled();
+      await dispatchMessage({ id: 'fade-revoke-readonly', type: 'document:set-readonly', payload: { readonly: true } });
+      expect(revoke).toHaveBeenCalled();
+      markDocumentSaved();
+    });
+    it('routes target-bound image review only from the trusted parent with a distinct response', async () => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1&embedOrigin=https%3A%2F%2Fparent.example.com');
+      const { deckwiseEditorBridge } = await import('../../lib/deckwise-editor-bridge');
+      const context = { ...owner, editGeneration: 9, page: 1 };
+      const review = vi.spyOn(deckwiseEditorBridge, 'reviewImageTarget').mockReturnValue(context as never);
+      const legacy = vi.spyOn(deckwiseEditorBridge, 'reviewImage');
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+      const asset = { assetId: 'reviewed_png_1' },
+        target = { page: 1, editGeneration: 8, operation: 'replace' };
+      const payload = { binding: owner, asset, target };
+      await dispatchMessage(
+        { id: 'target-foreign', type: 'document:review-image-target', payload },
+        'https://evil.example',
+      );
+      await dispatchMessage(
+        { id: 'target-sibling', type: 'document:review-image-target', payload },
+        'https://parent.example.com',
+        null,
+      );
+      expect(review).not.toHaveBeenCalled();
+      expectMessageNotPosted(postMessageSpy, 'target-foreign');
+      expectMessageNotPosted(postMessageSpy, 'target-sibling');
+      await dispatchMessage({ id: 'target-current', type: 'document:review-image-target', payload });
+      expect(review).toHaveBeenCalledWith(owner, asset, target);
+      expectMessagePosted(postMessageSpy, 'document:image-target-reviewed', 'target-current', context);
+      expect(postedPayloads(postMessageSpy, 'document:context', 'target-current')).toEqual([]);
+      expect(legacy).not.toHaveBeenCalled();
+      expect(mockRequestSaveDocument).not.toHaveBeenCalled();
+      review.mockClear();
+      await dispatchMessage({
+        id: 'target-extra',
+        type: 'document:review-image-target',
+        payload: { ...payload, bytes: new Uint8Array(33) },
+      });
+      expectMessagePosted(postMessageSpy, 'document:error', 'target-extra', {
+        message: 'Invalid image target review payload',
+      });
+      await dispatchMessage({
+        id: 'target-missing',
+        type: 'document:review-image-target',
+        payload: { binding: owner, asset },
+      });
+      expectMessagePosted(postMessageSpy, 'document:error', 'target-missing', {
+        message: 'Invalid image target review payload',
+      });
+      mockHasPendingEmbeddedSaveRequest.mockReturnValue(true);
+      await dispatchMessage({ id: 'target-saving', type: 'document:review-image-target', payload });
+      expectMessagePosted(postMessageSpy, 'document:error', 'target-saving', {
+        message: 'Finish or recover the current save before using editor tools',
+      });
+      expect(review).not.toHaveBeenCalled();
+      mockHasPendingEmbeddedSaveRequest.mockReturnValue(false);
+      review.mockImplementationOnce(() => {
+        throw new Error('stale image target');
+      });
+      await dispatchMessage({ id: 'target-stale', type: 'document:review-image-target', payload });
+      expectMessagePosted(postMessageSpy, 'document:error', 'target-stale', { message: 'stale image target' });
+      expect(postedPayloads(postMessageSpy, 'document:image-target-reviewed', 'target-stale')).toEqual([]);
+    });
+    it('routes reviewed image messages from the bound parent only', async () => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1&embedOrigin=https%3A%2F%2Fparent.example.com');
+      const { deckwiseEditorBridge } = await import('../../lib/deckwise-editor-bridge');
+      const review = vi.spyOn(deckwiseEditorBridge, 'reviewImage').mockReturnValue({ ...owner } as never);
+      const execute = vi.spyOn(deckwiseEditorBridge, 'executeImage').mockResolvedValue({ ...owner } as never);
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+      await dispatchMessage(
+        { id: 'image-foreign', type: 'document:review-image', payload: { binding: owner, asset: null } },
+        'https://evil.example',
+      );
+      expect(review).not.toHaveBeenCalled();
+      await dispatchMessage({
+        id: 'image-review',
+        type: 'document:review-image',
+        payload: { binding: owner, asset: null },
+      });
+      expect(review).toHaveBeenCalledWith(owner, null);
+      expectMessagePosted(postMessageSpy, 'document:context', 'image-review');
+      const command = { tool: 'replace_slide_image_from_asset' };
+      const bytes = new Uint8Array(33);
+      await dispatchMessage({ id: 'image-execute', type: 'document:execute-image', payload: { command, bytes } });
+      expect(execute).toHaveBeenCalledWith(command, bytes, 'image-execute');
+      expectMessagePosted(postMessageSpy, 'document:command-result', 'image-execute');
+      await dispatchMessage({
+        id: 'image-private',
+        type: 'document:review-image',
+        payload: { binding: owner, asset: null, token: 'invalid' },
+      });
+      expectMessagePosted(postMessageSpy, 'document:error', 'image-private');
+    });
+    it('refuses a host save while an editor command is awaiting asset bytes', async () => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1');
+      const { deckwiseEditorBridge } = await import('../../lib/deckwise-editor-bridge');
+      const executing = vi.spyOn(deckwiseEditorBridge, 'isExecuting', 'get').mockReturnValue(true);
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+      await dispatchMessage({ id: 'save-during-command', type: 'document:save', payload: {} });
+      expectMessagePosted(postMessageSpy, 'document:error', 'save-during-command', {
+        message: 'Finish the current editor command before saving',
+      });
+      expect(mockRequestSaveDocument).not.toHaveBeenCalled();
+      executing.mockRestore();
+    });
+    it('routes context and command results only for the bound parent source and origin', async () => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1&embedOrigin=https%3A%2F%2Fparent.example.com');
+      const { deckwiseEditorBridge } = await import('../../lib/deckwise-editor-bridge');
+      const context = vi.spyOn(deckwiseEditorBridge, 'getContext').mockReturnValue({
+        ...owner,
+        editGeneration: 1,
+        kind: 'slide',
+        page: 1,
+        selectedText: '',
+        selectionCharacters: 0,
+        readOnly: false,
+        capabilities: [],
+      });
+      const execute = vi.spyOn(deckwiseEditorBridge, 'execute').mockResolvedValue({
+        ...owner,
+        editGeneration: 1,
+        requestId: 'command-good',
+        status: 'sent',
+        tool: 'get_presentation_text',
+        result: { text: 'lesson' },
+      });
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+      await dispatchMessage(
+        { id: 'context-bad-origin', type: 'document:get-context', payload: owner },
+        'https://evil.example',
+      );
+      await dispatchMessage(
+        { id: 'context-bad-source', type: 'document:get-context', payload: owner },
+        'https://parent.example.com',
+        null,
+      );
+      await dispatchMessage(
+        { id: 'command-bad-origin', type: 'document:execute', payload: owner },
+        'https://evil.example',
+      );
+      expect(context).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      await dispatchMessage({ id: 'context-good', type: 'document:get-context', payload: owner });
+      expect(context).toHaveBeenCalledWith(owner);
+      expectMessagePosted(postMessageSpy, 'document:context', 'context-good', { ...owner, editGeneration: 1 });
+      await dispatchMessage({ id: 'command-good', type: 'document:execute', payload: owner });
+      expect(execute).toHaveBeenCalledWith(owner, 'command-good');
+      expectMessagePosted(postMessageSpy, 'document:command-result', 'command-good', { requestId: 'command-good' });
+      context.mockRestore();
+      execute.mockRestore();
+    });
+    it('rejects command messages outside DeckWise mode', async () => {
+      window.history.pushState({}, '', '/?embed=1');
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+      await dispatchMessage({ id: 'not-deckwise', type: 'document:get-context', payload: owner });
+      expectMessagePosted(postMessageSpy, 'document:error', 'not-deckwise', {
+        message: 'Editor commands require DeckWise mode',
+      });
+      await dispatchMessage({ id: 'target-not-deckwise', type: 'document:review-image-target', payload: {} });
+      expectMessagePosted(postMessageSpy, 'document:error', 'target-not-deckwise', {
+        message: 'Editor commands require DeckWise mode',
+      });
+    });
   });
 
   describe('detectEmbedMode via URL params', () => {
@@ -127,6 +421,20 @@ describe('embed-api', () => {
         expect.objectContaining({ type: 'document:ready' }),
         expect.any(String),
       );
+    });
+
+    it('forwards the OnlyOffice save button to the DeckWise host', async () => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1');
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+
+      window.dispatchEvent(new Event('deckwise:save-requested'));
+
+      expect(postMessageSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'document:save-requested' }),
+        expect.any(String),
+      );
+      expect(document.body.classList.contains('deckwise-mode')).toBe(true);
     });
   });
 
@@ -284,6 +592,83 @@ describe('embed-api', () => {
       expectMessagePosted(postMessageSpy, 'document:error', 'err-1', { message: 'Save failed' });
     });
 
+    it.each(Object.keys(DOCUMENT_TYPE_MAP))('saves %s in its natural format in DeckWise mode', async (ext) => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1');
+      const legacy: Record<string, string> = { doc: 'docx', xls: 'xlsx', ppt: 'pptx' };
+      const target = (legacy[ext] || ext).toUpperCase();
+      const { setDocmentObj } = await import('@ranuts/shared/store');
+      setDocmentObj({ fileName: `course.${ext}` });
+      const savedFile = new File(['saved bytes'], `course.${target.toLowerCase()}`);
+      mockRequestSaveDocument.mockResolvedValueOnce(savedFile);
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+
+      await dispatchMessage({ type: 'document:save', id: 'deckwise-save', payload: {} });
+      const otherFormat = target === 'PDF' ? 'PPTX' : 'PDF';
+      await dispatchMessage({ type: 'document:save', id: 'deckwise-export', payload: { targetExt: otherFormat } });
+
+      expect(mockRequestSaveDocument).toHaveBeenCalledWith(
+        target,
+        expect.objectContaining({ returnOriginalOnTimeout: false }),
+      );
+      expectMessagePosted(postMessageSpy, 'document:saved', 'deckwise-save', { fileName: savedFile.name });
+      expectMessagePosted(postMessageSpy, 'document:error', 'deckwise-export', {
+        message: `DeckWise only permits ${target} save for this document`,
+      });
+    });
+
+    it.each(Object.keys(DOCUMENT_TYPE_MAP))('opens %s buffers for preview in DeckWise mode', async (ext) => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1');
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+
+      const fileName = `course.${ext.toUpperCase()}`;
+      await dispatchMessage({
+        type: 'document:open-buffer',
+        id: 'deckwise-preview',
+        payload: { fileName, buffer: new ArrayBuffer(4), readonly: true },
+      });
+
+      expect(mockHandleDocumentOperation).toHaveBeenCalledWith(expect.objectContaining({ fileName, readonly: true }));
+      expectMessagePosted(postMessageSpy, 'document:opened', 'deckwise-preview');
+    });
+
+    it.each(['unknown', 'constructor', 'toString'])('rejects unsupported %s buffers in DeckWise mode', async (ext) => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1');
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      initEmbedApi();
+
+      await dispatchMessage({
+        type: 'document:open-buffer',
+        id: 'deckwise-unsupported',
+        payload: { fileName: `course.${ext}`, buffer: new ArrayBuffer(4) },
+      });
+      expect(mockHandleDocumentOperation).not.toHaveBeenCalled();
+      expectMessagePosted(postMessageSpy, 'document:error', 'deckwise-unsupported', {
+        message: 'Unsupported document format',
+      });
+    });
+
+    it.each(['document:open-url', 'document:open-buffer'])(
+      'rejects URL payloads via %s in DeckWise mode',
+      async (type) => {
+        window.history.pushState({}, '', '/?embed=1&deckwise=1');
+        const { initEmbedApi } = await import('../../lib/embed-api');
+        initEmbedApi();
+
+        await dispatchMessage({
+          type,
+          id: 'deckwise-url',
+          payload: { fileName: 'course.pptx', url: 'https://example.com/course.pptx' },
+        });
+
+        expect(mockOpenDocumentFromUrl).not.toHaveBeenCalled();
+        expectMessagePosted(postMessageSpy, 'document:error', 'deckwise-url', {
+          message: 'DeckWise only accepts document:open-buffer',
+        });
+      },
+    );
+
     // GitHub #4 "save to remote server": the parent page's documented recovery path
     // is listening for this success payload and uploading `file` itself.
     it('posts document:saved with the saved File and its metadata (#4)', async () => {
@@ -326,6 +711,269 @@ describe('embed-api', () => {
         expect.objectContaining({ readonly: false }),
       );
       expectMessagePosted(postMessageSpy, 'document:opened', 'open-1');
+    });
+  });
+
+  it('captures an opted-in open baseline, returns the real save hash and withholds raced exports', async () => {
+    vi.stubGlobal('crypto', webcrypto);
+    vi.stubGlobal('File', NodeFile);
+    window.history.pushState({}, '', '/?embed=1&deckwise=1');
+    const { initEmbedApi } = await import('../../lib/embed-api');
+    const { deckwisePageLineage } = await import('../../lib/deckwise-page-lineage');
+    initEmbedApi();
+    const history = { Index: 0, Points: [{ Items: [{}] }], Reset_SavedIndex: vi.fn() };
+    mockHandleDocumentOperation.mockImplementationOnce(async ({ onContentReady }) => {
+      const iframe = document.createElement('iframe');
+      iframe.name = 'frameEditor';
+      document.body.append(iframe);
+      const api = {
+        isDocumentLoadComplete: true,
+        isLoadFullApi: true,
+        WordControl: { m_oLogicDocument: { Slides: [{}, {}] } },
+        CheckChangedDocument: vi.fn(),
+      };
+      Object.assign(iframe.contentWindow!, { editor: api, Asc: { editor: api }, AscCommon: { History: history } });
+      onContentReady();
+    });
+    try {
+      const binding = { projectId: 'project', documentId: 'document', sessionId: 'lineage-session' };
+      await dispatchMessage({
+        type: 'document:open-buffer',
+        id: 'lineage-open',
+        payload: {
+          file: new NodeFile(['source'], 'lesson.pptx'),
+          editorBinding: binding,
+          trackPageLineage: true,
+        },
+      });
+      await vi.waitFor(() => expect(deckwisePageLineage.context()?.pageTokens.length).toBe(2));
+      expectMessagePosted(postMessageSpy, 'document:opened', 'lineage-open');
+      const file = new NodeFile(['output'], 'lesson.pptx');
+      mockRequestSaveDocument.mockResolvedValueOnce(file);
+      await dispatchMessage({ type: 'document:save', id: 'lineage-save', payload: { requireHostCommit: true } });
+      await vi.waitFor(() =>
+        expectMessagePosted(postMessageSpy, 'document:saved', 'lineage-save', {
+          file,
+          pageLineage: {
+            ...binding,
+            protocol: 'deckwise-office-page-lineage/1',
+            saveRequestId: 'lineage-save',
+            sourceSha256: createHash('sha256').update('source').digest('hex'),
+            outputSha256: createHash('sha256').update('output').digest('hex'),
+          },
+        }),
+      );
+      await dispatchMessage({ type: 'document:commit-save', id: 'lineage-save', payload: { success: false } });
+      mockRequestSaveDocument.mockImplementationOnce(async () => {
+        history.Points[0].Items.push({});
+        return file;
+      });
+      await dispatchMessage({ type: 'document:save', id: 'lineage-race', payload: { requireHostCommit: true } });
+      await vi.waitFor(() => expectMessagePosted(postMessageSpy, 'document:saved', 'lineage-race'));
+      expect(postedPayloads(postMessageSpy, 'document:saved', 'lineage-race').at(-1)?.pageLineage).toBeUndefined();
+    } finally {
+      deckwisePageLineage.reset();
+      document.querySelectorAll('iframe').forEach((frame) => frame.remove());
+      mockHandleDocumentOperation.mockResolvedValue(undefined);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  describe('host-managed save confirmation', () => {
+    async function setup() {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1&embedOrigin=https%3A%2F%2Fparent.example.com');
+      const iframe = document.createElement('iframe');
+      document.body.appendChild(iframe);
+      const history = { ForceSave: false, Index: 0, Points: [{ Items: [{}] }], Reset_SavedIndex: vi.fn() };
+      Object.assign(iframe.contentWindow as object, {
+        AscCommon: { History: history },
+        Asc: { editor: { CheckChangedDocument: vi.fn() } },
+      });
+      const { setDocmentObj } = await import('@ranuts/shared/store');
+      setDocmentObj({ fileName: 'lesson.pptx' });
+      const { initEmbedApi } = await import('../../lib/embed-api');
+      const guard = await import('../../lib/unsaved-guard');
+      initEmbedApi();
+      guard.markDocumentDirty();
+      mockRequestSaveDocument.mockResolvedValue(new File(['pptx'], 'lesson.pptx'));
+      return { history, guard, iframe };
+    }
+    const save = (id: string) => dispatchMessage({ type: 'document:save', id, payload: { requireHostCommit: true } });
+    const ack = (id: string, success: boolean) =>
+      dispatchMessage({ type: 'document:commit-save', id, payload: { success } });
+
+    afterEach(() => document.querySelectorAll('iframe').forEach((frame) => frame.remove()));
+
+    it.each(['document:get-context', 'document:execute', 'document:open-buffer', 'document:save'])(
+      'blocks %s during a legacy DeckWise SDK export without creating a host save',
+      async (type) => {
+        const { guard } = await setup();
+        const { deckwiseEditorBridge } = await import('../../lib/deckwise-editor-bridge');
+        const context = vi.spyOn(deckwiseEditorBridge, 'getContext');
+        const execute = vi.spyOn(deckwiseEditorBridge, 'execute');
+        const reset = vi.spyOn(deckwiseEditorBridge, 'reset');
+        let release!: () => void;
+        mockRequestSaveDocument.mockImplementationOnce(() => {
+          mockHasPendingEmbeddedSaveRequest.mockReturnValue(true);
+          return new Promise<File>((resolve) => {
+            release = () => {
+              mockHasPendingEmbeddedSaveRequest.mockReturnValue(false);
+              resolve(new File(['pptx'], 'lesson.pptx'));
+            };
+          });
+        });
+        try {
+          await dispatchMessage({ type: 'document:save', id: 'legacy-export', payload: {} });
+          await dispatchMessage({ type, id: 'during-export', payload: { requireHostCommit: true } });
+          expectMessagePosted(postMessageSpy, 'document:error', 'during-export', {
+            message:
+              type === 'document:save'
+                ? 'A save request is already in progress'
+                : type === 'document:open-buffer'
+                  ? 'Finish the current save before opening another document'
+                  : 'Finish or recover the current save before using editor tools',
+          });
+          expect(context).not.toHaveBeenCalled();
+          expect(execute).not.toHaveBeenCalled();
+          expect(reset).not.toHaveBeenCalled();
+          expect(mockHandleDocumentOperation).not.toHaveBeenCalled();
+          expect(mockRequestSaveDocument).toHaveBeenCalledOnce();
+          release();
+          await vi.waitFor(() => expectMessagePosted(postMessageSpy, 'document:saved', 'legacy-export'));
+          expect(guard.hasUnsavedChanges()).toBe(false);
+          await save('after-legacy');
+          expectMessagePosted(postMessageSpy, 'document:saved', 'after-legacy');
+          await ack('after-legacy', true);
+          expectMessagePosted(postMessageSpy, 'document:save-committed', 'after-legacy', { dirty: false });
+        } finally {
+          release?.();
+          context.mockRestore();
+          execute.mockRestore();
+          reset.mockRestore();
+        }
+      },
+    );
+
+    it('keeps exported bytes dirty until the matching host confirms persistence', async () => {
+      const { guard, history } = await setup();
+      await save('persist-1');
+      expect(guard.hasUnsavedChanges()).toBe(true);
+      expect(history.Reset_SavedIndex).not.toHaveBeenCalled();
+      await ack('wrong-id', true);
+      expect(guard.hasUnsavedChanges()).toBe(true);
+      await ack('persist-1', true);
+      expect(guard.hasUnsavedChanges()).toBe(false);
+      expectMessagePosted(postMessageSpy, 'document:save-committed', 'persist-1', { success: true, dirty: false });
+    });
+
+    it('keeps edits made after export dirty, even inside the same undo point', async () => {
+      const { guard, history } = await setup();
+      await save('race');
+      history.Points[0].Items.push({});
+      await ack('race', true);
+      expect(guard.hasUnsavedChanges()).toBe(true);
+      expect(history.Reset_SavedIndex).not.toHaveBeenCalled();
+      expectMessagePosted(postMessageSpy, 'document:save-committed', 'race', { dirty: true });
+    });
+
+    it('stays dirty when undo returns to the old SDK saved point before host confirmation', async () => {
+      const { guard, history } = await setup();
+      await save('undo-race');
+      history.Index = -1;
+      guard.markDocumentSaved();
+      await ack('undo-race', true);
+      expect(guard.hasUnsavedChanges()).toBe(true);
+      expect(history.ForceSave).toBe(true);
+    });
+
+    it('allows retry after a failed disk write and ignores a late old acknowledgement', async () => {
+      const { guard } = await setup();
+      await save('failed');
+      await ack('failed', false);
+      expect(guard.hasUnsavedChanges()).toBe(true);
+      await save('retry');
+      await ack('failed', true);
+      expect(guard.hasUnsavedChanges()).toBe(true);
+      await ack('retry', true);
+      expect(guard.hasUnsavedChanges()).toBe(false);
+    });
+
+    it('rejects another save until the host acknowledges the first export', async () => {
+      await setup();
+      const { deckwiseEditorBridge } = await import('../../lib/deckwise-editor-bridge');
+      const reset = vi.spyOn(deckwiseEditorBridge, 'reset');
+      await save('one');
+      await dispatchMessage({ type: 'document:open-buffer', id: 'blocked-open', payload: {} });
+      expect(reset).not.toHaveBeenCalled();
+      await save('two');
+      expect(mockRequestSaveDocument).toHaveBeenCalledOnce();
+      expectMessagePosted(postMessageSpy, 'document:error', 'two', { message: 'A host save is still pending' });
+      await ack('one', false);
+    });
+
+    it('blocks context and commands during host save and after an uncertain export', async () => {
+      await setup();
+      const { deckwiseEditorBridge } = await import('../../lib/deckwise-editor-bridge');
+      const context = vi.spyOn(deckwiseEditorBridge, 'getContext');
+      const execute = vi.spyOn(deckwiseEditorBridge, 'execute');
+      const blocked = async (suffix: string) => {
+        for (const type of ['document:get-context', 'document:execute']) {
+          const id = type.endsWith('execute') ? `command-${suffix}` : `context-${suffix}`;
+          await dispatchMessage({
+            type,
+            id,
+            payload: { projectId: 'project', documentId: 'document', sessionId: 'session' },
+          });
+          expectMessagePosted(postMessageSpy, 'document:error', id, {
+            message: 'Finish or recover the current save before using editor tools',
+          });
+        }
+      };
+      await save('tools-save');
+      await blocked('pending');
+      await ack('tools-save', false);
+      mockRequestSaveDocument.mockRejectedValueOnce(new Error('Export timed out'));
+      await save('tools-timeout');
+      await blocked('uncertain');
+      expect(context).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      context.mockRestore();
+      execute.mockRestore();
+    });
+
+    it('ignores acknowledgement before export completion and from another source', async () => {
+      const { guard } = await setup();
+      let resolve!: (file: File) => void;
+      mockRequestSaveDocument.mockReturnValueOnce(
+        new Promise<File>((done) => {
+          resolve = done;
+        }),
+      );
+      await save('early');
+      await ack('early', true);
+      expect(guard.hasUnsavedChanges()).toBe(true);
+      resolve(new File(['pptx'], 'lesson.pptx'));
+      await new Promise((done) => setTimeout(done, 0));
+      await dispatchMessage(
+        { type: 'document:commit-save', id: 'early', payload: { success: true } },
+        'https://parent.example.com',
+        null,
+      );
+      expect(guard.hasUnsavedChanges()).toBe(true);
+      await ack('early', true);
+      expect(guard.hasUnsavedChanges()).toBe(false);
+    });
+
+    it('requires reopening after uncertain export failure so a late SDK stream cannot satisfy a retry', async () => {
+      const { guard } = await setup();
+      mockRequestSaveDocument.mockRejectedValueOnce(new Error('Export timed out'));
+      await save('timeout');
+      await save('unsafe-retry');
+      expect(mockRequestSaveDocument).toHaveBeenCalledOnce();
+      expect(guard.hasUnsavedChanges()).toBe(true);
+      expectMessagePosted(postMessageSpy, 'document:error', 'unsafe-retry', {
+        message: 'Export outcome is uncertain; reopen before saving again',
+      });
     });
   });
 

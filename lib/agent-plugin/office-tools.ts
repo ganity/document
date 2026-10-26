@@ -603,10 +603,13 @@ async function pasteSlideTextEdit(text: string, signal?: AbortSignal, replaceSel
       await paste;
       signal?.throwIfAborted();
       if (replaceSelection) {
+        // Native paste retains the mandatory final paragraph end even when SelectAll includes it.
+        const end =
+          selection!.end === selection!.text.length && selection!.text.endsWith('\n')
+            ? selection!.end - 1
+            : selection!.end;
         const expected =
-          selection!.text.slice(0, selection!.start) +
-          text.replace(/\r\n?/g, '\n') +
-          selection!.text.slice(selection!.end);
+          selection!.text.slice(0, selection!.start) + text.replace(/\r\n?/g, '\n') + selection!.text.slice(end);
         await verify(
           api,
           () => current() && ownsPaste(),
@@ -614,14 +617,21 @@ async function pasteSlideTextEdit(text: string, signal?: AbortSignal, replaceSel
             const shapes = slide.cSld.spTree;
             return (
               shapes.length === before.length &&
-              before.every(
-                (shape, index) =>
+              before.every((shape, index) => {
+                const bounds = readSlideShapeBounds(shape),
+                  original = originalBounds[index]!;
+                // Native paste rounds the target's drawing dimensions to hundredths of a millimetre.
+                return (
                   shapes[index] === shape &&
                   (shape === targetShape
                     ? shapeText(shape)?.replace(/\r\n?/g, '\n') === expected
                     : shapeText(shape) === originalText[index]) &&
-                  JSON.stringify(readSlideShapeBounds(shape)) === JSON.stringify(originalBounds[index]),
-              )
+                  !!bounds &&
+                  (['x', 'y', 'width', 'height'] as const).every(
+                    (key) => Math.abs(bounds[key] - original[key]) <= (shape === targetShape ? 0.02 : 1e-7),
+                  )
+                );
+              })
             );
           },
         );
@@ -656,7 +666,7 @@ async function pasteSlideTextEdit(text: string, signal?: AbortSignal, replaceSel
             ) &&
             shapes
               .filter((shape) => !before.includes(shape))
-              .some((shape) => shapeText(shape)?.replace(/\r\n/g, '\n') === `${text.replace(/\r\n/g, '\n')}\n`)
+              .some((shape) => shapeText(shape)?.replace(/\r\n?/g, '\n') === `${text.replace(/\r\n?/g, '\n')}\n`)
           );
         },
       );
@@ -675,7 +685,7 @@ async function pasteSlideTextEdit(text: string, signal?: AbortSignal, replaceSel
         !current() ||
         !ownsGroup() ||
         before.some((shape, index) => shapeText(shape) !== originalText[index]) ||
-        shapeText(added)?.replace(/\r\n/g, '\n') !== `${text.replace(/\r\n/g, '\n')}\n`
+        shapeText(added)?.replace(/\r\n?/g, '\n') !== `${text.replace(/\r\n?/g, '\n')}\n`
       )
         fail('Document change could not be verified');
       return { page: page! + 1, verified: true as const };

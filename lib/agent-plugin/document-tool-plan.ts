@@ -1,3 +1,4 @@
+import { getSlideFontFamilies } from './slide-font-family';
 import { validateToolInput } from '@ranuts/agent-core/runtime';
 import type { LLMProvider } from '@ranuts/agent-core/llm/types';
 import type { AgentTool } from '@ranuts/agent-core/types';
@@ -5,6 +6,12 @@ import type { DocumentContext } from './document-context';
 import { agentTools } from './tools';
 import { parseOfficeRanges, parseOfficeRange } from './office-tools';
 import { buildSeries, type SeriesInput } from './fill-series';
+import { canSetSlideFontSize } from './slide-font-size';
+import { canSetSlideTextBold } from './slide-text-bold';
+import { canSetSlideTextItalic } from './slide-text-italic';
+import { canSetSlideTextBoxPosition } from './slide-text-box-position';
+import { canSetSlideTextBoxSize } from './slide-text-box-size';
+import { canSetSlideTextColor } from './slide-text-color';
 
 export interface DocumentToolPlan {
   readonly tool: string;
@@ -25,20 +32,68 @@ const capabilities: Record<DocumentContext['kind'], readonly string[]> = {
     'set_review_mode',
   ],
   cell: ['get_ranges', 'get_range', 'get_cell', 'set_cell', 'fill_series', 'sum_range', 'sort_range'],
-  slide: ['get_presentation_text', 'create_slide', 'slide_action', 'add_slide_text', 'replace_selection'],
+  slide: [
+    'get_presentation_text',
+    'create_slide',
+    'slide_action',
+    'add_slide_text',
+    'replace_selection',
+    'set_slide_font_family',
+    'set_slide_font_size',
+    'set_slide_text_bold',
+    'set_slide_text_italic',
+    'set_slide_text_color',
+    'set_slide_text_box_position',
+    'set_slide_text_box_size',
+  ],
 };
 /** Recognize host document tools from the same capability owner used for execution. */
 export function isDocumentToolName(name: string): boolean {
   return Object.values(capabilities).some((names) => names.includes(name));
 }
 export function documentTools(context: DocumentContext): AgentTool[] {
+  const fonts = context.kind === 'slide' && (context.selectionCharacters ?? 0) > 0 ? getSlideFontFamilies() : [];
   return (capabilities[context.kind] ?? [])
+    .filter(
+      (name) =>
+        name !== 'set_slide_text_box_size' || ((context.selectionCharacters ?? 0) > 0 && canSetSlideTextBoxSize()),
+    )
+    .filter(
+      (name) =>
+        name !== 'set_slide_text_box_position' ||
+        ((context.selectionCharacters ?? 0) > 0 && canSetSlideTextBoxPosition()),
+    )
+    .filter(
+      (name) => name !== 'set_slide_text_color' || ((context.selectionCharacters ?? 0) > 0 && canSetSlideTextColor()),
+    )
+    .filter(
+      (name) => name !== 'set_slide_font_size' || ((context.selectionCharacters ?? 0) > 0 && canSetSlideFontSize()),
+    )
+    .filter(
+      (name) => name !== 'set_slide_text_bold' || ((context.selectionCharacters ?? 0) > 0 && canSetSlideTextBold()),
+    )
+    .filter(
+      (name) => name !== 'set_slide_text_italic' || ((context.selectionCharacters ?? 0) > 0 && canSetSlideTextItalic()),
+    )
     .filter(
       (name) =>
         name !== 'replace_selection' ||
         (context.kind === 'slide' ? (context.selectionCharacters ?? 0) > 0 : context.selectionCharacters !== 0),
     )
-    .map((name) => agentTools[name])
+    .filter((name) => name !== 'set_slide_font_family' || fonts.length > 0)
+    .map((name) =>
+      name === 'set_slide_font_family'
+        ? {
+            ...agentTools[name],
+            inputSchema: {
+              type: 'object',
+              properties: { fontFamily: { type: 'string', enum: fonts } },
+              required: ['fontFamily'],
+              additionalProperties: false,
+            },
+          }
+        : agentTools[name],
+    )
     .filter((tool): tool is AgentTool => !!tool);
 }
 function object(value: unknown): value is Record<string, unknown> {
@@ -69,6 +124,7 @@ function validate(tool: AgentTool, input: Record<string, unknown>): void {
     input[field] = input[field].toUpperCase();
   }
   if (tool.name === 'get_ranges') input.ranges = parseOfficeRanges(String(input.ranges)).join(',');
+  if (tool.name === 'set_slide_font_size' && !Number.isInteger(Number(input.fontSizePt) * 2)) invalid();
   if (tool.name === 'fill_series') buildSeries(input as unknown as SeriesInput);
   if (tool.name === 'set_cell') {
     const value = String(input.value);

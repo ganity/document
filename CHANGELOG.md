@@ -7,7 +7,33 @@ notes. Entries describe what users experience, not internal refactors.
 
 ## [Unreleased]
 
+- Embedded DeckWise hosts can insert one reviewed PNG at an explicit on-page millimeter rectangle when the native capability is available. Review stretching/overlap; saving stays explicit.
+
+- Embedded DeckWise hosts can resize a supported selected rectangular text box to explicit on-page millimeter dimensions while preserving its position and text. Review text reflow visually; saving remains explicit.
+
+- DeckWise readonly source previews accept an optional one-based page without navigation, preserving source, generation and native-text guards.
+
+- Embedded DeckWise hosts can move the rectangular text box containing the current text selection to explicit on-page millimeter coordinates on shape-only slides. Dimensions and text are verified; saving remains explicit.
+
+- DeckWise: add capability-gated opaque RGB color for a nonempty plain-text selection in one current-slide text object. Native readback verifies text/selection/color; saving remains explicit. Theme colors, transparency, gradients, grouped objects and master editing are excluded.
+
+### Added
+
+- DeckWise hosts can request a source-bound preview without native text for supported ordinary pages. Pictures remain intact, including text inside pictures; candidate backgrounds still require review.
+
+- DeckWise source-page previews retain the page aspect ratio at a 1600-pixel longest edge, improving text and image detail for reviewed page candidates.
+
+- Embedded DeckWise hosts can render a bounded current-page PNG preview tied to the opened PPTX hash, page identity and latest edit generation. Rendering does not modify or save the source.
+
+- Trusted DeckWise hosts can pass one reviewed PNG selection and fresh command-scoped bytes through the existing editor bridge; bytes cannot be reused by ordinary commands. Saving remains explicit.
+
+- Embedded DeckWise hosts can change the font size of one selected text range
+  when the native presentation capability is available. Changes remain unsaved
+  until an explicit save.
+
 ### Fixed
+
+- Embedded presentation image replacement rejects corrupt or incomplete PNG chunks before native loading, even when the browser decoder would accept them.
 
 - Editing a document after more than seven idle days keeps the new recovery
   bytes instead of leaving an empty history record.

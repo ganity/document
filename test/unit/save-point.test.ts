@@ -76,4 +76,22 @@ describe('save point', () => {
     expect(commitSavePoint(point)).toBe(false);
     expect(history.Reset_SavedIndex).not.toHaveBeenCalled();
   });
+  it('rejects edits merged into the same undo point while exporting', () => {
+    const { history } = mountEditorFrame();
+    const head = { Items: [{ Data: {} }] };
+    history.Points[1] = head;
+    const point = captureSavePoint();
+    head.Items.push({ Data: {} });
+    expect(commitSavePoint(point)).toBe(false);
+    expect(history.Reset_SavedIndex).not.toHaveBeenCalled();
+  });
+
+  it('rejects replacement of an item inside the same undo point', () => {
+    const { history } = mountEditorFrame();
+    const head = { Items: [{ Data: {} }] };
+    history.Points[1] = head;
+    const point = captureSavePoint();
+    head.Items[0] = { Data: {} };
+    expect(commitSavePoint(point)).toBe(false);
+  });
 });

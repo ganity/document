@@ -1,0 +1,20 @@
+{
+  "name": "DeckWise presentation read bridge",
+  "guid": "asc.{D1ECA135-517C-4585-990C-6E0F2B001322}",
+  "baseUrl": "",
+  "variations": [
+    {
+      "description": "Read presentation text",
+      "url": "index.html",
+      "icons": [],
+      "isViewer": true,
+      "EditorsSupport": ["slide"],
+      "isVisual": false,
+      "isModal": false,
+      "isInsideMode": false,
+      "initDataType": "none",
+      "initData": "",
+      "buttons": []
+    }
+  ]
+}

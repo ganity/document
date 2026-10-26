@@ -26,6 +26,7 @@ import { markDocumentDirty, markDocumentSaved, resetUnsavedChanges } from './uns
 import { getSdkEditorApi, ASC_RESTRICTION_VIEW } from './onlyoffice/sdk-api';
 import { getReadonlyMode, setReadonlyState } from './onlyoffice/readonly';
 import { resolveUiTheme } from './onlyoffice/ui-theme';
+import { isDeckWiseMode } from './embed-mode';
 import {
   describeMemoryVerdict,
   isWasmAllocationFailure,
@@ -125,6 +126,7 @@ function createPersonalEditorInstance(config: {
   fileType: string;
   binData?: ArrayBuffer;
   editorLang: string;
+  onContentReady?: () => void;
 }): void {
   const { fileName, fileType, binData, editorLang } = config;
 
@@ -172,7 +174,7 @@ function createPersonalEditorInstance(config: {
         // one-way door that only a full editor rebuild could reopen.
         edit: true,
         download: true,
-        print: true,
+        print: !isDeckWiseMode(),
         chat: false,
         protect: false,
       },
@@ -245,6 +247,7 @@ function createPersonalEditorInstance(config: {
         window.setTimeout(() => window.clearInterval(timer), 15_000);
       },
       onDocumentReady: () => {
+        config.onContentReady?.();
         markDocumentContentReady();
         window.dispatchEvent(new Event('document:content-ready'));
         // The open succeeded, so the retry budget is spent and the bytes kept
@@ -351,6 +354,7 @@ export function createEditorInstance(config: {
   binData?: ArrayBuffer;
   readonly?: boolean;
   isCurrent?: () => boolean;
+  onContentReady?: () => void;
   /** Set only by retryCurrentOpen: keeps the attempt's one retry budget. */
   isRetry?: boolean;
 }): Promise<void> {
@@ -423,12 +427,14 @@ export function createEditorInstance(config: {
     // With no editor to replace, obsolete work can still be skipped safely.
     if (!hasExistingEditor) assertCurrent();
     assertNotClosed();
-    createPersonalEditorInstance({ fileName, fileType, binData, editorLang });
+    createPersonalEditorInstance({ fileName, fileType, binData, editorLang, onContentReady: config.onContentReady });
   });
 }
 
 export async function loadEditorApi(): Promise<void> {
-  if (!window.DocsAPI && /^\/editor(?:\.html)?\/?$/.test(location.pathname)) await waitForAppWorkerControl();
+  // Embedded hosts may never receive worker control; optional caching must not delay opening.
+  if (!window.DocsAPI && !isEmbedMode() && /^\/editor(?:\.html)?\/?$/.test(location.pathname))
+    await waitForAppWorkerControl();
   return new Promise((resolve, reject) => {
     // Check if already loaded
     if (window.DocsAPI) {

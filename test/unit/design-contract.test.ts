@@ -123,6 +123,13 @@ describe('page chrome', () => {
         if (['sdkjs', 'web-apps', 'ranui-iife', 'ran-fonts', 'fonts', 'img', 'wasm'].includes(name)) continue;
         pages(path, out);
       } else if (name.endsWith('.html') && !isGenerated(path)) {
+        // These owned iframe hosts are not visitor-facing site pages.
+        if (
+          ['docs-online-host.html', 'docs-community-plugin/index.html'].includes(
+            relative(PUBLIC, path).replace(/\\/g, '/'),
+          )
+        )
+          continue;
         out.push(path);
       }
     }

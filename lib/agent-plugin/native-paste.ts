@@ -71,7 +71,10 @@ export function pasteSlideText(
     };
     api.pre_Paste = prepare;
     try {
-      api.asc_PasteData(format, text, undefined, undefined, undefined, (ok) => {
+      // The native text parser consumes one trailing newline as a paste delimiter.
+      const normalized = text.replace(/\r\n?/g, '\n');
+      const pasted = normalized.endsWith('\n') ? `${normalized}\n` : normalized;
+      api.asc_PasteData(format, pasted, undefined, undefined, undefined, (ok) => {
         if (!active) return;
         if (ok === false) {
           fail(new Error('Native paste was rejected'));

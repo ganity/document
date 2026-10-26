@@ -10,6 +10,7 @@
  * to someone else's page.
  */
 const EMBED_QUERY_KEYS = ['embed', 'embedded'];
+export const DECKWISE_SAVE_REQUEST_EVENT = 'deckwise:save-requested';
 
 export function isEmbedMode(): boolean {
   if (typeof window === 'undefined') {
@@ -24,4 +25,10 @@ export function isEmbedMode(): boolean {
     const value = params.get(key);
     return value === '' || value === '1' || value === 'true';
   });
+}
+
+export function isDeckWiseMode(): boolean {
+  if (!isEmbedMode()) return false;
+  const value = new URLSearchParams(window.location.search).get('deckwise');
+  return value === '' || value === '1' || value === 'true';
 }

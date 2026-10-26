@@ -37,6 +37,18 @@ it('awaits native completion and restores the preparation method immediately', a
   expect(f.insert).toHaveBeenCalledOnce();
   expect(f.end).not.toHaveBeenCalled();
 });
+it.each([
+  ['Alex', 'Alex'],
+  ['Alex\n', 'Alex\n\n'],
+  ['Alex\n\n', 'Alex\n\n\n'],
+  ['First\r\nSecond\r\n', 'First\nSecond\n\n'],
+])('preserves requested newlines through the native text parser: %j', async (text, encoded) => {
+  const f = fixture();
+  const paste = vi.spyOn(f.api, 'asc_PasteData');
+  await pasteSlideText(f.api, 1, text, { isCurrent: () => true, endPaste: f.end });
+  expect(paste.mock.calls[0][1]).toBe(encoded);
+  expect(f.insert).toHaveBeenCalledOnce();
+});
 it('times out and suppresses the pending insertion without a late write', async () => {
   vi.useFakeTimers();
   const f = fixture(200),

@@ -15,7 +15,12 @@ import { LOCALES, MENU_ORDER, generate } from '../../bin/build-pages.mjs';
 const ROOT = resolve(__dirname, '../..');
 const PUBLIC = resolve(ROOT, 'public');
 const ORIGIN = 'https://edit.chaxus.com';
-const NOT_LANDING = new Set(['404.html', 'embed-demo.html']);
+const NOT_LANDING = new Set([
+  '404.html',
+  'embed-demo.html',
+  'docs-online-host.html',
+  'docs-community-plugin/index.html',
+]);
 // Pages rendered from markdown at build time (not committed under public/):
 // the same contract applies, so they are validated from a fresh in-memory render.
 const GENERATED = generate({ outDir: null }) as Array<{ rel: string; route: string; html: string }>;
@@ -37,7 +42,11 @@ function walkHtml(dir: string): string[] {
     if (statSync(p).isDirectory()) {
       if (['sdkjs', 'web-apps', 'ranui-iife', 'ran-fonts', 'fonts', 'img', 'wasm'].includes(name)) continue;
       out.push(...walkHtml(p));
-    } else if (name.endsWith('.html') && !NOT_LANDING.has(name) && !isGeneratedFile(p)) {
+    } else if (
+      name.endsWith('.html') &&
+      !NOT_LANDING.has(relative(PUBLIC, p).replace(/\\/g, '/')) &&
+      !isGeneratedFile(p)
+    ) {
       out.push(p);
     }
   }
