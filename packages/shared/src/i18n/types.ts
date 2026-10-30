@@ -559,4 +559,38 @@ export interface I18nMessages {
   agentResultDraftChoice: string;
   agentResultUseSuggestion: string;
   agentResultKeepDraft: string;
+
+  teachingFlow: string;
+  teachingSpeech: string;
+  teachingAnimation: string;
+  teachingAudio: string;
+  teachingVideo: string;
+  teachingLegacyDelay: string;
+  teachingLegacyInteraction: string;
+  teachingEmptySpeech: string;
+  teachingAfter: string;
+  teachingNone: string;
+  teachingPause: string;
+  teachingTimed: string;
+  teachingAfterPause: string;
+  teachingAfterTimed: string;
+  teachingAfterHint: string;
+  teachingPauseRange: string;
+  teachingAddAfter: string;
+  teachingStepCount: string;
+  teachingStepDetail: string;
+  teachingSpotlight: string;
+  teachingHighlight: string;
+  teachingEditAnimation: string;
+  teachingStartSeconds: string;
+  teachingEndSeconds: string;
+  teachingSeconds: string;
+  teachingHistoryHint: string;
+  teachingTimedSeconds: string;
+  teachingUndo: string;
+  teachingRedo: string;
+  teachingSpotlightEffect: string;
+  teachingHighlightEffect: string;
+  teachingFocusTitle: string;
+  teachingAddSpeech: string;
 }

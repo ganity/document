@@ -1,3 +1,5 @@
+import { mountPanelContext } from './agent-plugin/ui/panel-context';
+import { mountDeckwiseTeachingSidebar } from './deckwise-teaching-sidebar';
 import { clearActiveSource } from './active-document-source';
 import { clearDocumentSession } from './history/autosave';
 import { beginDocumentOpen, commitDocumentOpen, isMountedDocumentOpen } from './document-open';
@@ -8,7 +10,7 @@ import { openDocumentFromUrl } from './document';
 import { getReadonlyMode, requestSaveDocument, setReadonlyMode } from './onlyoffice-editor';
 import { hasPendingEmbeddedSaveRequest } from './onlyoffice/save-stream';
 import { captureSavePoint, commitSavePoint, invalidateSavedPoint, isSavePointCurrent } from './onlyoffice/save-point';
-import { hasUnsavedChanges, markDocumentDirty, markDocumentSaved, onUnsavedChangesChange } from './unsaved-guard';
+import { hasUnsavedChanges, markDocumentDirty, markDocumentSaved, onUnsavedChangesChange, getLastEditAt, onDocumentEdit } from './unsaved-guard';
 import { DECKWISE_SAVE_REQUEST_EVENT, isDeckWiseMode } from './embed-mode';
 import { deckwiseEditorBridge } from './deckwise-editor-bridge';
 import { deckwisePageLineage } from './deckwise-page-lineage';
@@ -30,7 +32,9 @@ type EmbedMessageType =
   | 'document:review-fade'
   | 'document:execute-fade'
   | 'document:render-page-preview'
-  | 'document:get-state';
+  | 'document:get-state'
+  | 'document:teaching-enable'
+  | 'document:teaching-response';
 
 type EmbedMessage = {
   id?: string;
@@ -42,11 +46,12 @@ type EmbedResponsePayload = Record<string, any>;
 
 const EMBED_QUERY_KEYS = ['embed', 'embedded'];
 
+let teachingSidebar: ReturnType<typeof mountDeckwiseTeachingSidebar> | undefined;
 let initialized = false;
 let parentOrigin = '*';
 let acceptedParentOrigin: string | null = null;
 let isEmbedMode = false;
-let pendingHostSave: { id: string; point: ReturnType<typeof captureSavePoint>; exported: boolean } | null = null;
+let pendingHostSave: { id: string; point: ReturnType<typeof captureSavePoint>; exported: boolean; lineage?: Parameters<typeof deckwisePageLineage.commitSave>[0] } | null = null;
 let saveOutcomeUncertain = false;
 
 function getQueryValue(key: string): string | null {
@@ -214,6 +219,15 @@ async function handleMessage(event: MessageEvent): Promise<void> {
     if (['document:save', 'document:commit-save', 'document:set-readonly'].includes(String(message.type)))
       deckwiseEditorBridge.revokeFade();
     switch (message.type) {
+      case 'document:teaching-enable':
+        if (!isDeckWiseMode()) throw new Error('Teaching requires DeckWise mode');
+        deckwiseEditorBridge.getContext(payload.binding);
+        teachingSidebar?.dispose();
+        teachingSidebar = mountDeckwiseTeachingSidebar(payload.binding, postToParent);
+        break;
+      case 'document:teaching-response':
+        teachingSidebar?.receive(message.id ?? '', payload);
+        break;
       case 'document:open':
       case 'document:open-url':
       case 'document:open-file':
@@ -224,6 +238,8 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         if (pendingHostSave || (isDeckWiseMode() && hasPendingEmbeddedSaveRequest()))
           throw new Error('Finish the current save before opening another document');
         if (isDeckWiseMode()) {
+          teachingSidebar?.dispose();
+          teachingSidebar = undefined;
           deckwiseEditorBridge.reset();
           deckwisePageLineage.reset();
         }
@@ -381,7 +397,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
           if (hostManaged) saveOutcomeUncertain = true;
           throw error;
         }
-        if (pending) pending.exported = true;
+        if (pending) { pending.exported = true; pendingHostSave!.lineage = pageLineage; }
         // The host now holds the edited bytes. A timeout fallback may have
         // handed it the original file instead, which saves nothing -- the
         // request cannot tell the two apart, so that mode never clears the flag.
@@ -409,6 +425,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         const pending = pendingHostSave;
         pendingHostSave = null;
         if (payload.success) {
+          if (pending.lineage) deckwisePageLineage.commitSave(pending.lineage);
           if (commitSavePoint(pending.point)) markDocumentSaved();
           else {
             invalidateSavedPoint(pending.point);
@@ -416,6 +433,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
           }
         }
         postToParent('document:save-committed', { dirty: hasUnsavedChanges(), success: payload.success }, message.id);
+        if (payload.success && !hasUnsavedChanges()) teachingSidebar?.refresh();
         break;
       }
 
@@ -458,8 +476,40 @@ export function initEmbedApi(): void {
   document.body.classList.add('embed-mode');
   // Pushed, not polled: the host needs it to decide when to save (a tab
   // switch, an idle timer) without exporting documents nobody touched.
+  let autosaveTimer: ReturnType<typeof setTimeout> | undefined;
+  let attemptedEdit = -1;
+  const autosave = () => {
+    autosaveTimer = undefined;
+    if (!isDeckWiseMode() || !hasUnsavedChanges() || getReadonlyMode()) return;
+    if (pendingHostSave || hasPendingEmbeddedSaveRequest() || Date.now() - getLastEditAt() < 1500) {
+      autosaveTimer = setTimeout(autosave, 500);
+      return;
+    }
+    if (!saveOutcomeUncertain && attemptedEdit !== getLastEditAt()) {
+      attemptedEdit = getLastEditAt();
+      postToParent('document:save-requested');
+    }
+  };
+  if (isDeckWiseMode()) {
+    let observedPoint = captureSavePoint();
+    mountPanelContext({
+      isActive: () => isDeckWiseMode(),
+      refresh: () => {
+        if (observedPoint && isSavePointCurrent(observedPoint)) return;
+        observedPoint = captureSavePoint();
+        // The SDK modified callback reports only clean/dirty transitions; typing can keep extending one undo point.
+        if (observedPoint && hasUnsavedChanges()) markDocumentDirty();
+      },
+    });
+  }
+  onDocumentEdit(() => {
+    clearTimeout(autosaveTimer);
+    if (isDeckWiseMode()) autosaveTimer = setTimeout(autosave, 1500);
+  });
   onUnsavedChangesChange((dirty) => {
     postToParent('document:dirty-changed', { dirty });
+    clearTimeout(autosaveTimer);
+    if (dirty && isDeckWiseMode()) autosaveTimer = setTimeout(autosave, 1500);
   });
   if (isDeckWiseMode()) {
     document.body.classList.add('deckwise-mode');

@@ -46,8 +46,23 @@ describe('session-bound native page lineage', () => {
       saveRequestId: 'save-1',
       ...context,
       outputSha256: hash('edited-output'),
+      objects: [[], [], []], animationUnchanged: [true, true, true],
     });
     expect(lineage.context()).toEqual(context);
+  });
+
+  it('accepts the saved baseline while newer page edits remain for the next export', async () => {
+    const { lineage, logic } = await opened();
+    const original = lineage.context()!;
+    const receipt = (await lineage.captureSave()!(file('output'), 'save', () => true))!;
+    logic.Slides.reverse();
+    expect(lineage.commitSave(receipt)).toBe(true);
+    expect(lineage.context()!.sourceSha256).toBe(hash('output'));
+    expect(lineage.context()!.openedPageTokens).toEqual(original.pageTokens);
+    expect(lineage.context()!.pageTokens).toEqual([...original.pageTokens].reverse());
+    const next = (await lineage.captureSave()!(file('second'), 'save-2', () => true))!;
+    expect(next.sourceSha256).toBe(hash('output'));
+    expect(lineage.commitSave(next)).toBe(true);
   });
 
   it('tracks reorder by object identity and gives copies a fresh token', async () => {
@@ -138,4 +153,22 @@ describe('session-bound native page lineage', () => {
     lineage.reset();
     await expect(pending).rejects.toThrow(/superseded/);
   });
+});
+
+it('keeps object identity across moves and renews the source only after a successful save', async () => {
+  vi.stubGlobal('crypto', webcrypto);
+  const lineage = new DeckWisePageLineage();
+  await lineage.begin(owner, file('source'));
+  const sdk = mount();
+  const shape = { getUniNvProps: () => ({ cNvPr: { name: 'Panda' } }) };
+  Object.assign(sdk.logic.Slides[0], { cSld: { spTree: [shape] } });
+  lineage.contentReady();
+  const capture = lineage.captureSave()!;
+  const receipt = await capture(file('saved'), 'save-1', () => true);
+  expect(receipt?.objects[0][0].sourceName).toBe('Panda');
+  expect(lineage.context()!.sourceSha256).toBe(hash('source'));
+  lineage.commitSave(receipt!);
+  expect(lineage.context()!.sourceSha256).toBe(hash('saved'));
+  document.body.replaceChildren();
+  vi.unstubAllGlobals();
 });

@@ -81,7 +81,14 @@ function interaction(doc: Document): { revision: number } {
     interactions.set(doc, state);
     const observed = state;
     for (const event of ['pointerdown', 'keydown', 'paste', 'cut', 'drop'])
-      doc.addEventListener(event, () => observed.revision++, true);
+      doc.addEventListener(
+        event,
+        (input) => {
+          // Host teaching controls do not mutate the slide or its selection.
+          if (!(input.target as Element | null)?.closest?.('.deckwise-teaching-sidebar, [data-teaching-slideshow], [data-teaching-lesson]')) observed.revision++;
+        },
+        true,
+      );
   }
   return state;
 }

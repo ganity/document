@@ -7,6 +7,8 @@ notes. Entries describe what users experience, not internal refactors.
 
 ## [Unreleased]
 
+- WiseOffice teaching uses a wider panel with inline step editing and one scroll area. Compact icon controls reduce clutter, and closing teaching restores the native property-panel width. Spotlight is a primary action, narration can be inserted after the selected step, and whole-lesson playback stays available. Narration tails offer none, a short pause, or a 3–30 second timed wait; new standalone waits are no longer created.
+
 - Embedded DeckWise hosts can insert one reviewed PNG at an explicit on-page millimeter rectangle when the native capability is available. Review stretching/overlap; saving stays explicit.
 
 - Embedded DeckWise hosts can resize a supported selected rectangular text box to explicit on-page millimeter dimensions while preserving its position and text. Review text reflow visually; saving remains explicit.

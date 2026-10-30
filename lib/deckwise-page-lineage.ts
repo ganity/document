@@ -5,8 +5,15 @@ interface Binding {
   documentId: string;
   sessionId: string;
 }
+interface Shape {
+  getUniNvProps?(): { cNvPr?: { name?: string } };
+}
+interface Slide {
+  cSld?: { spTree?: Shape[] };
+  timing?: { getAllAnimEffects?(): any[] };
+}
 interface Presentation {
-  Slides: object[];
+  Slides: Slide[];
 }
 type SlideApi = EditorApi & { WordControl?: { m_oLogicDocument?: Presentation } };
 
@@ -26,14 +33,19 @@ export class DeckWisePageLineage {
         logic: Presentation;
         tokens: WeakMap<object, string>;
         openedPageTokens: string[];
+        shapes: WeakMap<Shape, { sourcePageToken: string; sourceName: string }>;
+        animations: WeakMap<Slide, { effects: any[]; signature: string }>;
       }
     | undefined;
+  private exported: { outputSha256: string; shapes: WeakMap<Shape, { sourcePageToken: string; sourceName: string }>;
+    animations: WeakMap<Slide, { effects: any[]; signature: string }> } | undefined;
   private epoch = 0;
 
   reset(): void {
     this.epoch++;
     this.pending = undefined;
     this.opened = undefined;
+    this.exported = undefined;
   }
 
   async begin(value: unknown, file: File): Promise<() => void> {
@@ -89,10 +101,11 @@ export class DeckWisePageLineage {
       tokens.set(slide, token);
       return token;
     });
-    this.opened = { ...pending, api, logic, tokens, openedPageTokens };
+    this.opened = { ...pending, api, logic, tokens, openedPageTokens, shapes: new WeakMap(), animations: new WeakMap() };
+    this.recordObjects();
   }
 
-  private validSlides(slides: unknown): slides is object[] {
+  private validSlides(slides: unknown): slides is Slide[] {
     return (
       Array.isArray(slides) &&
       slides.length > 0 &&
@@ -122,11 +135,63 @@ export class DeckWisePageLineage {
     return { sourceSha256: opened.sourceSha256, openedPageTokens: [...opened.openedPageTokens], pageTokens };
   }
 
+  private animation(slide: Slide) {
+    const effects = slide.timing?.getAllAnimEffects?.() ?? [];
+    const signature = JSON.stringify(effects.map(effect => [effect.getObjectId?.(), effect.cTn?.presetClass,
+      effect.cTn?.presetID, effect.cTn?.presetSubtype, effect.cTn?.nodeType, effect.asc_getDuration?.(), effect.asc_getDelay?.()]));
+    return { effects: [...effects], signature };
+  }
+
+  private recordObjects() {
+    const opened = this.opened!;
+    opened.shapes = new WeakMap();
+    opened.animations = new WeakMap();
+    for (const slide of opened.logic.Slides) {
+      const sourcePageToken = opened.tokens.get(slide)!;
+      for (const shape of slide.cSld?.spTree ?? []) {
+        const name = shape.getUniNvProps?.()?.cNvPr?.name;
+        if (name) opened.shapes.set(shape, { sourcePageToken, sourceName: name });
+      }
+      opened.animations.set(slide, this.animation(slide));
+    }
+  }
+
+  commitSave(receipt: { sourceSha256: string; outputSha256: string; pageTokens: string[] }) {
+    const opened = this.opened;
+    const current = this.context();
+    if (!opened || !current || current.sourceSha256 !== receipt.sourceSha256 ||
+      this.exported?.outputSha256 !== receipt.outputSha256) return false;
+    opened.sourceSha256 = receipt.outputSha256;
+    opened.openedPageTokens = [...receipt.pageTokens];
+    // Edits made while Host writes the file remain dirty and belong to the next save.
+    opened.shapes = this.exported.shapes;
+    opened.animations = this.exported.animations;
+    this.exported = undefined;
+    return true;
+  }
+
   captureSave() {
     const opened = this.opened;
     const context = this.context();
     if (!opened || !context) return undefined;
     const slides = [...opened.logic.Slides];
+    const objects = slides.map(slide => (slide.cSld?.spTree ?? []).map(shape => ({
+      ...(opened.shapes.get(shape) ?? {}), name: shape.getUniNvProps?.()?.cNvPr?.name ?? '',
+    })));
+    const savedShapes = new WeakMap<Shape, { sourcePageToken: string; sourceName: string }>();
+    const savedAnimations = new WeakMap<Slide, { effects: any[]; signature: string }>();
+    slides.forEach((slide, index) => {
+      for (const shape of slide.cSld?.spTree ?? []) {
+        const name = shape.getUniNvProps?.()?.cNvPr?.name;
+        if (name) savedShapes.set(shape, { sourcePageToken: context.pageTokens[index], sourceName: name });
+      }
+      savedAnimations.set(slide, this.animation(slide));
+    });
+    const animationUnchanged = slides.map(slide => {
+      const previous = opened.animations.get(slide), current = this.animation(slide);
+      return !!previous && previous.signature === current.signature && previous.effects.length === current.effects.length &&
+        previous.effects.every((effect, index) => effect === current.effects[index]);
+    });
     return async (file: File, saveRequestId: string, isCurrent: () => boolean) => {
       const outputSha256 = await sha256(file);
       if (
@@ -137,11 +202,13 @@ export class DeckWisePageLineage {
         slides.some((slide, index) => opened.logic.Slides[index] !== slide)
       )
         return undefined;
+      this.exported = { outputSha256, shapes: savedShapes, animations: savedAnimations };
       return {
         protocol: 'deckwise-office-page-lineage/1' as const,
         ...opened.owner,
         saveRequestId,
         ...context,
+        objects, animationUnchanged,
         outputSha256,
       };
     };

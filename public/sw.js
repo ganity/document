@@ -548,6 +548,9 @@ self.addEventListener('fetch', (event) => {
   // Optional authenticated connector APIs and OAuth callbacks are never offline assets.
   if (url.pathname.startsWith('/api/connectors/')) return;
 
+  // Desktop supplies this runtime independently of the hosted app build.
+  if (url.pathname.startsWith('/.deckwise/')) return;
+
   // Match Pages' canonical route offline too. Otherwise the cached root shell
   // would resolve its relative assets under /editor/ and render a blank page.
   if (event.request.mode === 'navigate' && url.pathname === '/editor/') {

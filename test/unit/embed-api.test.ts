@@ -854,6 +854,30 @@ describe('embed-api', () => {
       },
     );
 
+    it('automatically requests a Host save after edits settle, and schedules the next dirty edit', async () => {
+      vi.useFakeTimers();
+      try {
+        window.history.pushState({}, '', '/?embed=1&deckwise=1');
+        const { initEmbedApi } = await import('../../lib/embed-api');
+        const guard = await import('../../lib/unsaved-guard');
+        initEmbedApi();
+        const count = () => postedMessages(postMessageSpy).filter(message => message.type === 'document:save-requested').length;
+        const before = count();
+        guard.markDocumentDirty();
+        await vi.advanceTimersByTimeAsync(1000);
+        guard.markDocumentDirty();
+        await vi.advanceTimersByTimeAsync(1499);
+        expect(count()).toBe(before);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(count()).toBe(before + 1);
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(count()).toBe(before + 1);
+        guard.markDocumentDirty();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(count()).toBe(before + 2);
+      } finally { vi.useRealTimers(); }
+    });
+
     it('keeps exported bytes dirty until the matching host confirms persistence', async () => {
       const { guard, history } = await setup();
       await save('persist-1');
