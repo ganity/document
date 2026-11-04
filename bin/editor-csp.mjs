@@ -16,6 +16,7 @@ export function secureEditorHtml(html) {
     "script-src-attr 'none'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
+    "media-src 'self' blob:",
     "font-src 'self' data:",
     "worker-src 'self' blob:",
     "frame-src 'self' blob:",

@@ -54,3 +54,13 @@ it('permits the Cloudflare analytics script without permitting arbitrary externa
   expect(directives.get('connect-src')).toContain('https:');
   expect(directives.get('script-src-attr')).toEqual(["'none'"]);
 });
+
+it('permits local teaching audio and video blobs without widening remote media permissions', () => {
+  const html = secureEditorHtml('<html><head></head></html>');
+  const policy = html.match(/content="([^"]+)"/)![1];
+  const sources = policy
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith('media-src '));
+  expect(sources).toBe("media-src 'self' blob:");
+});

@@ -7,6 +7,24 @@ notes. Entries describe what users experience, not internal refactors.
 
 ## [Unreleased]
 
+- Make teaching slideshow controls readable; add page navigation, replay, media seeking and five-second fast-forward.
+
+- Open the first document without an unnecessary teardown delay and avoid duplicate teaching retries when newer selection reads are already queued.
+
+- Teaching UI: consolidate playback icons, status and page notes into one row; size narration to its content and explain animation timing with translated effect names, object numbers and duration units.
+
+- Teaching: add inline native-animation linking and narration start/end or selected-word triggers, with real-audio timing marks. Keep native effects on unlink; temporary preview timing is restored on exit.
+
+- Play local teaching audio and video under the production security policy. Preserve edited PPT animation presets, durations and native click order during teaching playback instead of requiring equality with generated cues.
+
+- Offer page-scoped Delete draft for conflicting recovery edits; restore saved teaching and clear page-local errors.
+
+- Spotlight and highlight forms use short Add/Save labels, a filled primary action and a bordered Cancel button.
+
+- Edit saved spotlight and highlight cues without per-page teaching confirmation. Audio, mapped targets and unlocked-page checks remain automatic prerequisites.
+
+- Teaching reloads renew expired selection bindings instead of leaving an empty panel. Spotlight, highlight and native animation entries remain visible with precise prerequisites; cue targets and edit controls are readable. Music and video steps show local playback controls and duration, legacy teacher pauses explain their behavior, and speech task details stay inside voice settings.
+
 - WiseOffice teaching uses a wider panel with inline step editing and one scroll area. Compact icon controls reduce clutter, and closing teaching restores the native property-panel width. Spotlight is a primary action, narration can be inserted after the selected step, and whole-lesson playback stays available. Narration tails offer none, a short pause, or a 3–30 second timed wait; new standalone waits are no longer created.
 
 - Embedded DeckWise hosts can insert one reviewed PNG at an explicit on-page millimeter rectangle when the native capability is available. Review stretching/overlap; saving stays explicit.

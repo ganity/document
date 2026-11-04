@@ -1,8 +1,9 @@
+import type { SpeechNativeSchedule } from './deckwise-teaching-native-schedule';
 import { getEditorApi } from './agent-plugin/editor-bridge';
 import { hasUnsavedChanges } from './unsaved-guard';
 
 /** Read the supported saved main sequence without starting a presentation. */
-export function inspectTeachingAnimations(page: number) {
+export function inspectTeachingAnimations(page: number, grouped = false) {
   const api = getEditorApi() as any;
   const manager = api?.WordControl?.DemonstrationManager;
   const slide = api?.WordControl?.m_oLogicDocument?.Slides?.[page - 1];
@@ -17,7 +18,7 @@ export function inspectTeachingAnimations(page: number) {
     !api.EndDemonstration
   )
     throw new Error('请先保存并重新打开 PPT，再启动教学放映');
-  // shortcut: only static-geometry main sequences; add motion/exit projection before widening.
+  // Only finite whole-object presets may share the teaching timeline.
   let effects: any[] = [];
   if (slide.timing) {
     effects = slide.timing.getAllAnimEffects?.();
@@ -35,10 +36,20 @@ export function inspectTeachingAnimations(page: number) {
         : sequences.length !== 0) ||
       effects.some(
         (effect: any) =>
-          effect.cTn?.presetClass !== 1 ||
-          ![1, 10].includes(effect.cTn.presetID) ||
-          effect.cTn.presetSubtype !== 0 ||
-          effect.cTn.nodeType !== 2 ||
+          ![
+            [1, 1, 0],
+            [1, 10, 0],
+            [2, 10, 0],
+            [0, 26, 0],
+            [1, 53, 16],
+            [1, 2, 8],
+            [1, 2, 2],
+            [0, 32, 0],
+          ].some(
+            ([kind, id, subtype]) =>
+              effect.cTn?.presetClass === kind && effect.cTn.presetID === id && effect.cTn.presetSubtype === subtype,
+          ) ||
+          (effect.cTn.nodeType !== 2 && !(grouped && effect.cTn.nodeType === 7)) ||
           typeof effect.isIdle !== 'function' ||
           typeof effect.isAtEnd !== 'function' ||
           typeof effect.getObjectId !== 'function' ||
@@ -46,7 +57,9 @@ export function inspectTeachingAnimations(page: number) {
           !Number.isInteger(effect.asc_getDuration?.()) ||
           effect.asc_getDuration() < 1 ||
           effect.asc_getDuration() > 5000 ||
-          effect.asc_getDelay?.() !== 0,
+          effect.asc_getDelay?.() !== 0 ||
+          (effect.asc_getRepeatCount?.() ?? 1000) !== 1000 ||
+          effect.asc_getRewind?.(),
       )
     )
       throw new Error('本页包含尚未支持同步教学提示的动画，请使用原生放映');
@@ -67,7 +80,13 @@ export function inspectTeachingAnimations(page: number) {
     (typeof manager.OnNextSlideAnimPlayer !== 'function' || typeof manager.StartAnimation !== 'function')
   )
     throw new Error('当前编辑器不支持逐步播放原生动画');
-  return { api, manager, slide, effects };
+  const steps: (typeof effects)[] = [];
+  for (const effect of effects) {
+    if (effect.cTn.nodeType === 2) steps.push([effect]);
+    else if (!steps.length) throw new Error('Native sequence must start with an on-click effect');
+    else steps[steps.length - 1].push(effect);
+  }
+  return { api, manager, slide, effects, steps };
 }
 
 /** One native page; only native state, never elapsed wall time, completes a click step. */
@@ -75,13 +94,17 @@ export function createTeachingSlideshow(input: {
   doc: Document;
   page: number;
   timelineStepCount?: number;
+  generatedMotions?: boolean;
+  schedule?: SpeechNativeSchedule;
   onReady(): void;
   onExit(): void;
   onError(error: Error): void;
 }) {
-  const { api, manager, slide, effects } = inspectTeachingAnimations(input.page);
+  const { api, manager, slide, effects, steps } = inspectTeachingAnimations(input.page, input.generatedMotions);
   const bound = input.timelineStepCount !== undefined;
-  if (bound && (!effects.length || input.timelineStepCount !== effects.length))
+  const schedule = input.schedule;
+  if (schedule && schedule.slide !== slide) throw new Error('Scheduled animation slide changed');
+  if (bound && !schedule && (!effects.length || input.timelineStepCount !== steps.length))
     throw new Error('教学时间轴与已保存 PPT 动画数量不一致，请重新绑定');
   const surface = input.doc.createElement('section');
   surface.dataset.teachingSlideshow = '';
@@ -92,20 +115,38 @@ export function createTeachingSlideshow(input: {
   canvas.id = `deckwise-teaching-show-${crypto.randomUUID()}`;
   canvas.dataset.deckwiseTeachingCanvas = '';
   // The native controller keeps this explicit canvas instead of opening its default preview.
-  canvas.style.cssText = 'position:absolute;inset:0 0 60px;';
+  canvas.style.cssText = 'position:absolute;inset:0 0 var(--teaching-controls-height,112px);';
   const controls = input.doc.createElement('nav');
   controls.setAttribute('aria-label', '教学放映控制');
   controls.style.cssText =
-    'z-index:50;position:absolute;bottom:0;left:0;right:0;height:60px;display:flex;align-items:center;gap:8px;padding:0 12px;';
+    'z-index:50;position:absolute;bottom:0;left:0;right:0;min-height:112px;box-sizing:border-box;display:flex;flex-wrap:wrap;align-content:center;align-items:center;gap:8px;padding:10px 16px;background:#171c25;color:#f8fafc;font:14px/1.4 sans-serif;';
+  const style = input.doc.createElement('style');
+  style.textContent = `[data-teaching-slideshow] nav button { appearance:none;box-sizing:border-box;min-height:36px;padding:7px 12px;border:1px solid #64748b;border-radius:6px;background:#283548;color:#f8fafc;font:600 14px/20px sans-serif;cursor:pointer;white-space:nowrap; }
+    [data-teaching-slideshow] nav button:hover:not(:disabled) { background:#3c4f68; }
+    [data-teaching-slideshow] nav button:disabled { background:#202734;color:#94a3b8;border-color:#3f4b5e;cursor:default; }
+    [data-teaching-slideshow] nav button:focus-visible,[data-teaching-slideshow] nav input:focus-visible { outline:2px solid #7dd3fc;outline-offset:2px; }
+    [data-teaching-slideshow] nav [hidden] { display:none!important; }
+    [data-teaching-slideshow] [data-playback-seek] { display:flex;align-items:center;gap:10px;flex:1 1 100%;margin:0;color:#f8fafc;font:14px/20px sans-serif; }
+    [data-teaching-slideshow] input[type=range] { flex:1;min-width:60px;accent-color:#7dd3fc; }
+    [data-teaching-slideshow] output { color:#f8fafc;white-space:nowrap;font-variant-numeric:tabular-nums; }
+    [data-teaching-slideshow] [data-show-status] { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:80px; }`;
+  surface.append(style);
   for (const type of ['keydown', 'keyup', 'keypress', 'pointerdown', 'mousedown', 'wheel'])
     controls.addEventListener(type, (event) => event.stopPropagation());
   surface.append(canvas, controls);
   input.doc.body.append(surface);
+  const Observer = input.doc.defaultView?.ResizeObserver;
+  const layout = Observer ? new Observer(() => {
+    surface.style.setProperty('--teaching-controls-height', `${controls.getBoundingClientRect().height}px`);
+  }) : undefined;
+  layout?.observe(controls);
   let disposed = false,
     ready = false,
     paused = false,
     frame = 0;
   let ownedCompleted = 0;
+  const scheduledPending = new Map<number, { resolve(): void; reject(error: Error): void }>();
+  const scheduledFired = new Set<number>();
   let pending: { index: number; resolve(): void; reject(error: Error): void } | null = null;
   const nativeControls = input.doc.createElement('span');
   nativeControls.style.cssText = 'display:flex;align-items:center;gap:8px;';
@@ -123,6 +164,8 @@ export function createTeachingSlideshow(input: {
     const current = pending;
     pending = null;
     current?.reject(error);
+    for (const pending of scheduledPending.values()) pending.reject(error);
+    scheduledPending.clear();
   };
   const next = async (expectedIndex?: number): Promise<void> => {
     if (
@@ -134,15 +177,47 @@ export function createTeachingSlideshow(input: {
       api.WordControl.m_oLogicDocument.Slides[input.page - 1] !== slide
     )
       return Promise.reject(new Error('原生动画页面已变化，请重新打开教学放映'));
+    if (schedule) {
+      if (expectedIndex === undefined && !ready && !paused && schedule.hasUnbound) {
+        if (manager.OnNextSlideAnimPlayer() !== true) throw new Error('Native unbound animation did not start');
+        return;
+      }
+      const entry = expectedIndex === undefined ? undefined : schedule.scheduled[expectedIndex];
+      if (
+        disposed ||
+        paused ||
+        !ready ||
+        !entry ||
+        scheduledFired.has(expectedIndex!) ||
+        slide.timing !== schedule.timing
+      )
+        throw new Error('Scheduled native animation is unavailable');
+      return new Promise<void>((resolve, reject) => {
+        scheduledPending.set(expectedIndex!, { resolve, reject });
+        scheduledFired.add(expectedIndex!);
+        const player = slide.getAnimationPlayer();
+        if (player.onSpClick({ Get_Id: () => entry.token, getMediaFileName: () => null }) !== true) {
+          scheduledPending.delete(expectedIndex!);
+          reject(new Error('Native animation trigger failed'));
+        }
+      });
+    }
     const current = slide.timing?.getAllAnimEffects() ?? [];
     if (current.length !== effects.length || current.some((effect: any, i: number) => effect !== effects[i]))
       return Promise.reject(new Error('原生动画序列已变化，请保存并重新打开 PPT'));
     if (disposed || (!bound && ready) || paused || pending || manager.Transition.IsPlaying())
       return Promise.reject(new Error('请等待当前动画完成，或先继续播放'));
-    const index = effects.findIndex((effect) => !effect.isAtEnd());
+    const index = steps.findIndex((group) => group.some((effect) => !effect.isAtEnd()));
     if (bound && (expectedIndex !== index || index !== ownedCompleted))
       return Promise.reject(new Error('原生动画步骤与教学时间轴不一致'));
-    if (index < 0 || !effects[index].isIdle() || effects.slice(index + 1).some((effect) => !effect.isIdle()))
+    if (
+      index < 0 ||
+      steps[index].some((effect) => !effect.isIdle()) ||
+      steps
+        .slice(index + 1)
+        .flat()
+        .some((effect) => !effect.isIdle())
+    )
       return Promise.reject(new Error('原生动画已在播放或已完成'));
     return new Promise<void>((resolve, reject) => {
       pending = { index, resolve, reject };
@@ -169,14 +244,14 @@ export function createTeachingSlideshow(input: {
     if (!disposed) {
       paused = false;
       // Starting the paused animation player cannot advance to the next slide.
-      if (bound ? !!pending : !ready) manager.StartAnimation(input.page - 1);
+      if (schedule || (bound ? !!pending : !ready)) manager.StartAnimation(input.page - 1);
     }
   };
   const pauseButton = button('暂停 PPT 动画', pause);
   const resumeButton = button('继续 PPT 动画', resume);
   nextButton.disabled = pauseButton.disabled = resumeButton.disabled = true;
   nativeControls.append(progress, nextButton, pauseButton, resumeButton);
-  if (effects.length && !bound) controls.append(nativeControls);
+  if (effects.length && (!bound || schedule?.hasUnbound)) controls.append(nativeControls);
   // The teaching timeline owns all advancement; prevent native canvas/key clicks racing it.
   const blockAdvance = (event: Event) => {
     if (event.type.startsWith('key') && (event as KeyboardEvent).key === 'Escape') return;
@@ -215,12 +290,17 @@ export function createTeachingSlideshow(input: {
   const dispose = () => {
     if (disposed) return;
     disposed = true;
+    layout?.disconnect();
     failPending(new Error('原生动画放映已停止'));
     cancelAnimationFrame(frame);
     for (const event of events) api.asc_unregisterCallback(event, changed);
     for (const type of blockedEvents) input.doc.removeEventListener(type, blockAdvance, true);
-    if (manager.Mode && manager.DemonstrationDiv === canvas) api.EndDemonstration();
-    surface.remove();
+    try {
+      if (manager.Mode && manager.DemonstrationDiv === canvas) api.EndDemonstration();
+    } finally {
+      schedule?.restore();
+      surface.remove();
+    }
   };
   const check = () => {
     if (disposed) return;
@@ -236,7 +316,19 @@ export function createTeachingSlideshow(input: {
         input.onExit();
         return;
       }
-      if (effects.length) {
+      if (schedule) {
+        if (slide.timing !== schedule.timing) throw new Error('Scheduled native animation changed');
+        nextButton.disabled = paused || ready || manager.Transition.IsPlaying();
+        pauseButton.disabled = paused;
+        resumeButton.disabled = !paused;
+        for (const [index, pending] of scheduledPending) {
+          if (!paused && schedule.scheduled[index].effect.isAtEnd()) {
+            scheduledPending.delete(index);
+            pending.resolve();
+          }
+        }
+      }
+      if (effects.length && !schedule) {
         const current = slide.timing.getAllAnimEffects();
         if (current.length !== effects.length || current.some((effect: any, i: number) => effect !== effects[i]))
           throw new Error('原生动画序列已变化，请保存并重新打开 PPT');
@@ -249,16 +341,23 @@ export function createTeachingSlideshow(input: {
         resumeButton.disabled = !paused;
         if (bound) {
           if (
-            effects.some((effect, index) =>
-              index < ownedCompleted ? !effect.isAtEnd() : index !== pending?.index && !effect.isIdle(),
+            steps.some((group, index) =>
+              group.some((effect) =>
+                index < ownedCompleted ? !effect.isAtEnd() : index !== pending?.index && !effect.isIdle(),
+              ),
             )
           )
             throw new Error('原生动画被教学时间轴之外的操作推进，请重新开始放映');
         }
         if (pending) {
-          if (effects.slice(pending.index + 1).some((effect) => !effect.isIdle()))
+          if (
+            steps
+              .slice(pending.index + 1)
+              .flat()
+              .some((effect) => !effect.isIdle())
+          )
             throw new Error('动画步骤被其他操作推进，请重新开始教学放映');
-          if (!paused && effects[pending.index].isAtEnd()) {
+          if (!paused && steps[pending.index].every((effect) => effect.isAtEnd())) {
             const finished = pending;
             pending = null;
             if (bound) ownedCompleted++;
@@ -270,7 +369,7 @@ export function createTeachingSlideshow(input: {
         !ready &&
         !paused &&
         !manager.Transition.IsPlaying() &&
-        (bound || manager.IsMainSeqFinished(input.page - 1))
+        (schedule ? manager.IsMainSeqFinished(input.page - 1) : bound || manager.IsMainSeqFinished(input.page - 1))
       ) {
         ready = true;
         nativeControls.remove();
@@ -284,6 +383,7 @@ export function createTeachingSlideshow(input: {
     }
   };
   try {
+    schedule?.install();
     api.StartDemonstration(canvas.id, input.page - 1);
     if (!manager.Mode || manager.DemonstrationDiv !== canvas) throw new Error('原生放映未能启动');
     frame = requestAnimationFrame(check);

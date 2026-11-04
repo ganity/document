@@ -1,3 +1,4 @@
+import type { SpeechTrigger } from './deckwise-teaching-animation-bindings';
 import { getEditorApi } from './agent-plugin/editor-bridge';
 import { deckwisePageLineage } from './deckwise-page-lineage';
 import { hasUnsavedChanges } from './unsaved-guard';
@@ -5,6 +6,7 @@ import { hasUnsavedChanges } from './unsaved-guard';
 type Point = { X: number; Y: number; Error?: boolean };
 type Rect = { x: number; y: number; w: number; h: number };
 type Shape = {
+  Id?: string;
   group?: unknown;
   extX: number;
   extY: number;
@@ -19,11 +21,14 @@ export type PreviewObject = {
   effectTargetEligible?: boolean;
 };
 export type AttentionCue = {
+  trigger?: SpeechTrigger;
+  nativeAnimation?: string;
   id: string;
   atMs: number;
   endMs: number;
   effect: {
     type: string;
+    effect?: string;
     elementId?: string;
     elementIds?: string[];
     color?: string;
@@ -41,6 +46,13 @@ export type TimelinePreview = {
   dispose(): void;
 };
 export type Runtime = {
+  evaluateQuestionAnswer(
+    response: { kind: string; options: string[]; answerIndices: number[] },
+    selected: number[],
+  ): boolean | null;
+  nativeMotionPreset(
+    effect: string,
+  ): { presetClass: number; presetId: number; subtype: number; ooxmlClass: string } | undefined;
   createTeachingTimelinePreview(input: {
     pageId: string;
     video?: HTMLVideoElement;
@@ -51,10 +63,25 @@ export type Runtime = {
       pause(): void;
       resume(): void;
     };
+    speechMotions?: Array<{
+      actionId: string;
+      stepIndex: number;
+      atMs?: number;
+      endMs?: number;
+      trigger?: SpeechTrigger;
+    }>;
     nodes: Array<Record<string, unknown>>;
     onMode(mode: string): void;
     onProgress(progress: { actionId: string; timeMs: number; durationMs: number } | null): void;
-    onInteraction?(question: { checkpointId: string; question: string; referenceAnswer: { summary: string; keyPoints: string[] } } | null): void;
+    onMediaProgress?(progress: { actionId: string; timeMs: number; durationMs: number } | null): void;
+    onInteraction?(
+      question: {
+        checkpointId: string;
+        question: string;
+        referenceAnswer: { summary: string; keyPoints: string[] };
+        response?: { kind: string; options: string[]; answerIndices: number[] };
+      } | null,
+    ): void;
     onNode(id: string): void;
     onError(error: Error): void;
     onComplete(): void;
@@ -76,14 +103,14 @@ export type Runtime = {
 };
 let runtime: Promise<Runtime> | undefined;
 export const loadTeachingPreviewRuntime = (): Promise<Runtime> => {
-  const url = new URL('/.deckwise/teaching-preview.mjs?v=4', location.href).href;
+  const url = new URL('/.deckwise/teaching-preview.mjs?v=5', location.href).href;
   return (runtime ??= import(/* @vite-ignore */ url).catch((error) => {
     runtime = undefined;
     throw error;
   }));
 };
 
-function attentionTarget(tree: Shape[], objects: PreviewObject[], id: string): Shape {
+export function attentionTarget(tree: Shape[], objects: PreviewObject[], id: string): Shape {
   const matches = objects.filter(
     (o) =>
       o.objectId === id && o.status === 'mapped' && o.effectTargetEligible && (o.sourceShapeId || o.sourceObjectName),

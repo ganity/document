@@ -1,3 +1,11 @@
+import { teachingObjectChoices, appendTeachingObjectChoice } from './deckwise-teaching-object-choice';
+import { createTeachingAnimationForm } from './deckwise-teaching-animation-form';
+import {
+  listTeachingNativeAnimations,
+  relocateAnimationTrigger,
+  type AnimationCue,
+} from './deckwise-teaching-animation-bindings';
+import { prepareSpeechNativeSchedule } from './deckwise-teaching-native-schedule';
 import { t } from '@ranuts/shared/i18n';
 import {
   speechPauseMode,
@@ -14,9 +22,11 @@ import { mountPanelContext } from './agent-plugin/ui/panel-context';
 import { deckwiseEditorBridge } from './deckwise-editor-bridge';
 import { getEditorApi } from './agent-plugin/editor-bridge';
 import { deckwisePageLineage } from './deckwise-page-lineage';
+import { integrateGeneratedNativeMotions, nativeSpeechMotionSteps } from './deckwise-teaching-native-motion';
 import { createTeachingSlideshow, inspectTeachingAnimations } from './deckwise-teaching-slideshow';
 import {
   createTeachingAttentionPreview,
+  attentionTarget,
   selectedAttentionTargets,
   loadTeachingPreviewRuntime,
   type TimelinePreview,
@@ -25,11 +35,13 @@ import {
 
 type Action = { id: string; type: string; [key: string]: any };
 type View = {
+  teaching?: { pageType: string; phase: string; objective: string; durationSeconds: number };
   saveWarnings?: string[];
   teachingObjects?: Array<{
     objectId: string;
     name: string;
     role?: string;
+    aliases?: string[];
     status: string;
     effectTargetEligible?: boolean;
     sourceShapeId?: string;
@@ -39,6 +51,7 @@ type View = {
   pageId: string;
   pageNumber: number;
   project: {
+    taskType?: string;
     teachingRevision: string;
     source?: { sha256: string };
     pages: Array<{ pageId: string; locked: boolean; reviewState?: string; actions: Action[] }>;
@@ -53,6 +66,7 @@ type LessonRun = {
   page: number;
   total: number;
   navigating: boolean;
+  targetPage?: number;
   finishPage?: (error?: Error) => void;
 };
 
@@ -63,6 +77,8 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     busy = false,
     running = false;
   let nativeSlideshow = false;
+  let projectingMotions = false;
+  const projectedSources = new Set<string>();
   let context: Context | null = null,
     view: View | null = null;
   let actions: Action[] = [],
@@ -85,7 +101,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
   let panel: HTMLElement | null = null,
     nativeDocument: Document | null = null;
   let panelLayout: ReturnType<typeof createTeachingPanelLayout> | undefined;
-  let previewAudio: HTMLAudioElement | null = null,
+  let previewAudio: HTMLMediaElement | null = null,
     previewUrl: string | null = null;
   let mediaLibrary: Media[] = [];
   let mediaAdoption: { key: string; actionId: string } | null = null;
@@ -177,6 +193,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     const node = panel.querySelector<HTMLElement>('[data-status]');
     if (node) {
       node.textContent = text;
+      node.title = text;
       node.setAttribute('role', error ? 'alert' : 'status');
     }
   };
@@ -219,6 +236,11 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         case 'play':
           node.disabled =
             !view || busy || running || !!draftError || !!timeline || !actions.length || nativeSlideshow || !!lesson;
+          break;
+        case 'toggle':
+          node.textContent = previewMode === 'paused' ? '继续播放' : '暂停播放';
+          node.title = node.textContent;
+          node.disabled = !['playing', 'paused'].includes(previewMode);
           break;
         case 'pause':
           node.disabled = previewMode !== 'playing';
@@ -312,9 +334,10 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     if (view !== next) throw new Error('Teaching page changed while loading its draft');
     draftRevision = recovered.draft?.revision ?? null;
     draftInstruction = recovered.draft?.instruction ?? '';
+    draftError = '';
     if (recovered.draft) {
       if (JSON.stringify(recovered.draft.baseline) !== JSON.stringify(next.project)) {
-        draftError = '已有草稿对应旧版本，已保留原内容；请先核对已删除或更换的对象。';
+        draftError = '未保存修改与当前版本冲突。可删除草稿，继续使用已保存内容。';
       } else {
         actions = recovered.draft.actions;
         draftError = '';
@@ -324,9 +347,35 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     const local = localDrafts.get(next.pageId);
     if (local) {
       if (local.baseline === JSON.stringify(next.project)) actions = local.actions;
-      else draftError = '教学版本已更新，本地未保存稿已保留；请先核对页面与对象变更。';
+      else draftError = '未保存修改与当前版本冲突。可删除草稿，继续使用已保存内容。';
     }
     render(preserveLesson);
+  };
+  // Selection and save callbacks can renew the binding while the Host parses saved bytes.
+  const openTeaching = async (target: Context, isCurrent = () => true) => {
+    for (let attempt = 0; ; attempt++) {
+      let data: View | undefined, failure: unknown;
+      try {
+        data = await request('open', {}, target);
+      } catch (error) {
+        failure = error;
+      }
+      if (disposed) throw new Error('Teaching editor closed');
+      // A queued read already owns the newer context; do not retry it from the obsolete read too.
+      if (!isCurrent()) throw new Error('Teaching page superseded');
+      const current = deckwiseEditorBridge.getContext(binding);
+      if (
+        attempt < 2 &&
+        current.page === target.page &&
+        !current.readOnly &&
+        current.editGeneration !== target.editGeneration
+      ) {
+        target = current;
+        continue;
+      }
+      if (failure) throw failure;
+      return { data: data!, target };
+    }
   };
   const load = async (next: Context, preserveLesson?: LessonRun) => {
     const samePage = !!view && view.pageNumber === next.page;
@@ -349,21 +398,22 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     try {
       const opening = readQueue.then(() => {
         if (disposed || token !== epoch) throw new Error('Teaching page superseded');
-        return request('open', {}, next);
+        return openTeaching(next, () => token === epoch);
       });
       readQueue = opening.then(
         () => {},
         () => {},
       );
-      const data = await opening;
+      const { data, target } = await opening;
       if (disposed || token !== epoch) return;
       // Do not redirect an in-flight read to a newly selected slide.
       const current = deckwiseEditorBridge.getContext(binding);
-      if (current.page !== next.page || current.editGeneration !== next.editGeneration) {
+      if (current.page !== target.page || current.editGeneration !== target.editGeneration) {
         busy = false;
         queueMicrotask(() => lifecycle.update());
         return;
       }
+      context = target;
       // Selection changes renew the Host binding, not the authored timeline or its form.
       if (
         selectionRefresh &&
@@ -384,6 +434,43 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       statusError = false;
       render(preserveLesson);
       if (changed() && !draftError) scheduleSave();
+      if (
+        !preserveLesson &&
+        !changed() &&
+        data.project.taskType === 'scene' &&
+        actions.some(
+          (a) =>
+            a.type === 'speech' &&
+            a.visualCues?.some(
+              (c: AttentionCue) => c.effect?.type === 'element_animation' && !c.trigger && !c.nativeAnimation,
+            ),
+        )
+      ) {
+        const key = `${data.project.source?.sha256}/${data.pageId}/${data.project.teachingRevision}`;
+        if (!projectedSources.has(key)) {
+          projectingMotions = true;
+          try {
+            const shared = await loadTeachingPreviewRuntime();
+            if (disposed || token !== epoch || changed() || view?.viewId !== data.viewId) return;
+            projectedSources.add(key);
+            if (integrateGeneratedNativeMotions(data.pageNumber, actions, data.teachingObjects ?? [], shared)) {
+              const currentContext = deckwiseEditorBridge.getContext(binding);
+              const { data: saved, target } = await openTeaching(currentContext);
+              if (disposed || token !== epoch) return;
+              if (deckwiseEditorBridge.getContext(binding).page !== data.pageNumber)
+                throw new Error('Teaching page changed during native animation save');
+              context = target;
+              await applyView(saved);
+              notice('教学动画已写入 PPT，可在「动画」菜单编辑。');
+            }
+          } catch (error) {
+            notice(`PPT 动画同步未完成：${String(error)}`, true);
+          } finally {
+            projectingMotions = false;
+            if (!disposed) lifecycle.update();
+          }
+        }
+      }
       const owner = view!.viewId;
       const results = await Promise.allSettled([
         request('tts:models', scope()),
@@ -444,10 +531,35 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       if (token !== epoch) throw new Error('教学页面已切换，请在当前页重试');
       const next = await request('write', { ...scope(), actions: content }, target);
       if (token !== epoch) throw new Error('教学页面已切换，请在当前页重试');
-      await request('draft:set', { viewId: currentView.viewId, expectedRevision: draftRevision, draft: null }, target);
+      // A pending field blur may arrive while the previous snapshot is being saved.
+      const retainNewerEdits = () => {
+        if (JSON.stringify(actions) === JSON.stringify(content)) return false;
+        view = next;
+        baseline = JSON.stringify(page()!.actions);
+        persistDraft();
+        return true;
+      };
+      await draftQueue;
       if (token !== epoch) throw new Error('教学页面已切换，请在当前页重试');
+      if (retainNewerEdits()) return;
+      const clearing = draftQueue.then(async () => {
+        const result = await request(
+          'draft:set',
+          { viewId: currentView.viewId, expectedRevision: draftRevision, draft: null },
+          target,
+        );
+        draftRevision = result.draft?.revision ?? null;
+      });
+      // Draft edits arriving during clear must use the revision returned by that clear.
+      draftQueue = clearing.then(
+        () => {},
+        () => {},
+      );
+      await clearing;
+      await draftQueue;
+      if (token !== epoch) throw new Error('教学页面已切换，请在当前页重试');
+      if (retainNewerEdits()) return;
       localDrafts.delete(currentView.pageId);
-      draftRevision = null;
       await applyView(next, undefined, true);
       if (panel) panel.scrollTop = scrollTop;
       if (actionId && selection)
@@ -470,6 +582,30 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     }
   };
   const save = () => void run(saveCurrent, false);
+  const discardChanges = async () => {
+    if (!view || !context) return;
+    clearTimeout(saveTimer);
+    const current = view,
+      target = context,
+      token = epoch;
+    await draftQueue;
+    if (disposed || token !== epoch) return;
+    const result = await request(
+      'draft:set',
+      { viewId: current.viewId, expectedRevision: draftRevision, draft: null },
+      target,
+    );
+    if (disposed || token !== epoch) return;
+    stopAudio();
+    localDrafts.delete(current.pageId);
+    draftRevision = result.draft?.revision ?? null;
+    draftError = draftInstruction = '';
+    undoActions.length = redoActions.length = 0;
+    actions = structuredClone(page()!.actions);
+    baseline = JSON.stringify(actions);
+    notice('已删除草稿，当前显示已保存内容');
+    render();
+  };
   function scheduleSave() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
@@ -569,6 +705,16 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         )
       )
         throw new Error('本页包含尚未接入的互动或未生成的视频，请先完成准备或使用高级教学工具中的教学播放器');
+      for (const entry of content)
+        for (const cue of entry.visualCues ?? []) {
+          if (
+            cue.trigger?.kind === 'text' &&
+            (cue.trigger.stale ||
+              cue.trigger.audioAssetId !== entry.audioAssetId ||
+              entry.text.slice(cue.trigger.start, cue.trigger.end) !== cue.trigger.text)
+          )
+            throw new Error(t('teachingTimingMarkRequired'));
+        }
       const nativeNodes = content.filter((node) => node.type === 'native_animation');
       if (nativeNodes.length && !inSlideshow)
         throw new Error('本页已绑定 PPT 动画，请使用「幻灯片放映」预览完整时间轴');
@@ -615,9 +761,19 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       const runId = timelineRun;
       const isCurrent = () => token === epoch && runId === timelineRun && !disposed;
       notice('正在读取本页已有讲解与媒体…');
+      let schedule: ReturnType<typeof prepareSpeechNativeSchedule>;
       try {
         const shared = await loadTeachingPreviewRuntime();
         if (!isCurrent()) return;
+        schedule = prepareSpeechNativeSchedule(view!.pageNumber, content, view!.teachingObjects ?? [], shared);
+        if (schedule && !inSlideshow) throw new Error(t('teachingAnimationSlideshowRequired'));
+        const motionSteps =
+          schedule?.motions ??
+          (inSlideshow
+            ? nativeSpeechMotionSteps(view!.pageNumber, content, view!.teachingObjects ?? [], shared)
+            : undefined) ??
+          [];
+        const stepCount = nativeNodes.length || motionSteps.length;
         const nodes: Array<Record<string, unknown>> = [];
         let bytesTotal = 0;
         for (const action of content) {
@@ -651,6 +807,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
                   id: action.id,
                   type: action.type,
                   text: action.text,
+                  audioAssetId: action.audioAssetId,
                   audioUrl: url,
                   pauseAfterMs: action.pauseAfterMs,
                 },
@@ -662,7 +819,9 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             teachingSlideshow = createTeachingSlideshow({
               doc: nativeDocument!,
               page: view!.pageNumber,
-              timelineStepCount: nativeNodes.length || undefined,
+              timelineStepCount: stepCount || undefined,
+              generatedMotions: true,
+              schedule,
               onReady: () => {
                 if (isCurrent())
                   void startTeaching().catch((error) => {
@@ -689,29 +848,69 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             startingSlideshow = false;
           }
           const controls = teachingSlideshow.controls;
+          const navigate = (number: number) => {
+            if (number < 1 || number > view!.project.pages.length) return;
+            if (lesson) {
+              const current = lesson;
+              if (current.navigating || current.targetPage !== undefined) return;
+              current.targetPage = number;
+              const finish = current.finishPage;
+              stopAudio(current);
+              finish?.();
+            } else {
+              stopAudio();
+              void playLesson(number);
+            }
+          };
           for (const [label, command, action] of [
+            ['上一页', 'previous', () => navigate(view!.pageNumber - 1)],
             [
               '暂停播放',
-              'pause',
+              'toggle',
               () => {
-                if (!nativeNodes.length) teachingSlideshow?.pause();
-                timeline?.pause();
+                if (previewMode === 'paused') {
+                  if (!stepCount) teachingSlideshow?.resume();
+                  timeline?.resume();
+                } else {
+                  if (!stepCount) teachingSlideshow?.pause();
+                  timeline?.pause();
+                }
               },
             ],
-            [
-              '继续播放',
-              'resume',
-              () => {
-                if (!nativeNodes.length) teachingSlideshow?.resume();
-                timeline?.resume();
-              },
-            ],
+            ['重播本页', 'replay', () => navigate(view!.pageNumber)],
+            ['下一页', 'next', () => navigate(view!.pageNumber + 1)],
             ['教师继续', 'teacher', () => timeline?.continueTeacher()],
           ] as const) {
             const control = button(label, action);
             control.dataset.previewCommand = command;
+            control.title = label;
+            control.disabled =
+              command === 'previous'
+                ? view!.pageNumber === 1
+                : command === 'next'
+                  ? view!.pageNumber === view!.project.pages.length
+                  : false;
             controls.append(control);
           }
+          const seekBar = element('label');
+          seekBar.dataset.playbackSeek = '';
+          const range = element('input');
+          range.type = 'range';
+          range.min = '0';
+          range.max = '0';
+          range.value = '0';
+          range.step = '10';
+          range.disabled = true;
+          range.setAttribute('aria-label', '当前讲解或媒体进度');
+          const time = element('output', '0:00 / 0:00');
+          time.setAttribute('role', 'timer');
+          time.setAttribute('aria-label', '当前媒体时间');
+          const seek = (ms: number) => timeline?.seek(Math.max(Number(range.min), Math.min(Number(range.max), ms)));
+          range.addEventListener('input', () => seek(Number(range.value)));
+          const forward = button('快进 5 秒', () => seek(Number(range.value) + 5000), true);
+          forward.dataset.previewCommand = 'forward';
+          seekBar.append(range, time, forward);
+          controls.append(seekBar);
           controls.append(
             button('退出教学放映', () => {
               stopAudio();
@@ -747,18 +946,36 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             if (teachingSlideshow) {
               previewVideo.controls = false;
               previewVideo.style.cssText =
-                'position:absolute;inset:0 0 60px;width:100%;height:calc(100% - 60px);object-fit:contain;background:#000;z-index:40;';
+                'position:absolute;inset:0 0 var(--teaching-controls-height,112px);width:100%;height:calc(100% - var(--teaching-controls-height,112px));object-fit:contain;background:#000;z-index:40;';
               teachingSlideshow.surface.append(previewVideo);
             } else panel!.querySelector('[data-preview-command]')!.parentElement!.after(previewVideo);
           }
+          const updateMediaProgress = (progress: { timeMs: number; durationMs: number } | null) => {
+            const bar = teachingSlideshow?.controls.querySelector('[data-playback-seek]');
+            if (!bar) return;
+            const range = bar.querySelector('input')!;
+            const forward = bar.querySelector('button')!;
+            range.disabled = forward.disabled = !progress || progress.durationMs <= 0;
+            range.min = String(motionSteps.length && progress ? Math.min(progress.timeMs, progress.durationMs) : 0);
+            range.max = String(progress?.durationMs ?? 0);
+            range.value = String(progress?.timeMs ?? 0);
+            const clock = (ms: number) =>
+              `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
+            bar.querySelector('output')!.textContent =
+              `${clock(progress?.timeMs ?? 0)} / ${clock(progress?.durationMs ?? 0)}`;
+            range.title = motionSteps.length
+              ? '动画同步播放支持向前快进；回看请重播本页'
+              : '拖动调整当前讲解或媒体进度';
+          };
           timeline = shared.createTeachingTimelinePreview({
             video: previewVideo ?? undefined,
             pageId: view!.pageId,
             nodes,
-            native: nativeNodes.length
+            speechMotions: motionSteps.length ? motionSteps : undefined,
+            native: stepCount
               ? {
                   sourceSha256: view!.project.source!.sha256,
-                  stepCount: nativeNodes.length,
+                  stepCount,
                   next: (index: number) => teachingSlideshow!.next(index),
                   pause: () => teachingSlideshow?.pause(),
                   resume: () => teachingSlideshow?.resume(),
@@ -773,8 +990,10 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
               else if (mode === 'playing')
                 notice(teachingSlideshow ? '正在幻灯片放映' : '正在画布预览；PPT 动画请使用原生动画预览');
             },
+            onMediaProgress: updateMediaProgress,
             onProgress(progress) {
               if (!isCurrent()) return;
+              updateMediaProgress(progress);
               const action = progress ? content.find((a) => a.id === progress.actionId) : undefined;
               attention?.show(
                 progress
@@ -798,6 +1017,47 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
                 'max-width:600px;max-height:60vh;overflow:auto;background:white;color:#222;padding:16px;';
               if (teachingSlideshow) card.style.cssText += 'position:absolute;bottom:64px;right:12px;';
               card.append(element('strong', question.question));
+              if (question.response) {
+                const response = question.response;
+                const choices = element('fieldset'),
+                  result = element('p');
+                result.setAttribute('role', 'status');
+                choices.append(element('legend', response.options.length ? '选择答案' : '课堂回应'));
+                if (response.options.length) {
+                  const selected = new Set<number>();
+                  for (const [index, option] of response.options.entries()) {
+                    const label = element('label'),
+                      field = element('input');
+                    label.style.display = 'block';
+                    field.type = response.kind === 'multiple' ? 'checkbox' : 'radio';
+                    field.name = `answer-${question.checkpointId}`;
+                    field.addEventListener('change', () => {
+                      if (response.kind !== 'multiple') selected.clear();
+                      if (field.checked) selected.add(index);
+                      else selected.delete(index);
+                      result.textContent = '';
+                    });
+                    label.append(field, element('span', option));
+                    choices.append(label);
+                  }
+                  choices.append(
+                    button('检查答案', () => {
+                      result.textContent = !selected.size
+                        ? '请先选择答案'
+                        : shared.evaluateQuestionAnswer(response, [...selected])
+                          ? '回答正确'
+                          : '再想一想，可以重新选择';
+                    }),
+                    result,
+                  );
+                } else {
+                  const field = element('textarea');
+                  field.maxLength = 4000;
+                  field.setAttribute('aria-label', '课堂回应');
+                  choices.append(field, element('p', '讨论或完成活动后，由教师结合参考答案评价。'));
+                }
+                card.append(choices);
+              }
               const answer = element('details');
               answer.append(element('summary', '参考答案'), element('p', question.referenceAnswer.summary));
               const points = element('ul');
@@ -839,10 +1099,12 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         if (!isCurrent()) return;
         stopAudio();
         throw error;
+      } finally {
+        if (!isCurrent() || !teachingSlideshow) schedule?.restore();
       }
     }, false);
 
-  const playLesson = async () => {
+  const playLesson = async (startPage = 1) => {
     if (!view || !context || busy || running || lesson || nativeSlideshow || draftError) return;
     if (changed()) {
       await run(saveCurrent);
@@ -890,7 +1152,6 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     stopButton.focus();
     const current: LessonRun = { cover, page: 0, total: slides.length, navigating: false };
     lesson = current;
-    const visited = new Set<string>();
     let completed = false;
     const assertCurrent = () => {
       const actualSlides = api.WordControl?.m_oLogicDocument?.Slides;
@@ -905,7 +1166,8 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     };
     try {
       stopAudio(current);
-      for (let number = 1; number <= current.total; number++) {
+      for (let number = startPage; number <= current.total; number = current.targetPage ?? number + 1) {
+        current.targetPage = undefined;
         assertCurrent();
         current.page = number;
         status.textContent = `正在准备第 ${number}/${current.total} 页教学…`;
@@ -925,12 +1187,10 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             view.project.source?.sha256 !== source ||
             view.project.teachingRevision !== revision ||
             !pageIds.includes(view.pageId) ||
-            visited.has(view.pageId) ||
             changed() ||
             draftError
           )
             throw new Error('课件或教学版本已变化，或存在未保存的教学草稿；整课放映已停止');
-          visited.add(view.pageId);
         } finally {
           current.navigating = false;
         }
@@ -973,10 +1233,12 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     section.setAttribute('aria-label', t('teachingSpotlight'));
     section.append(element('strong', t('teachingFocusTitle')));
     const cues: AttentionCue[] = Array.isArray(action.visualCues) ? action.visualCues : [];
-    const allowed = editable() && page()?.reviewState === 'ready' && !!action.audioAssetId;
+    const allowed = editable() && !!action.audioAssetId;
     const objects = (view?.teachingObjects ?? []).filter(
       (object) => object.status === 'mapped' && object.effectTargetEligible,
     );
+    const objectViews = teachingObjectChoices(view!.pageNumber, objects);
+    const loadThumbnails: Array<() => void> = [];
     const form = element('div');
     form.dataset.cueForm = '';
     form.hidden = true;
@@ -986,14 +1248,14 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     kind.append(new Option(t('teachingSpotlight'), 'spotlight'), new Option(t('teachingHighlight'), 'highlight'));
     const targets = element('fieldset');
     targets.append(element('legend', '目标对象（可多选）'));
-    const choices = objects.map((object) => {
-      const label = element('label');
-      label.className = 'teaching-target';
+    targets.append(element('p', t('teachingObjectPickerHint')));
+    const choices = objectViews.map((object) => {
       const check = element('input');
       check.type = 'checkbox';
       check.value = object.objectId;
-      label.append(check, element('span', object.role || object.name));
-      targets.append(label);
+      loadThumbnails.push(
+        appendTeachingObjectChoice(section.ownerDocument, targets, check, object, (message) => notice(message, true)),
+      );
       return check;
     });
     const field = (label: string, input: HTMLElement) => {
@@ -1031,7 +1293,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       highlight.hidden = kind.value !== 'highlight';
     });
     const submit = button(
-      '添加教学提示',
+      t('teachingCueAdd'),
       () => {
         const ids = choices.filter((choice) => choice.checked).map((choice) => choice.value);
         const atMs = Math.round(start.valueAsNumber * 1000),
@@ -1109,7 +1371,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         ),
       );
       highlight.hidden = kind.value !== 'highlight';
-      submit.textContent = cue ? '更新教学提示' : '添加教学提示';
+      submit.textContent = t(cue ? 'teachingCueSave' : 'teachingCueAdd');
       form.hidden = false;
       if (!cue) {
         const logic = (getEditorApi() as any)?.WordControl?.m_oLogicDocument;
@@ -1127,6 +1389,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
           }
         }
       }
+      loadThumbnails.forEach((load) => load());
       kind.focus();
     };
     for (const cue of cues) {
@@ -1144,7 +1407,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         ),
         element(
           'p',
-          ids.map((id) => objects.find((object) => object.objectId === id)?.name || '对象映射待确认').join('、'),
+          ids.map((id) => objectViews.find((object) => object.objectId === id)?.name || '对象映射待确认').join('、'),
         ),
         button(
           '预览此提示',
@@ -1172,15 +1435,30 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       );
       row.title = ids.map((id) => objects.find((object) => object.objectId === id)?.name ?? id).join(', ');
       for (const [i, control] of [...row.querySelectorAll('button')].entries())
-        decorateTeachingButton(control, (['play', 'edit', 'delete'] as const)[i], true);
+        decorateTeachingButton(
+          control,
+          (['play', 'edit', 'delete'] as const)[i],
+          i !== 1,
+          i === 1 ? t('agentQueueEdit') : undefined,
+        );
       section.append(row);
     }
-    if (!allowed || !objects.length) {
-      section.append(
-        element('p', page()?.locked ? '本页已锁定。' : '保存本页讲解并生成语音后，可为已映射对象添加高亮和聚光。'),
-      );
-      return section;
-    }
+    const unavailable = page()?.locked
+      ? t('teachingEffectsLocked')
+      : !action.audioAssetId
+        ? t('teachingEffectsNeedVoice')
+        : !objects.length
+          ? t('teachingEffectsNeedObjects')
+          : '';
+    if (unavailable) section.append(element('p', unavailable));
+    const formActions = element('div');
+    formActions.className = 'teaching-cue-actions';
+    submit.className = 'teaching-primary';
+    const cancel = button(t('teachingCueCancel'), () => {
+      form.hidden = true;
+    });
+    cancel.className = 'teaching-secondary';
+    formActions.append(submit, cancel);
     form.append(
       kind,
       button('使用画布选中对象', () => {
@@ -1208,36 +1486,175 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       field(t('teachingEndSeconds'), end),
       highlight,
       field('不透明度（%，聚光为背景遮罩）', opacity),
-      submit,
-      button('取消编辑效果', () => {
-        form.hidden = true;
-      }),
+      formActions,
     );
     const effectActions = element('div');
     effectActions.className = 'teaching-effect-actions';
-    const addSpotlight = button(t('teachingSpotlight'), () => openForm());
+    const addSpotlight = button(t('teachingSpotlight'), () => openForm(), !allowed || !objects.length);
     addSpotlight.className = 'teaching-primary';
     effectActions.append(
       addSpotlight,
-      button(t('teachingHighlight'), () => openForm(undefined, 'highlight')),
+      button(t('teachingHighlight'), () => openForm(undefined, 'highlight'), !allowed || !objects.length),
+      button(t('teachingEditAnimation'), () => editNativeAnimation(action), !editable() || nativeSlideshow),
     );
+    for (const [i, control] of [...effectActions.querySelectorAll('button')].entries())
+      decorateTeachingButton(
+        control,
+        i === 2 ? 'edit' : 'plus',
+        false,
+        t((['teachingSpotlightEffect', 'teachingHighlightEffect', 'teachingNativeAnimationShort'] as const)[i]),
+      );
+    effectActions.lastElementChild!.setAttribute('title', t('teachingNativeMotionHint'));
     section.insertBefore(effectActions, section.children[1] ?? null);
     section.append(
-      form,
+      createTeachingAnimationForm({
+        doc: section.ownerDocument,
+        action: { ...action, text: action.text, visualCues: cues as AnimationCue[] },
+        editable: editable(),
+        objects: objectViews,
+        selection: () => speechSelections.get(action.id),
+        native: () =>
+          listTeachingNativeAnimations(view!.pageNumber, view?.teachingObjects ?? []).map((choice) => {
+            const owner = actions.find(
+              (entry) =>
+                entry.id !== action.id &&
+                entry.visualCues?.some((cue: AttentionCue) => cue.nativeAnimation === choice.objectId),
+            );
+            return {
+              ...choice,
+              owner: owner ? `${actions.indexOf(owner) + 1} · ${owner.text?.slice(0, 30) ?? ''}` : undefined,
+            };
+          }),
+        selectedObjects: () => {
+          const api = getEditorApi();
+          const logic = Reflect.get(Reflect.get(api ?? {}, 'WordControl') ?? {}, 'm_oLogicDocument');
+          return selectedAttentionTargets(
+            logic?.Slides?.[view!.pageNumber - 1]?.cSld?.spTree ?? [],
+            logic?.GetCurrentController?.()?.selectedObjects ?? [],
+            objects,
+          );
+        },
+        preview: () => previewMedia(action, true),
+        audioDuration: () =>
+          previewAudio && Number.isFinite(previewAudio.duration) ? Math.round(previewAudio.duration * 1000) : undefined,
+        position: () =>
+          previewAudio && Number.isFinite(previewAudio.currentTime)
+            ? Math.round(previewAudio.currentTime * 1000)
+            : undefined,
+        error: (message) => notice(message, true),
+        save: (next, moveNative) => {
+          stopAudio();
+          edit(
+            actions.map((entry, i) =>
+              i === index
+                ? { ...entry, visualCues: next }
+                : moveNative.length && Array.isArray(entry.visualCues)
+                  ? {
+                      ...entry,
+                      visualCues: entry.visualCues.filter(
+                        (cue: AttentionCue) => !moveNative.includes(cue.nativeAnimation ?? ''),
+                      ),
+                    }
+                  : entry,
+            ),
+          );
+        },
+      }),
+    );
+    if (allowed && objects.length) section.append(form);
+    section.append(
       element('p', '选择画布对象或勾选目标，设置时间后添加；试听讲解时效果随音频播放。PPT 动画使用原生动画选项卡。'),
     );
     section.lastElementChild?.classList.add('teaching-attention-hint');
     return section;
   }
+  async function previewMedia(action: Action, autoplay: boolean) {
+    if (nativeSlideshow) throw new Error('请先退出原生幻灯片放映，再试听语音');
+    const requestId = previewRequest;
+    if (changed()) await saveCurrent();
+    if (requestId !== previewRequest || nativeSlideshow || disposed) return;
+    stopAudio();
+    const token = epoch,
+      runId = timelineRun;
+    const currentCard = panel?.querySelector<HTMLElement>('[data-teaching-inspector]');
+    if (currentCard?.dataset.actionId !== action.id) return;
+    previewAudio = element(action.type === 'video_clip' ? 'video' : 'audio');
+    previewAudio.controls = true;
+    previewAudio.preload = 'metadata';
+    previewAudio.setAttribute('aria-label', teachingStepTitle(action));
+    previewAudio.addEventListener('loadedmetadata', () => {
+      const duration = currentCard.querySelector('[data-media-preview] > p');
+      if (duration && Number.isFinite(player.duration))
+        duration.textContent = t('teachingMediaDuration', { seconds: Number(player.duration.toFixed(1)) });
+    });
+    if (typeof action.gain === 'number') previewAudio.volume = Math.max(0, Math.min(1, action.gain));
+    (currentCard.querySelector('[data-media-preview]') ?? currentCard).append(previewAudio);
+    const player = previewAudio;
+    const audio = await request(action.type === 'speech' ? 'tts:preview' : 'media:preview', {
+      ...scope(),
+      actionId: action.id,
+    });
+    if (token !== epoch || runId !== timelineRun || disposed || nativeSlideshow || previewAudio !== player) return;
+    previewUrl = URL.createObjectURL(new Blob([audio.bytes], { type: audio.mimeType }));
+    const cues = (action.visualCues ?? []).filter((cue: AttentionCue) =>
+      ['highlight', 'spotlight'].includes(cue.effect?.type),
+    );
+    if (cues.length) {
+      try {
+        const preview = await previewAttention();
+        scheduler = new preview.shared.SpeechCueScheduler(
+          [],
+          () => (previewAudio?.currentTime ?? 0) * 1000,
+          () => {},
+          undefined,
+          (ms) => preview.show(cues.filter((cue: AttentionCue) => cue.atMs <= ms && ms < cue.endMs)),
+        );
+        const clock = scheduler;
+        previewAudio.addEventListener('playing', () => clock.start());
+        previewAudio.addEventListener('pause', () => clock.pause());
+        previewAudio.addEventListener('waiting', () => clock.pause());
+        previewAudio.addEventListener('seeking', () => clock.pause());
+        previewAudio.addEventListener('seeked', () => {
+          clock.seek();
+          if (!previewAudio?.paused) clock.start();
+        });
+        previewAudio.addEventListener('ended', () => {
+          clock.stop();
+          preview.show([]);
+        });
+        clock.seek();
+      } catch (error) {
+        stopAudio();
+        throw error;
+      }
+    }
+    if (token !== epoch || runId !== timelineRun || disposed || nativeSlideshow || !previewAudio) {
+      stopAudio();
+      return;
+    }
+    previewAudio.src = previewUrl;
+    previewAudio.addEventListener('error', () => {
+      if (previewAudio !== player) return;
+      stopAudio();
+      notice(t('teachingMediaFailed'), true);
+    });
+    if (autoplay) await previewAudio.play();
+  }
+  const speechSelections = new Map<string, { start: number; end: number }>();
   function speechCard(action: Action, index: number) {
     const card = element('article');
     card.dataset.actionId = action.id;
     card.append(element('strong', `${index + 1} · 讲解与语音`));
     const text = element('textarea');
-    text.rows = 3;
+    text.rows = 1;
+    text.className = 'teaching-speech-text';
     text.value = action.text;
     text.disabled = !editable();
     text.setAttribute('aria-label', `第 ${index + 1} 段讲解`);
+    text.addEventListener('select', () => {
+      if (text.selectionEnd > text.selectionStart)
+        speechSelections.set(action.id, { start: text.selectionStart, end: text.selectionEnd });
+    });
     text.addEventListener('input', () => {
       const next: Action = { ...actions[index], text: text.value };
       for (const key of [
@@ -1252,6 +1669,13 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         'attention',
       ])
         delete next[key];
+      if (Array.isArray(action.visualCues)) {
+        const retained = action.visualCues
+          .filter((cue: AttentionCue) => cue.trigger)
+          .map((cue: AttentionCue) => ({ ...cue, trigger: relocateAnimationTrigger(cue.trigger!, text.value) }));
+        if (retained.length) next.visualCues = retained;
+      }
+      speechSelections.delete(action.id);
       stopAudio();
       edit(
         actions.map((entry, i) => (i === index ? next : entry)),
@@ -1262,7 +1686,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         ?.querySelector('.teaching-step-summary');
       if (summary) summary.textContent = text.value || t('teachingEmptySpeech');
       panel!.querySelector('[data-teaching-inspector] [data-audio-status]')!.textContent =
-        '讲解已修改，保存后可重新生成语音；原语音和动作绑定已失效';
+        '讲解已修改，保存后可重新生成语音；原语音已失效，选词动画需重新定位';
     });
     card.append(text);
     const status = element(
@@ -1281,71 +1705,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
           '试听语音',
           () =>
             void run(async () => {
-              if (nativeSlideshow) throw new Error('请先退出原生幻灯片放映，再试听语音');
-              const requestId = previewRequest;
-              if (changed()) await saveCurrent();
-              if (requestId !== previewRequest || nativeSlideshow || disposed) return;
-              stopAudio();
-              const token = epoch,
-                runId = timelineRun;
-              const audio = await request(action.type === 'speech' ? 'tts:preview' : 'media:preview', {
-                ...scope(),
-                actionId: action.id,
-              });
-              if (token !== epoch || runId !== timelineRun || disposed || nativeSlideshow) return;
-              previewUrl = URL.createObjectURL(new Blob([audio.bytes], { type: audio.mimeType }));
-              previewAudio = element('audio');
-              previewAudio.controls = true;
-              const cues = (action.visualCues ?? []).filter((cue: AttentionCue) =>
-                ['highlight', 'spotlight'].includes(cue.effect?.type),
-              );
-              if (cues.length) {
-                try {
-                  const preview = await previewAttention();
-                  scheduler = new preview.shared.SpeechCueScheduler(
-                    [],
-                    () => (previewAudio?.currentTime ?? 0) * 1000,
-                    () => {},
-                    undefined,
-                    (ms) => preview.show(cues.filter((cue: AttentionCue) => cue.atMs <= ms && ms < cue.endMs)),
-                  );
-                  const clock = scheduler;
-                  previewAudio.addEventListener('playing', () => clock.start());
-                  previewAudio.addEventListener('pause', () => clock.pause());
-                  previewAudio.addEventListener('waiting', () => clock.pause());
-                  previewAudio.addEventListener('seeking', () => clock.pause());
-                  previewAudio.addEventListener('seeked', () => {
-                    clock.seek();
-                    if (!previewAudio?.paused) clock.start();
-                  });
-                  previewAudio.addEventListener('ended', () => {
-                    clock.stop();
-                    preview.show([]);
-                  });
-                  clock.seek();
-                } catch (error) {
-                  stopAudio();
-                  throw error;
-                }
-              }
-              if (token !== epoch || runId !== timelineRun || disposed || nativeSlideshow || !previewAudio) {
-                stopAudio();
-                return;
-              }
-              previewAudio.src = previewUrl;
-              previewAudio.addEventListener('error', () => {
-                stopAudio();
-                notice('语音播放失败，请检查本地音频', true);
-              });
-              const currentCard = [...(panel?.querySelectorAll<HTMLElement>('[data-teaching-inspector]') ?? [])].find(
-                (entry) => entry.dataset.actionId === action.id,
-              );
-              if (!currentCard) {
-                stopAudio();
-                return;
-              }
-              currentCard.append(previewAudio);
-              await previewAudio.play();
+              await previewMedia(action, true);
             }),
           busy || !!draftError,
         ),
@@ -1467,7 +1827,20 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     card.append(attentionControls(action, index), voice);
     for (const task of tasks.filter((entry) => entry.actionId === action.id)) {
       const row = element('div');
-      row.append(element('p', `${task.model} · ${task.voice ?? '默认音色'} · ${task.task?.state ?? task.phase}`));
+      row.append(
+        element(
+          'p',
+          task.task?.state === 'ready'
+            ? t('teachingVoiceGenerated')
+            : task.task?.state === 'failed'
+              ? t('teachingVoiceFailed')
+              : task.phase === 'submitted'
+                ? t('teachingVoiceGenerating')
+                : t('teachingVoicePrepared'),
+        ),
+      );
+      const technical = element('small', `${task.model} · ${task.voice ?? '默认音色'}`);
+      row.append(technical);
       row.append(
         button(
           '检查生成结果',
@@ -1492,7 +1865,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             busy || !!draftError,
           ),
         );
-      card.append(row);
+      voice.append(row);
     }
     return card;
   }
@@ -1560,19 +1933,26 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
   function editNativeAnimation(action: Action) {
     try {
       stopAudio();
-      const { api, slide, effects } = inspectTeachingAnimations(view!.pageNumber);
-      const effect = effects[action.stepIndex];
+      const api = getEditorApi() as any;
+      const slide = api?.WordControl?.m_oLogicDocument?.Slides?.[view!.pageNumber - 1];
       const tab = nativeDocument?.querySelector<HTMLElement>(
         '[role="tab"][aria-controls="animation-panel"], #toolbar [data-tab="animate"], #animate',
       );
-      if (!effect || !tab) throw new Error('Native animation editor is unavailable');
-      const controller = api.WordControl.m_oLogicDocument.GetCurrentController();
-      controller.resetSelection();
-      controller.selectObject(
-        slide.cSld.spTree.find((shape: any) => shape.Id === effect.getObjectId()),
-        view!.pageNumber - 1,
-      );
-      api.WordControl.m_oLogicDocument.Document_UpdateSelectionState?.();
+      if (!slide || !tab) throw new Error(t('teachingNativeEditorUnavailable'));
+      const effect =
+        action.type === 'native_animation' ? slide.timing?.getAllAnimEffects?.()[action.stepIndex] : undefined;
+      const cue = action.visualCues?.find((cue: AttentionCue) => cue.effect?.type === 'element_animation');
+      const shape = effect
+        ? slide.cSld.spTree.find((shape: any) => shape.Id === effect.getObjectId())
+        : cue?.effect.elementId
+          ? attentionTarget(slide.cSld.spTree, view?.teachingObjects ?? [], cue.effect.elementId)
+          : undefined;
+      if (shape) {
+        const controller = api.WordControl.m_oLogicDocument.GetCurrentController();
+        controller.resetSelection();
+        controller.selectObject(shape, view!.pageNumber - 1);
+        api.WordControl.m_oLogicDocument.Document_UpdateSelectionState?.();
+      }
       tab.click();
       setOpen(false);
     } catch (error) {
@@ -1622,11 +2002,24 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       draftError || statusText || (busy ? '正在读取…' : t('teachingStepCount', { count: actions.length })),
     );
     status.dataset.status = '';
+    status.title = status.textContent ?? '';
     status.setAttribute('role', draftError || statusError ? 'alert' : 'status');
-    panel.append(status);
+    const statusBar = element('div');
+    statusBar.className = 'teaching-statusbar';
+    statusBar.append(status);
+    panel.append(statusBar);
     if (!view) {
       panel.append(button('重新读取', refresh, busy));
       return;
+    }
+    if (draftError || draftRevision || changed() || localDrafts.has(view.pageId)) {
+      const recovery = element('div');
+      recovery.className = 'teaching-cue-actions';
+      const discard = button(t('teachingDiscardDraft'), () => void run(discardChanges), busy || !!lesson);
+      discard.className = 'teaching-secondary';
+      discard.title = '删除本页未保存修改，恢复已保存内容';
+      recovery.append(discard);
+      panel.append(recovery);
     }
     const previewControls = element('nav');
     previewControls.setAttribute('aria-label', '本页教学播放');
@@ -1650,8 +2043,18 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       if (command === 'lesson') control.className = 'teaching-primary';
       decorateTeachingButton(
         control,
-        command === 'play' ? 'canvas' : command === 'pause' ? 'pause' : 'play',
-        command === 'play',
+        command === 'play'
+          ? 'canvas'
+          : command === 'show'
+            ? 'slide'
+            : command === 'lesson'
+              ? 'lesson'
+              : command === 'pause'
+                ? 'pause'
+                : command === 'teacher'
+                  ? 'continue'
+                  : 'play',
+        true,
       );
       previewControls.append(control);
     }
@@ -1669,7 +2072,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       history.append(control);
     }
     header.append(history);
-    panel.append(previewControls);
+    statusBar.append(previewControls);
     renderControls();
     if (page()?.locked) panel.append(element('p', '本页已锁定，教学内容只读。'));
     const flow = element('div');
@@ -1679,6 +2082,27 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     const inspector = element('section');
     inspector.className = 'teaching-inspector';
     inspector.dataset.teachingInspector = '';
+    if (view?.teaching) {
+      const kinds: Record<string, string> = {
+        slide: '教学讲解',
+        quiz: '提问练习',
+        interactive: '课堂互动',
+        pbl: '项目活动',
+      };
+      const info = element('details');
+      info.className = 'teaching-page-info';
+      const toggle = element('summary');
+      const icon = button(t('teachingPageInfo'), () => {});
+      decorateTeachingButton(icon, 'info', true);
+      toggle.setAttribute('aria-label', t('teachingPageInfo'));
+      toggle.title = t('teachingPageInfo');
+      toggle.append(...icon.childNodes);
+      info.append(
+        toggle,
+        element('p', `${kinds[view.teaching.pageType] ?? view.teaching.pageType} · ${view.teaching.objective}`),
+      );
+      statusBar.append(info);
+    }
     panel.append(flow);
     if (!actions.length) panel.append(element('p', '本页还没有讲解，可添加讲解或在主 Chat 中生成。'));
     actions.forEach((action, index) => {
@@ -1687,7 +2111,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         card.append(
           element(
             'strong',
-            `${index + 1} · ${action.type === 'interaction_checkpoint' ? (action.checkpointKind === 'chapter_summary' ? '课堂提问' : '暂停，等待教师继续') : action.type === 'audio_clip' ? '音乐 / 音频' : action.type === 'video_clip' ? '视频' : action.type === 'delay' ? '停顿' : action.type === 'native_animation' ? `PPT 动画 · 第 ${action.stepIndex + 1} 步` : action.type}`,
+            `${index + 1} · ${action.type === 'interaction_checkpoint' ? (action.checkpointKind === 'chapter_summary' ? '课堂提问' : '暂停，等待教师继续') : action.type === 'audio_clip' ? '音乐 / 音频' : action.type === 'video_clip' ? '视频' : action.type === 'music_slot' ? '音乐 · 尚待生成' : action.type === 'delay' ? '停顿' : action.type === 'native_animation' ? `PPT 动画 · 第 ${action.stepIndex + 1} 步` : action.type}`,
           ),
         );
       if (action.type === 'interaction_checkpoint' && action.checkpointKind === 'chapter_summary') {
@@ -1735,6 +2159,105 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
           label.append(field);
           card.append(label);
         }
+      }
+      if (action.type === 'interaction_checkpoint' && action.checkpointKind === 'chapter_summary') {
+        const response = action.response ?? { kind: 'short_answer', options: [], answerIndices: [] };
+        const pageId = view?.pageId;
+        const saveResponse = async (nextResponse: typeof response) => {
+          try {
+            const runtime = await loadTeachingPreviewRuntime();
+            runtime.evaluateQuestionAnswer(nextResponse, nextResponse.answerIndices);
+            if (view?.pageId !== pageId || actions[index]?.id !== action.id || !editable()) return;
+            const next = structuredClone(actions);
+            next[index].response = nextResponse;
+            edit(next);
+          } catch {
+            notice('题型设置无效：请填写 2–8 个不同选项和有效答案序号；判断题须有两个选项。', true);
+          }
+        };
+        const label = element('label', '题型');
+        const kind = element('select');
+        kind.setAttribute('aria-label', '题型');
+        for (const [value, text] of [
+          ['single', '单选'],
+          ['multiple', '多选'],
+          ['judge', '判断'],
+          ['short_answer', '简答'],
+          ['discussion', '讨论'],
+          ['practice', '活动练习'],
+          ['pbl', '项目活动'],
+        ])
+          kind.append(new Option(text, value));
+        kind.value = response.kind;
+        kind.disabled = !editable();
+        kind.addEventListener('change', () => {
+          const closed = ['single', 'multiple', 'judge'].includes(kind.value);
+          const options = !closed
+            ? []
+            : kind.value === 'judge'
+              ? ['正确', '错误']
+              : response.options.length >= 2
+                ? response.options
+                : ['选项一', '选项二'];
+          void saveResponse({ kind: kind.value, options, answerIndices: closed ? [0] : [] });
+        });
+        label.append(kind);
+        card.append(label);
+        if (response.options.length) {
+          const optionsLabel = element('label', '选项（每行一项）'),
+            options = element('textarea');
+          options.setAttribute('aria-label', '选项（每行一项）');
+          options.value = response.options.join('\n');
+          options.disabled = !editable();
+          options.addEventListener(
+            'change',
+            () =>
+              void saveResponse({
+                ...response,
+                options: options.value
+                  .split('\n')
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              }),
+          );
+          optionsLabel.append(options);
+          card.append(optionsLabel);
+          const answerLabel = element('label', '正确答案序号（从 1 开始，多选用逗号分隔）'),
+            answer = element('input');
+          answer.setAttribute('aria-label', '正确答案序号');
+          answer.value = response.answerIndices.map((i: number) => i + 1).join(',');
+          answer.disabled = !editable();
+          answer.addEventListener(
+            'change',
+            () =>
+              void saveResponse({
+                ...response,
+                answerIndices: answer.value.split(',').map((s) => Number(s.trim()) - 1),
+              }),
+          );
+          answerLabel.append(answer);
+          card.append(answerLabel);
+        }
+      }
+      if (action.type === 'audio_clip' || action.type === 'video_clip') {
+        const media = element('section');
+        media.dataset.mediaPreview = '';
+        media.className = 'teaching-media-preview';
+        media.append(
+          element(
+            'p',
+            action.durationMs
+              ? t('teachingMediaDuration', { seconds: action.durationMs / 1000 })
+              : t('teachingMediaDurationLoading'),
+          ),
+          button(t('teachingMediaReload'), () => void run(() => previewMedia(action, false)), busy || nativeSlideshow),
+        );
+        card.append(media);
+      }
+      if (action.type === 'interaction_checkpoint' && action.checkpointKind !== 'chapter_summary')
+        card.append(element('p', t('teachingTeacherPauseHint')));
+      if (action.type === 'music_slot') {
+        card.append(element('p', action.title), element('p', '此位置的音乐尚未生成，请在主 Chat 中继续完成音乐任务。'));
       }
       if (action.type === 'delay') {
         const label = element('label', '停顿时长（毫秒）');
@@ -1859,6 +2382,24 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         card.firstElementChild?.remove();
         inspector.append(...card.childNodes);
         row.append(inspector);
+        if (action.type === 'audio_clip' || action.type === 'video_clip')
+          queueMicrotask(() => {
+            if (
+              disposed ||
+              lesson ||
+              nativeSlideshow ||
+              busy ||
+              previewAudio?.isConnected ||
+              selectedActionId !== action.id ||
+              changed()
+            )
+              return;
+            const token = epoch;
+            void previewMedia(action, false).catch((error) => {
+              if (!disposed && token === epoch && selectedActionId === action.id)
+                notice(`${t('teachingMediaFailed')} ${String(error)}`, true);
+            });
+          });
       }
     });
     const footer = element('footer');
@@ -1937,7 +2478,10 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     panelLayout?.sync(open);
     send('document:ui-changed', { teachingOpen: open });
   }
-  const sidebar = createSidebarEntry(() => setOpen(!open), () => '教学时间轴');
+  const sidebar = createSidebarEntry(
+    () => setOpen(!open),
+    () => '教学时间轴',
+  );
   const mount = () => {
     for (const frame of document.querySelectorAll<HTMLIFrameElement>('#app iframe')) {
       const doc = frame.contentDocument;
@@ -2017,7 +2561,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     refresh: () => {
       mount();
       try {
-        if (lesson?.navigating) return;
+        if (lesson?.navigating || projectingMotions) return;
         if (hasUnsavedChanges()) {
           notice('PPT 正在自动保存，完成后将同步教学时间轴。');
           return;

@@ -251,13 +251,23 @@ describe('onlyoffice-editor', () => {
       (window as any).DocsAPI = { DocEditor };
 
       const promise = createEditorInstance(options);
-      // Skip the internal cleanup delay (150ms when no prior editor exists).
+      // Allow queued editor work to settle.
       await vi.advanceTimersByTimeAsync(200);
       await promise;
 
       expect(DocEditor).toHaveBeenCalledTimes(1);
       return DocEditor.mock.calls[0][1] as any;
     }
+
+    it('opens the first document without waiting for teardown of a nonexistent editor', async () => {
+      vi.useFakeTimers();
+      const DocEditor = vi.fn();
+      (window as any).DocsAPI = { DocEditor };
+      const opening = createEditorInstance({ fileName: 'first.pptx', fileType: 'pptx' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(DocEditor).toHaveBeenCalledOnce();
+      await opening;
+    });
 
     it('serializes simultaneous editor replacements', async () => {
       vi.useFakeTimers();
@@ -299,14 +309,13 @@ describe('onlyoffice-editor', () => {
       expect(DocEditor).toHaveBeenCalledTimes(2);
     });
 
-    it('does not mount an obsolete editor after asynchronous cleanup', async () => {
+    it('does not mount an obsolete editor waiting in the operation queue', async () => {
       vi.useFakeTimers();
       const DocEditor = vi.fn();
       (window as any).DocsAPI = { DocEditor };
       let current = true;
       const opening = createEditorInstance({ fileName: 'stale.docx', fileType: 'docx', isCurrent: () => current });
       const failed = expect(opening).rejects.toMatchObject({ name: 'AbortError' });
-      await vi.advanceTimersByTimeAsync(50);
       current = false;
       await vi.advanceTimersByTimeAsync(200);
       await failed;

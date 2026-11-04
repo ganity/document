@@ -104,7 +104,7 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
           {
             pageId: 'p1',
             locked: false,
-            reviewState: 'ready',
+            reviewState: 'review',
             actions: [
               {
                 id: 's1',
@@ -133,7 +133,7 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
           {
             pageId: 'p2',
             locked: false,
-            reviewState: 'ready',
+            reviewState: 'review',
             actions: [
               {
                 id: 'page2-speech',
@@ -153,7 +153,13 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
         ],
       };
       (window as any).teachingFixture = project;
-      let draft: any = null;
+      let draft: any = {
+        revision: 'legacy-draft',
+        baseline: { ...structuredClone(project), teachingRevision: 'old-revision' },
+        pageId: 'p1',
+        actions: [{ id: 'legacy-edit', type: 'speech', text: 'Old unsaved narration' }],
+        instruction: '',
+      };
       (window as any).teachingOperations = [];
       window.addEventListener('message', (event) => {
         if (
@@ -170,12 +176,17 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
           pageId: `p${number}`,
           pageNumber: number,
           project: structuredClone(project),
+          teaching: {
+            pageType: 'interactive',
+            objective: '学会用 Good morning 和 Hello 向新朋友问好，并说出指令句 Hello, Teddy Bear!',
+          },
           teachingObjects: [
             {
               objectId: 'title',
               sourceShapeId: '2',
               sourceObjectName: 'Title 1',
               name: 'Title',
+              aliases: ['问候语标题'],
               status: 'mapped',
               effectTargetEligible: true,
             },
@@ -251,8 +262,20 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
             break;
           }
           case 'tts:models':
-          case 'tts:list':
             result = [];
+            break;
+          case 'tts:list':
+            result = [
+              {
+                intentId: 'old-voice',
+                actionId: 's1',
+                model: 'doubao-tts',
+                voice: 'internal-voice-id',
+                phase: 'submitted',
+                task: { state: 'ready' },
+                current: false,
+              },
+            ];
             break;
           default:
             throw new Error('Unexpected paid operation ' + operation);
@@ -270,7 +293,30 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
   const panel = native.getByRole('complementary', { name: '教学时间轴' });
   await expect(panel).toBeVisible({ timeout: 30_000 });
   const narration = panel.getByRole('textbox', { name: '第 1 段讲解' });
+  await expect(panel.getByRole('alert')).toContainText('未保存修改与当前版本冲突');
+  await expect(narration).toBeDisabled();
+  await panel.getByRole('button', { name: '删除草稿', exact: true }).click();
+  await expect(panel.getByRole('alert')).toHaveCount(0);
+  await expect(narration).toBeEnabled();
+  expect(await page.evaluate(() => (window as any).teachingOperations)).not.toContain('write');
   await expect(narration).toHaveValue('Hello, class!');
+  const compactBar = panel.locator('.teaching-statusbar');
+  const barBounds = (await compactBar.boundingBox())!;
+  const playBounds = (await compactBar.getByRole('button', { name: '放映整课教学', exact: true }).boundingBox())!;
+  expect(playBounds.y).toBeGreaterThanOrEqual(barBounds.y);
+  expect(playBounds.y + playBounds.height).toBeLessThanOrEqual(barBounds.y + barBounds.height);
+  const shortHeight = await narration.evaluate((node) => node.getBoundingClientRect().height);
+  const longHeight = await narration.evaluate((node: HTMLTextAreaElement) => {
+    const original = node.value;
+    node.value = original.repeat(70);
+    const height = node.getBoundingClientRect().height;
+    node.value = original;
+    return height;
+  });
+  expect(shortHeight).toBeLessThan(85);
+  expect(longHeight).toBeGreaterThan(shortHeight);
+  expect(longHeight).toBeLessThanOrEqual(241);
+
   await expect(panel.locator('.teaching-flow article')).toHaveCount(7);
   await expect(panel.locator('[data-teaching-inspector]')).toHaveCount(1);
   await expect(panel.locator('textarea')).toHaveCount(1);
@@ -281,7 +327,73 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
   expect(await panel.locator('[data-teaching-inspector]').evaluate((node) => getComputedStyle(node).overflowY)).toBe(
     'visible',
   );
+  const notes = compactBar.locator('.teaching-page-info');
+  await expect(notes.locator('p')).toBeHidden();
+  await notes.locator('summary').click();
+  await expect(notes.locator('p')).toContainText('Hello, Teddy Bear!');
+  await notes.locator('summary').click();
+  await page.setViewportSize({ width: 800, height: 900 });
+  await expect.poll(async () => (await panel.boundingBox())!.width).toBeLessThan(350);
+  const shortButtons = panel.locator('.teaching-attention > .teaching-effect-actions button, .teaching-animation-authoring > .teaching-effect-actions button');
+  for (const button of await shortButtons.all()) {
+    await expect(button.locator('svg')).toHaveCount(1);
+    const bounds = await button.boundingBox();
+    expect(bounds!.height).toBeLessThan(40);
+    expect(await button.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+  }
+  await expect(panel.getByRole('button', { name: '添加聚光', exact: true })).toHaveText('聚光');
+  await expect(panel.getByRole('button', { name: '编辑此提示', exact: true }).first()).toHaveText('编辑');
+  await panel.screenshot({ path: '/tmp/deckwise-teaching-short-buttons.png' });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await panel.screenshot({ path: '/tmp/deckwise-teaching-compact-overview.png' });
+  await panel.getByRole('button', { name: '添加高亮', exact: true }).click();
+  const objectRow = panel.locator('[data-cue-form] .teaching-object-choice').first();
+  await expect(objectRow).toContainText('问候语标题');
+  await expect(objectRow.locator('img')).toHaveJSProperty('complete', true);
+  await objectRow.getByRole('button', { name: '定位', exact: true }).click();
+  await expect(objectRow.locator('input')).not.toBeChecked();
+  await objectRow.scrollIntoViewIfNeeded();
+  await panel.screenshot({ path: '/tmp/deckwise-teaching-object-picker.png' });
+  await panel.locator('[data-cue-form]').getByRole('button', { name: '取消', exact: true }).click();
+  await panel.getByRole('button', { name: '添加动画', exact: true }).click();
+  await expect(panel.locator('[data-animation-form]')).toBeVisible();
+  await panel.locator('[data-animation-form]').scrollIntoViewIfNeeded();
+  await panel.screenshot({ path: '/tmp/deckwise-teaching-compact-animation.png' });
+  await panel.locator('[data-animation-form]').getByRole('button', { name: '取消', exact: true }).click();
   await page.locator('#editorFrame').screenshot({ path: 'test-results-native-teaching-redesign.png' });
+  await expect(panel.getByText('doubao-tts', { exact: false })).toBeHidden();
+  await expect(
+    panel.locator('[data-teaching-inspector]').getByRole('button', { name: '编辑原生动画', exact: true }),
+  ).toBeVisible();
+  await panel.locator('article[data-action-id=music] .teaching-step').click();
+  const musicPlayer = panel.locator('[data-teaching-inspector] audio');
+  await expect(musicPlayer).toBeVisible();
+  await expect
+    .poll(() => musicPlayer.evaluate((audio: HTMLAudioElement) => audio.readyState))
+    .toBeGreaterThanOrEqual(1);
+  expect(await musicPlayer.evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
+  await expect(panel.locator('[data-media-preview] > p')).toContainText('秒');
+  await musicPlayer.evaluate((audio: HTMLAudioElement) => audio.play());
+  await expect.poll(() => musicPlayer.evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0);
+  await musicPlayer.evaluate((audio: HTMLAudioElement) => {
+    audio.pause();
+    audio.currentTime = audio.duration / 2;
+  });
+  await expect
+    .poll(() => musicPlayer.evaluate((audio: HTMLAudioElement) => audio.currentTime / audio.duration))
+    .toBeCloseTo(0.5, 1);
+  await panel.screenshot({ path: '/tmp/wiseoffice-teaching-music-fix.png' });
+  await panel.locator('article[data-action-id=wait] .teaching-step').click();
+  await expect(panel.locator('[data-teaching-inspector]')).toContainText('点击「教师继续」');
+  await expect(panel.getByText('已有课堂互动', { exact: true })).toHaveCount(0);
+  await expect(musicPlayer).toHaveCount(0);
+  await panel.locator('article[data-action-id=s1] .teaching-step').click();
+  await panel.locator('[data-teaching-inspector]').getByRole('button', { name: '编辑原生动画', exact: true }).click();
+  await expect(panel).toBeHidden();
+  await expect(native.locator('#animation-panel')).toBeVisible();
+  await native.getByRole('button', { name: '教学时间轴', exact: true }).click();
+  await expect(panel).toBeVisible();
+
   await expect(panel.getByRole('button', { name: '添加停顿', exact: true })).toHaveCount(0);
   await expect(panel.getByRole('button', { name: '添加等待教师继续', exact: true })).toHaveCount(0);
   const after = panel.getByLabel('讲后', { exact: true });
@@ -383,6 +495,21 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
     await panel.getByRole('button', { name: '放映整课教学', exact: true }).click();
     const firstPage = native.locator('[data-teaching-slideshow][data-teaching-page="1"]');
     await expect(firstPage).toBeVisible();
+    await expect(firstPage.getByRole('button', { name: '上一页', exact: true })).toBeDisabled();
+    await expect(firstPage.getByRole('button', { name: '下一页', exact: true })).toBeEnabled();
+    const controlStyle = await firstPage.getByRole('button', { name: '下一页', exact: true }).evaluate(node => {
+      const css = getComputedStyle(node);
+      return { color: css.color, background: css.backgroundColor, height: node.getBoundingClientRect().height };
+    });
+    expect(controlStyle.color).toBe('rgb(248, 250, 252)');
+    expect(controlStyle.background).toBe('rgb(40, 53, 72)');
+    expect(controlStyle.height).toBeGreaterThanOrEqual(36);
+    await firstPage.getByRole('button', { name: '下一页', exact: true }).click();
+    const navigationPage = native.locator('[data-teaching-slideshow][data-teaching-page="2"]');
+    await expect(navigationPage).toBeVisible();
+    await expect(navigationPage.getByRole('button', { name: '下一页', exact: true })).toBeDisabled();
+    await navigationPage.getByRole('button', { name: '上一页', exact: true }).click();
+    await expect(firstPage).toBeVisible();
     await firstPage.getByRole('button', { name: '下一步 PPT 动画', exact: true }).click();
     await expect(firstPage.getByRole('button', { name: '教师继续', exact: true })).toBeEnabled({ timeout: 10000 });
     await firstPage.getByRole('button', { name: '教师继续', exact: true }).click();
@@ -430,7 +557,7 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
     await expect(panel.getByRole('button', { name: '画布预览', exact: true })).toBeEnabled();
   }
   if (runtimePath) {
-    await panel.getByText('添加聚光', { exact: true }).first().click();
+    await panel.getByRole('button', { name: '添加聚光', exact: true }).first().click();
     const history = await nativeFrame.evaluate(() => (window as any).AscCommon.History.Index);
     await panel.getByRole('button', { name: '预览此提示', exact: true }).first().click();
     const overlay = native.locator('[data-teaching-preview]');
@@ -606,12 +733,27 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
     await expect(panel.getByRole('button', { name: '刷新', exact: true })).toBeEnabled();
     expect(await narration.evaluate((node) => (node as any).selectionIdentity)).toBe(true);
     await cue.getByRole('button', { name: '编辑此提示', exact: true }).click();
+    const cueActions = panel.locator('[data-cue-form] .teaching-cue-actions');
+    await expect(cueActions.getByRole('button', { name: '保存', exact: true })).toHaveClass('teaching-primary');
+    await expect(cueActions.getByRole('button', { name: '取消', exact: true })).toHaveClass('teaching-secondary');
+    const colors = await cueActions.locator('button').evaluateAll((buttons) =>
+      buttons.map((button) => {
+        const style = getComputedStyle(button);
+        return { background: style.backgroundColor, border: style.borderTopColor };
+      }),
+    );
+    expect(colors[0].background).not.toBe('rgba(0, 0, 0, 0)');
+    expect(colors[1].border).not.toBe('rgba(0, 0, 0, 0)');
+    await cueActions.scrollIntoViewIfNeeded();
+    await expect(cueActions.getByRole('button', { name: '保存', exact: true })).toBeVisible();
+    await expect(cueActions.getByRole('button', { name: '取消', exact: true })).toBeVisible();
+    await panel.screenshot({ path: '/tmp/wiseoffice-cue-buttons.png' });
     await panel.getByRole('button', { name: '使用画布选中对象', exact: true }).first().click();
     await expect(panel.getByRole('status')).toHaveText('已选择 1 个画布对象');
     await panel.getByLabel('高亮样式', { exact: true }).first().selectOption('fill');
     await panel.getByLabel('高亮颜色', { exact: true }).first().fill('#123456');
     await panel.getByLabel('效果不透明度百分比', { exact: true }).first().fill('70');
-    await panel.getByRole('button', { name: '更新教学提示', exact: true }).click();
+    await panel.getByRole('button', { name: '保存', exact: true }).click();
     await cue.getByRole('button', { name: '预览此提示', exact: true }).click();
     const overlay = native.locator('[data-teaching-preview]');
     await expect(overlay.locator('[data-attention-kind=highlight]')).toHaveAttribute('fill', '#123456');
@@ -620,7 +762,7 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
     await cue.getByRole('button', { name: '编辑此提示', exact: true }).click();
     await panel.getByLabel('教学提示类型', { exact: true }).first().selectOption('spotlight');
     await panel.getByLabel('效果不透明度百分比', { exact: true }).first().fill('65');
-    await panel.getByRole('button', { name: '更新教学提示', exact: true }).click();
+    await panel.getByRole('button', { name: '保存', exact: true }).click();
     await expect(cue).toContainText('聚光');
     await cue.getByRole('button', { name: '预览此提示', exact: true }).click();
     await expect(overlay.locator('[data-attention-kind=spotlight]')).toBeVisible();

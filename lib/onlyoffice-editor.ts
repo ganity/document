@@ -418,8 +418,10 @@ export function createEditorInstance(config: {
     // This is especially important when switching between different document types
     // When switching editors, especially involving PPT, we need more time
     const isPresentation = fileType === 'pptx' || fileType === 'ppt';
-    const cleanupDelay = hasExistingEditor && isPresentation ? 400 : hasExistingEditor ? 250 : 150;
-    await new Promise((resolve) => setTimeout(resolve, cleanupDelay));
+    if (hasExistingEditor) {
+      const cleanupDelay = isPresentation ? 400 : 250;
+      await new Promise((resolve) => setTimeout(resolve, cleanupDelay));
+    }
 
     const editorLang = getOnlyOfficeLang();
     console.log('Creating new editor instance for:', fileName, 'type:', fileType);
