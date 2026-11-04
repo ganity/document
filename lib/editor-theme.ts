@@ -1,3 +1,5 @@
+import { isEditorModule } from './embed-mode';
+
 /**
  * Site theme -> editor interface theme.
  *
@@ -113,8 +115,8 @@ function editorThemeApis(root: Window): ThemesApi[] {
 
 /** Push the site-derived theme into every live editor frame (no-op when the user overrode it). */
 export function applySiteThemeToEditor(lightDefault: string, root: Window = window): string | null {
-  if (hasUserPickedEditorTheme()) return null;
-  const theme = uiThemeForSite(lightDefault);
+  if (!isEditorModule() && hasUserPickedEditorTheme()) return null;
+  const theme = uiThemeForSite(isEditorModule() ? 'theme-white' : lightDefault);
   const apis = editorThemeApis(root);
   // Record before calling setTheme: the editor persists ui-theme-id inside
   // setTheme, and the marker must already match when it does.

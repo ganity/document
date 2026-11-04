@@ -33,7 +33,13 @@ export function secureEditorHtml(html) {
   );
 }
 export async function stampEditorCsp(directory) {
-  const path = join(directory, 'editor.html');
-  await writeFile(path, secureEditorHtml(await readFile(path, 'utf8')));
+  for (const name of ['editor.html', 'module.html']) {
+    const path = join(directory, name);
+    const html = await readFile(path, 'utf8').catch(error => {
+      if (name === 'module.html' && error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (html !== null) await writeFile(path, secureEditorHtml(html));
+  }
 }
 if (process.argv[1]?.endsWith('/editor-csp.mjs')) await stampEditorCsp(process.argv[2] ?? 'dist');

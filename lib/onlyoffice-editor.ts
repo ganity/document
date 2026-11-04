@@ -1,3 +1,4 @@
+import { isEditorModule } from './embed-mode';
 import { isEmbedMode } from './embed-mode';
 import { getDocumentCloseRevision } from './document-open';
 import 'ranui/message';
@@ -193,6 +194,7 @@ function createPersonalEditorInstance(config: {
         name: 'Guest',
       },
       customization: {
+        ...(isEditorModule() ? { compactHeader: true } : {}),
         ...(!isEmbedMode()
           ? { goback: { url: new URL('/', location.href).href, blank: false, text: t('editorBackHome') } }
           : {}),
@@ -458,3 +460,12 @@ export async function loadEditorApi(): Promise<void> {
 // The retry path rebuilds the editor with the same bytes; injected here to
 // keep ./onlyoffice/open-failure free of a cycle back into this module.
 setOpenRunner(createEditorInstance);
+
+/** Release the single mounted SDK before its host container is removed. */
+export function destroyEditorInstance(): void {
+  cleanupViewportFollow();
+  window.editor?.destroyEditor();
+  window.editor = undefined;
+  if (currentDocumentBlobUrl) URL.revokeObjectURL(currentDocumentBlobUrl);
+  currentDocumentBlobUrl = null;
+}

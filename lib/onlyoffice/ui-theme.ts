@@ -1,3 +1,5 @@
+import { isEditorModule } from '../embed-mode';
+import { isSiteDark } from '../editor-theme';
 import { installEditorThemeFollow, resolveEditorUiTheme } from '../editor-theme';
 
 /**
@@ -16,6 +18,7 @@ export const UI_THEME_STORAGE_KEY = 'ui-theme-id';
 export function resolveUiTheme(): string {
   // Follows the site's ranui theme (dark site -> theme-dark) unless the user
   // picked a theme inside the editor; see lib/editor-theme.ts.
+  if (isEditorModule()) return isSiteDark() ? 'theme-dark' : 'theme-white';
   return resolveEditorUiTheme(DEFAULT_UI_THEME);
 }
 

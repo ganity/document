@@ -6,6 +6,7 @@ import { DOCUMENT_TYPE_MAP } from '@ranuts/shared/document-utils';
 const mockOpenDocumentFromUrl = vi.fn().mockResolvedValue(undefined);
 const mockLoadEditorApi = vi.fn().mockResolvedValue(undefined);
 const mockHandleDocumentOperation = vi.fn().mockResolvedValue(undefined);
+const mockDestroyEditorInstance = vi.fn();
 const mockGetReadonlyMode = vi.fn().mockReturnValue(false);
 const mockSetReadonlyMode = vi.fn();
 const mockRequestSaveDocument = vi.fn();
@@ -21,6 +22,7 @@ vi.mock('../../lib/converter', () => ({
   handleDocumentOperation: mockHandleDocumentOperation,
 }));
 vi.mock('../../lib/onlyoffice-editor', () => ({
+  destroyEditorInstance: mockDestroyEditorInstance,
   getReadonlyMode: mockGetReadonlyMode,
   setReadonlyMode: mockSetReadonlyMode,
   requestSaveDocument: mockRequestSaveDocument,
@@ -100,6 +102,48 @@ describe('embed-api', () => {
     listenerSpy.mockRestore();
     postMessageSpy.mockRestore();
     delete (window as any).editor;
+  });
+
+  describe('desktop module lifecycle', () => {
+    it('uses a direct capability, validates UI updates and detaches on disposal', async () => {
+      const { mountEditorModule } = await import('../../lib/embed-api');
+      const { isEditorModule, isEmbedMode, isDeckWiseMode } = await import('../../lib/embed-mode');
+      const send = vi.fn(), unsubscribe = vi.fn();
+      let command!: (value: unknown) => void;
+      const editor = mountEditorModule({ deckwise: true, send, subscribe(listener) { command = listener; return unsubscribe; } });
+      expect(send).toHaveBeenCalledWith('document:ready', {}, undefined);
+      expect([isEditorModule(), isEmbedMode(), isDeckWiseMode()]).toEqual([true, true, true]);
+      expect(() => mountEditorModule({ deckwise: true, send, subscribe: () => unsubscribe })).toThrow('already mounted');
+      await dispatchMessage({ type: 'document:configure-ui', payload: { theme: 'dark' } });
+      expect(send).not.toHaveBeenCalledWith('document:ui-configured', expect.anything(), expect.anything());
+      command({ type: 'document:configure-ui', payload: { theme: 'dark', teachingOpen: false }, id: 'theme' });
+      expect(document.documentElement.getAttribute('data-ran-theme')).toBe('dark');
+      expect(send).toHaveBeenCalledWith('document:ui-configured', { theme: 'dark', teachingOpen: false }, 'theme');
+      command({ type: 'document:configure-ui', payload: { theme: 'evil', path: '/etc/passwd' }, id: 'invalid' });
+      expect(send).toHaveBeenCalledWith('document:error', { message: 'Invalid editor UI configuration' }, 'invalid');
+      editor.dispose(); editor.dispose();
+      expect(unsubscribe).toHaveBeenCalledTimes(1);
+      expect(mockDestroyEditorInstance).toHaveBeenCalledTimes(1);
+      expect(isEditorModule()).toBe(false);
+      expect(document.body.classList.contains('deckwise-mode')).toBe(false);
+      document.documentElement.removeAttribute('data-ran-theme');
+    });
+
+    it('cannot send a late open result into a replacement module', async () => {
+      const { mountEditorModule } = await import('../../lib/embed-api');
+      let release!: () => void;
+      mockLoadEditorApi.mockReturnValueOnce(new Promise<void>(resolve => { release = resolve; }));
+      let command!: (value: unknown) => void;
+      const firstSend = vi.fn(), secondSend = vi.fn();
+      const first = mountEditorModule({ deckwise: false, send: firstSend, subscribe(listener) { command = listener; return () => {}; } });
+      command({ type: 'document:open-buffer', id: 'old-open', payload: { fileName: 'test.docx', buffer: new Uint8Array([1]).buffer } });
+      first.dispose();
+      const second = mountEditorModule({ deckwise: false, send: secondSend, subscribe: () => () => {} });
+      release(); await new Promise(resolve => setTimeout(resolve, 0));
+      expect(secondSend.mock.calls.map(call => call[0])).toEqual(['document:ready']);
+      expect(mockHandleDocumentOperation).not.toHaveBeenCalled();
+      second.dispose();
+    });
   });
 
   describe('DeckWise command messages', () => {

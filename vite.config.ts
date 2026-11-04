@@ -213,13 +213,12 @@ export default defineConfig(({ command }) => {
     build: {
       outDir: 'dist',
       manifest: true,
-      // Three HTML entries: / (static landing, no editor bundle), /editor (the
-      // app) and /history (the local library, which reads IndexedDB metadata
-      // and never loads the editor stack).
+      // Standalone pages remain separate; module.html is the isolated desktop entry.
       rollupOptions: {
         input: {
           main: resolve(__dirname, 'index.html'),
           editor: resolve(__dirname, 'editor.html'),
+          module: resolve(__dirname, 'module.html'),
           history: resolve(__dirname, 'history.html'),
         },
       },

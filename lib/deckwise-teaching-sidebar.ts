@@ -1574,10 +1574,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       );
       api.WordControl.m_oLogicDocument.Document_UpdateSelectionState?.();
       tab.click();
-      open = false;
-      panel!.hidden = true;
-      sidebar.update(true, false);
-      panelLayout?.sync(false);
+      setOpen(false);
     } catch (error) {
       notice(String(error), true);
     }
@@ -1929,21 +1926,18 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     flow.querySelector<HTMLElement>('[data-selected]')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   }
 
-  const sidebar = createSidebarEntry(
-    () => {
-      open = !open;
-      if (!open) stopAudio();
-      if (panel) panel.hidden = !open;
-      const expanded = open;
-      if (expanded && (nativeDocument?.getElementById('right-menu')?.getBoundingClientRect().width ?? 0) <= 50)
-        nativeDocument?.getElementById('id-right-menu-slide')?.click();
-      open = expanded;
-      if (panel) panel.hidden = !open;
-      sidebar.update(true, open);
-      panelLayout?.sync(open);
-    },
-    () => '教学时间轴',
-  );
+  function setOpen(expanded: boolean) {
+    if (disposed) return;
+    if (expanded && panel && (nativeDocument?.getElementById('right-menu')?.getBoundingClientRect().width ?? 0) <= 50)
+      nativeDocument?.getElementById('id-right-menu-slide')?.click();
+    open = expanded;
+    if (!open) stopAudio();
+    if (panel) panel.hidden = !open;
+    sidebar.update(true, open);
+    panelLayout?.sync(open);
+    send('document:ui-changed', { teachingOpen: open });
+  }
+  const sidebar = createSidebarEntry(() => setOpen(!open), () => '教学时间轴');
   const mount = () => {
     for (const frame of document.querySelectorAll<HTMLIFrameElement>('#app iframe')) {
       const doc = frame.contentDocument;
@@ -1990,11 +1984,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       const nativeClick = (event: Event) => {
         const target = event.target as Element;
         if (target.closest('#right-menu .tool-menu-btns button:not(.agent-sidebar-entry)')) {
-          open = false;
-          stopAudio();
-          panel!.hidden = true;
-          sidebar.update(true, false);
-          panelLayout?.sync(false);
+          setOpen(false);
         }
       };
       doc.addEventListener('click', nativeClick);
@@ -2016,11 +2006,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         doc.removeEventListener('click', nativeClick);
         style.remove();
       };
-      if ((doc.getElementById('right-menu')?.getBoundingClientRect().width ?? 0) <= 50)
-        doc.getElementById('id-right-menu-slide')?.click();
-      open = true;
-      panel.hidden = false;
-      sidebar.update(true, true);
+      setOpen(open);
       render();
       send('document:teaching-ready', {});
       return;
@@ -2048,6 +2034,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
   pollTasks();
   return {
     refresh,
+    setOpen,
     receive(id: string, payload: any) {
       const entry = pending.get(id);
       if (!entry) return;

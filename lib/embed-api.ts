@@ -2,16 +2,17 @@ import { mountPanelContext } from './agent-plugin/ui/panel-context';
 import { mountDeckwiseTeachingSidebar } from './deckwise-teaching-sidebar';
 import { clearActiveSource } from './active-document-source';
 import { clearDocumentSession } from './history/autosave';
-import { beginDocumentOpen, commitDocumentOpen, isMountedDocumentOpen } from './document-open';
+import { beginDocumentOpen, cancelDocumentOpen, commitDocumentOpen, isMountedDocumentOpen } from './document-open';
 import { getDocmentObj, setDocmentObj } from '@ranuts/shared/store';
 import { getDocumentType } from '@ranuts/shared/document-utils';
 import { handleDocumentOperation, loadEditorApi } from './converter';
 import { openDocumentFromUrl } from './document';
-import { getReadonlyMode, requestSaveDocument, setReadonlyMode } from './onlyoffice-editor';
+import { destroyEditorInstance, getReadonlyMode, requestSaveDocument, setReadonlyMode } from './onlyoffice-editor';
 import { hasPendingEmbeddedSaveRequest } from './onlyoffice/save-stream';
 import { captureSavePoint, commitSavePoint, invalidateSavedPoint, isSavePointCurrent } from './onlyoffice/save-point';
 import { hasUnsavedChanges, markDocumentDirty, markDocumentSaved, onUnsavedChangesChange, getLastEditAt, onDocumentEdit } from './unsaved-guard';
-import { DECKWISE_SAVE_REQUEST_EVENT, isDeckWiseMode } from './embed-mode';
+import { DECKWISE_SAVE_REQUEST_EVENT, isDeckWiseMode, setEditorHostMode } from './embed-mode';
+import { cleanupViewportFollow } from './onlyoffice/viewport';
 import { deckwiseEditorBridge } from './deckwise-editor-bridge';
 import { deckwisePageLineage } from './deckwise-page-lineage';
 import { renderDeckWiseCurrentSlidePreview } from './deckwise-slide-preview';
@@ -34,9 +35,10 @@ type EmbedMessageType =
   | 'document:render-page-preview'
   | 'document:get-state'
   | 'document:teaching-enable'
-  | 'document:teaching-response';
+  | 'document:teaching-response'
+  | 'document:configure-ui';
 
-type EmbedMessage = {
+export type EmbedMessage = {
   id?: string;
   type?: EmbedMessageType;
   payload?: Record<string, any>;
@@ -53,6 +55,9 @@ let acceptedParentOrigin: string | null = null;
 let isEmbedMode = false;
 let pendingHostSave: { id: string; point: ReturnType<typeof captureSavePoint>; exported: boolean; lineage?: Parameters<typeof deckwisePageLineage.commitSave>[0] } | null = null;
 let saveOutcomeUncertain = false;
+let moduleSend: ((type: string, payload: EmbedResponsePayload, id?: string) => void) | undefined;
+let moduleEpoch = 0;
+let moduleUi: { theme?: 'light' | 'dark'; teachingOpen?: boolean } = {};
 
 function getQueryValue(key: string): string | null {
   return new URLSearchParams(window.location.search).get(key);
@@ -85,6 +90,10 @@ function postToParent(type: string, payload: EmbedResponsePayload = {}, id?: str
     return;
   }
 
+  if (moduleSend) {
+    moduleSend(type, payload, id);
+    return;
+  }
   window.parent.postMessage(
     {
       id,
@@ -198,22 +207,24 @@ async function handleOpen(payload: Record<string, any>): Promise<void> {
 
 async function handleMessage(event: MessageEvent): Promise<void> {
   const message = event.data as EmbedMessage;
-  if (
-    !message ||
-    typeof message !== 'object' ||
-    typeof message.type !== 'string' ||
-    !message.type.startsWith('document:')
-  ) {
-    return;
-  }
-
-  if (!shouldAcceptMessage(event)) {
-    return;
-  }
-
+  if (!validMessage(message) || !shouldAcceptMessage(event)) return;
   acceptedParentOrigin ??= event.origin;
   parentOrigin = normalizeTargetOrigin(acceptedParentOrigin);
+  await handleCommand(message);
+}
+
+function validMessage(message: unknown): message is EmbedMessage {
+  return !!message && typeof message === 'object' &&
+    typeof Reflect.get(message, 'type') === 'string' && Reflect.get(message, 'type').startsWith('document:');
+}
+
+async function handleCommand(message: EmbedMessage): Promise<void> {
   const payload = message.payload || {};
+  const epoch = moduleEpoch;
+  const current = () => epoch === moduleEpoch;
+  const reply = (type: string, payload: EmbedResponsePayload = {}, id?: string) => {
+    if (current()) postToParent(type, payload, id);
+  };
 
   try {
     if (['document:save', 'document:commit-save', 'document:set-readonly'].includes(String(message.type)))
@@ -224,6 +235,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         deckwiseEditorBridge.getContext(payload.binding);
         teachingSidebar?.dispose();
         teachingSidebar = mountDeckwiseTeachingSidebar(payload.binding, postToParent);
+        if (moduleUi.teachingOpen !== undefined) teachingSidebar.setOpen(moduleUi.teachingOpen);
         break;
       case 'document:teaching-response':
         teachingSidebar?.receive(message.id ?? '', payload);
@@ -244,11 +256,12 @@ async function handleMessage(event: MessageEvent): Promise<void> {
           deckwisePageLineage.reset();
         }
         await handleOpen(payload);
+        if (!current()) return;
         saveOutcomeUncertain = false;
         if (isDeckWiseMode() && payload.editorBinding !== undefined) {
           deckwiseEditorBridge.reset(payload.editorBinding);
         }
-        postToParent('document:opened', { readonly: getReadonlyMode() }, message.id);
+        reply('document:opened', { readonly: getReadonlyMode() }, message.id);
         break;
 
       case 'document:get-context':
@@ -270,7 +283,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
             deckwiseEditorBridge.revokeFade();
             throw new Error('Save the latest PPTX before fade inspection');
           }
-          postToParent(
+          reply(
             'document:context',
             deckwiseEditorBridge.reviewFade(payload.binding, payload.authorization),
             message.id,
@@ -282,7 +295,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
             deckwiseEditorBridge.revokeFade();
             throw new Error('Save the latest PPTX before fade inspection');
           }
-          postToParent(
+          reply(
             'document:command-result',
             await deckwiseEditorBridge.executeFade(payload.command, payload.authorization, message.id),
             message.id,
@@ -290,7 +303,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         } else if (message.type === 'document:review-image-target') {
           if (Object.keys(payload).sort().join(',') !== 'asset,binding,target')
             throw new Error('Invalid image target review payload');
-          postToParent(
+          reply(
             'document:image-target-reviewed',
             deckwiseEditorBridge.reviewImageTarget(payload.binding, payload.asset, payload.target),
             message.id,
@@ -298,7 +311,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         } else if (message.type === 'document:review-image') {
           if (Object.keys(payload).some((key) => !['binding', 'asset'].includes(key)))
             throw new Error('Invalid image review payload');
-          postToParent(
+          reply(
             'document:context',
             deckwiseEditorBridge.reviewImage(payload.binding, payload.asset),
             message.id,
@@ -306,7 +319,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         } else if (message.type === 'document:execute-image') {
           if (Object.keys(payload).some((key) => !['command', 'bytes'].includes(key)))
             throw new Error('Invalid image execution payload');
-          postToParent(
+          reply(
             'document:command-result',
             await deckwiseEditorBridge.executeImage(payload.command, payload.bytes, message.id),
             message.id,
@@ -314,9 +327,9 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         } else if (message.type === 'document:get-context') {
           const context = deckwiseEditorBridge.getContext(payload);
           const pageLineage = deckwisePageLineage.context();
-          postToParent('document:context', { ...context, ...(pageLineage ? { pageLineage } : {}) }, message.id);
+          reply('document:context', { ...context, ...(pageLineage ? { pageLineage } : {}) }, message.id);
         } else {
-          postToParent('document:command-result', await deckwiseEditorBridge.execute(payload, message.id), message.id);
+          reply('document:command-result', await deckwiseEditorBridge.execute(payload, message.id), message.id);
         }
         break;
       }
@@ -334,7 +347,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
             (!Number.isSafeInteger(payload.page) || payload.page < 1 || payload.page > 5000))
         )
           throw new Error('Invalid page preview request');
-        postToParent(
+        reply(
           'document:page-preview',
           payload.page === undefined
             ? renderDeckWiseCurrentSlidePreview(payload.binding, payload.editGeneration, payload.omitNativeText)
@@ -349,9 +362,22 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         break;
       }
 
+      case 'document:configure-ui': {
+        if (!moduleSend) throw new Error('UI configuration requires the desktop module');
+        if (Object.keys(payload).some(key => !['theme', 'teachingOpen'].includes(key)) ||
+            (payload.theme !== undefined && !['light', 'dark'].includes(payload.theme)) ||
+            (payload.teachingOpen !== undefined && typeof payload.teachingOpen !== 'boolean'))
+          throw new Error('Invalid editor UI configuration');
+        moduleUi = { ...moduleUi, ...payload };
+        if (moduleUi.theme) document.documentElement.setAttribute('data-ran-theme', moduleUi.theme);
+        if (moduleUi.teachingOpen !== undefined) teachingSidebar?.setOpen(moduleUi.teachingOpen);
+        reply('document:ui-configured', moduleUi, message.id);
+        break;
+      }
+
       case 'document:set-readonly':
         setReadonlyMode(Boolean(payload.readonly));
-        postToParent('document:readonly-changed', { readonly: getReadonlyMode() }, message.id);
+        reply('document:readonly-changed', { readonly: getReadonlyMode() }, message.id);
         break;
 
       case 'document:save': {
@@ -388,15 +414,18 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         let pageLineage: Awaited<ReturnType<NonNullable<typeof captureLineage>>> | undefined;
         try {
           file = await requestSaveDocument(targetExt, { returnOriginalOnTimeout });
+          if (!current()) return;
           pageLineage = captureLineage
             ? await captureLineage(file, message.id!, () => isSavePointCurrent(savePoint))
             : undefined;
         } catch (error) {
+          if (!current()) return;
           pendingHostSave = null;
           // An untagged SDK stream may still arrive after an export timeout.
           if (hostManaged) saveOutcomeUncertain = true;
           throw error;
         }
+        if (!current()) return;
         if (pending) { pending.exported = true; pendingHostSave!.lineage = pageLineage; }
         // The host now holds the edited bytes. A timeout fallback may have
         // handed it the original file instead, which saves nothing -- the
@@ -404,7 +433,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         if (!hostManaged && !returnOriginalOnTimeout && commitSavePoint(savePoint)) {
           markDocumentSaved();
         }
-        postToParent(
+        reply(
           'document:saved',
           {
             file,
@@ -432,13 +461,13 @@ async function handleMessage(event: MessageEvent): Promise<void> {
             markDocumentDirty();
           }
         }
-        postToParent('document:save-committed', { dirty: hasUnsavedChanges(), success: payload.success }, message.id);
+        reply('document:save-committed', { dirty: hasUnsavedChanges(), success: payload.success }, message.id);
         if (payload.success && !hasUnsavedChanges()) teachingSidebar?.refresh();
         break;
       }
 
       case 'document:get-state':
-        postToParent(
+        reply(
           'document:state',
           { readonly: getReadonlyMode(), hasDocument: Boolean(window.editor), dirty: hasUnsavedChanges() },
           message.id,
@@ -449,7 +478,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
         break;
     }
   } catch (error) {
-    postToParent(
+    reply(
       'document:error',
       {
         message: error instanceof Error ? error.message : String(error),
@@ -460,20 +489,62 @@ async function handleMessage(event: MessageEvent): Promise<void> {
 }
 
 export function initEmbedApi(): void {
-  if (initialized) {
-    return;
-  }
-
+  if (initialized) return;
   initialized = true;
   isEmbedMode = detectEmbedMode();
   acceptedParentOrigin = getQueryValue('embedOrigin');
   if (acceptedParentOrigin) parentOrigin = normalizeTargetOrigin(acceptedParentOrigin);
+  if (!isEmbedMode) return;
+  installHostEvents();
+  window.addEventListener('message', (event) => { void handleMessage(event); });
+  window.addEventListener('load', () => { postToParent('document:ready'); });
+}
 
-  if (!isEmbedMode) {
-    return;
-  }
+/** One document host per page; the desktop transport never accepts window messages. */
+export function mountEditorModule(options: {
+  deckwise: boolean;
+  send(type: string, payload: EmbedResponsePayload, id?: string): void;
+  subscribe(listener: (command: unknown) => void): () => void;
+}) {
+  if (initialized) throw new Error('An editor host is already mounted');
+  initialized = true;
+  isEmbedMode = true;
+  moduleSend = options.send;
+  setEditorHostMode(options.deckwise ? 'deckwise' : 'embedded');
+  const cleanupEvents = installHostEvents();
+  let disposed = false;
+  const unsubscribe = options.subscribe(command => {
+    if (validMessage(command)) void handleCommand(command);
+  });
+  postToParent('document:ready');
+  return {
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      moduleEpoch++;
+      unsubscribe();
+      cleanupEvents();
+      teachingSidebar?.dispose();
+      teachingSidebar = undefined;
+      cancelDocumentOpen();
+      cleanupViewportFollow();
+      deckwiseEditorBridge.reset();
+      deckwisePageLineage.reset();
+      destroyEditorInstance();
+      moduleSend = undefined;
+      moduleUi = {};
+      pendingHostSave = null;
+      saveOutcomeUncertain = false;
+      initialized = false;
+      isEmbedMode = false;
+      setEditorHostMode(undefined);
+    },
+  };
+}
 
+function installHostEvents(): () => void {
   document.body.classList.add('embed-mode');
+  const cleanup: Array<() => void> = [];
   // Pushed, not polled: the host needs it to decide when to save (a tab
   // switch, an idle timer) without exporting documents nobody touched.
   let autosaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -492,7 +563,7 @@ export function initEmbedApi(): void {
   };
   if (isDeckWiseMode()) {
     let observedPoint = captureSavePoint();
-    mountPanelContext({
+    const panelContext = mountPanelContext({
       isActive: () => isDeckWiseMode(),
       refresh: () => {
         if (observedPoint && isSavePointCurrent(observedPoint)) return;
@@ -501,27 +572,26 @@ export function initEmbedApi(): void {
         if (observedPoint && hasUnsavedChanges()) markDocumentDirty();
       },
     });
+    cleanup.push(() => panelContext.dispose());
   }
-  onDocumentEdit(() => {
+  cleanup.push(onDocumentEdit(() => {
     clearTimeout(autosaveTimer);
     if (isDeckWiseMode()) autosaveTimer = setTimeout(autosave, 1500);
-  });
-  onUnsavedChangesChange((dirty) => {
+  }));
+  cleanup.push(onUnsavedChangesChange((dirty) => {
     postToParent('document:dirty-changed', { dirty });
     clearTimeout(autosaveTimer);
     if (dirty && isDeckWiseMode()) autosaveTimer = setTimeout(autosave, 1500);
-  });
+  }));
   if (isDeckWiseMode()) {
     document.body.classList.add('deckwise-mode');
-    window.addEventListener(DECKWISE_SAVE_REQUEST_EVENT, () => {
-      postToParent('document:save-requested');
-    });
+    const onSave = () => postToParent('document:save-requested');
+    window.addEventListener(DECKWISE_SAVE_REQUEST_EVENT, onSave);
+    cleanup.push(() => window.removeEventListener(DECKWISE_SAVE_REQUEST_EVENT, onSave));
   }
-  window.addEventListener('message', (event) => {
-    void handleMessage(event);
-  });
-
-  window.addEventListener('load', () => {
-    postToParent('document:ready');
-  });
+  return () => {
+    clearTimeout(autosaveTimer);
+    cleanup.forEach(dispose => dispose());
+    document.body.classList.remove('embed-mode', 'deckwise-mode');
+  };
 }
