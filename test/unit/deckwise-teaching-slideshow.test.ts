@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({ api: null as any, dirty: false }));
 vi.mock('../../lib/agent-plugin/editor-bridge', () => ({ getEditorApi: () => state.api }));
 vi.mock('../../lib/unsaved-guard', () => ({ hasUnsavedChanges: () => state.dirty }));
-import { createTeachingSlideshow } from '../../lib/deckwise-teaching-slideshow';
+import { createTeachingSlideshow, inspectTeachingAnimations } from '../../lib/deckwise-teaching-slideshow';
 import * as nativeTeaching from '../../lib/deckwise-native-teaching';
 let manager: any, callbacks: Map<string, () => void>, complete: boolean;
 let show: ReturnType<typeof createTeachingSlideshow> | undefined;
@@ -44,11 +44,11 @@ afterEach(() => {
   document.body.replaceChildren();
   vi.useRealTimers();
 });
-it('waits for actual native animation completion and starts teaching exactly once', () => {
+it('starts teaching exactly once when the native canvas is ready', () => {
   const ready = vi.fn();
   show = createTeachingSlideshow({ doc: document, page: 1, onReady: ready, onExit: vi.fn(), onError: vi.fn() });
   vi.advanceTimersByTime(64);
-  expect(ready).not.toHaveBeenCalled();
+  expect(ready).toHaveBeenCalledOnce();
   complete = true;
   vi.advanceTimersByTime(64);
   expect(ready).toHaveBeenCalledTimes(1);
@@ -131,7 +131,7 @@ it('allows verified appear/fade but rejects animated geometry and nested native 
   show = createTeachingSlideshow(input);
   show.dispose();
   slide.timing.getAllAnimEffects = () => [{ cTn: { presetClass: 4, presetID: 1, presetSubtype: 0 } }];
-  expect(() => createTeachingSlideshow(input)).toThrow('动画');
+  expect(() => createTeachingSlideshow(input)).toThrow('animation state');
   slide.timing = undefined;
   slide.cSld.spTree = [{ spTree: [{ isAudio: () => true }] }];
   expect(() => createTeachingSlideshow(input)).toThrow('嵌入媒体');
@@ -145,7 +145,7 @@ it('rejects triggered native sequences before starting any playback', () => {
   };
   expect(() =>
     createTeachingSlideshow({ doc: document, page: 1, onReady: vi.fn(), onExit: vi.fn(), onError: vi.fn() }),
-  ).toThrow('动画');
+  ).toThrow('animation state');
   expect(manager.Mode).toBe(false);
 });
 
@@ -174,7 +174,7 @@ function steps() {
 function stateApiSlide() {
   return state.api.WordControl.m_oLogicDocument.Slides[0];
 }
-it('lets native teaching finish finite automatic group animations before starting narration', () => {
+it('keeps finite automatic group animations beside native teaching without blocking narration', () => {
   const native = vi.spyOn(nativeTeaching, 'hasNativeTeaching').mockReturnValue(true);
   try {
     const s = steps();
@@ -187,11 +187,107 @@ it('lets native teaching finish finite automatic group animations before startin
     const ready = vi.fn();
     show = createTeachingSlideshow({ doc: document, page: 1, onReady: ready, onExit: vi.fn(), onError: vi.fn() });
     vi.advanceTimersByTime(64);
-    expect(ready).not.toHaveBeenCalled();
+    expect(ready).toHaveBeenCalledOnce();
     s.state.fill('end');
     vi.advanceTimersByTime(64);
     expect(ready).toHaveBeenCalledOnce();
   } finally { native.mockRestore(); }
+});
+it('plays delayed automatic PPT-master effects beside narration without changing saved timing', () => {
+  const s = steps(), ready = vi.fn(), error = vi.fn();
+  s.effects[0].cTn.nodeType = 0;
+  s.effects[1].cTn.nodeType = 0;
+  s.effects[1].cTn.presetID = 37;
+  s.effects[1].asc_getDelay = () => 500;
+  const saved = s.slide.timing;
+  expect(() => inspectTeachingAnimations(1)).toThrow('尚未支持同步教学提示');
+  show = createTeachingSlideshow({ doc: document, page: 1, onReady: ready, onExit: vi.fn(), onError: error });
+  vi.advanceTimersByTime(32);
+  expect(ready).toHaveBeenCalledOnce();
+  expect(manager.OnNextSlideAnimPlayer).not.toHaveBeenCalled();
+  expect(state.api.DemonstrationPause).not.toHaveBeenCalled();
+  expect(s.slide.timing).toBe(saved);
+  expect(error).not.toHaveBeenCalled();
+  show.pause(); show.resume();
+  expect(manager.StartAnimation).toHaveBeenCalledWith(0);
+});
+it('automatically finishes unlinked native steps alongside narration without clicks or advancing the page', () => {
+  const s = steps(), ready = vi.fn(), error = vi.fn();
+  show = createTeachingSlideshow({ doc: document, page: 1, onReady: ready, onExit: vi.fn(), onError: error });
+  vi.advanceTimersByTime(32);
+  expect(s.state).toEqual(['active', 'idle']);
+  vi.advanceTimersByTime(1000);
+  expect(manager.OnNextSlideAnimPlayer).toHaveBeenCalledTimes(1);
+  expect(ready).toHaveBeenCalledOnce();
+  show.pause();
+  s.state[0] = 'end';
+  vi.advanceTimersByTime(64);
+  expect(s.state[1]).toBe('idle');
+  show.resume();
+  vi.advanceTimersByTime(32);
+  expect(s.state[1]).toBe('active');
+  s.state[1] = 'end';
+  vi.advanceTimersByTime(64);
+  expect(ready).toHaveBeenCalledOnce();
+  vi.advanceTimersByTime(1000);
+  expect(manager.OnNextSlideAnimPlayer).toHaveBeenCalledTimes(2);
+  expect(manager.SlideNum).toBe(0);
+  expect(error).not.toHaveBeenCalled();
+});
+
+it('autoplays only unlinked effects when speech-linked animations share the page', async () => {
+  const s = steps(), ready = vi.fn(), error = vi.fn();
+  const linked = s.effects[1];
+  const player = { onSpClick: vi.fn(() => { s.state[1] = 'active'; return true; }) };
+  s.slide.getAnimationPlayer = () => player;
+  manager.IsMainSeqFinished = () => s.state[0] === 'end';
+  const schedule = {
+    slide: s.slide, timing: s.slide.timing,
+    hasUnbound: true,
+    scheduled: [{ effect: linked, token: 'linked' }],
+    install() {}, restore: vi.fn(),
+  };
+  show = createTeachingSlideshow({ doc: document, page: 1, timelineStepCount: 1,
+    schedule: schedule as any, onReady: ready, onExit: vi.fn(), onError: error });
+  vi.advanceTimersByTime(32);
+  expect(s.state).toEqual(['active', 'idle']);
+  vi.advanceTimersByTime(1000);
+  expect(manager.OnNextSlideAnimPlayer).toHaveBeenCalledTimes(1);
+  s.state[0] = 'end';
+  vi.advanceTimersByTime(64);
+  expect(ready).toHaveBeenCalledOnce();
+  expect(s.state[1]).toBe('idle');
+  const pending = show.next(0);
+  expect(player.onSpClick).toHaveBeenCalledOnce();
+  s.state[1] = 'end';
+  vi.advanceTimersByTime(32);
+  await pending;
+  expect(manager.OnNextSlideAnimPlayer).toHaveBeenCalledTimes(1);
+  expect(error).not.toHaveBeenCalled();
+  show.dispose();
+  expect(schedule.restore).toHaveBeenCalledOnce();
+});
+
+it.each([
+  [1, 23, 16], // PPT-master basic zoom, distinct from the SDK's zoom preset 53.
+  [0, 1, 2], // Fill color.
+  [0, 30, 0], // Lighten.
+])('plays a saved PPT-master preset %i/%i/%i to native completion', async (presetClass, presetID, presetSubtype) => {
+  const s = steps();
+  Object.assign(s.effects[0].cTn, { presetClass, presetID, presetSubtype });
+  const ready = vi.fn();
+  show = createTeachingSlideshow({ doc: document, page: 1, onReady: ready, onExit: vi.fn(), onError: vi.fn() });
+  const next = show.next();
+  expect(s.state[0]).toBe('active');
+  expect(ready).not.toHaveBeenCalled();
+  s.state[0] = 'end';
+  vi.advanceTimersByTime(32);
+  await next;
+  expect(ready).toHaveBeenCalledOnce();
+  expect(s.state[1]).toBe('active');
+  s.state[1] = 'end';
+  vi.advanceTimersByTime(32);
+  expect(ready).toHaveBeenCalledTimes(1);
 });
 it('completes each native step from actual state, blocking duplicates and preserving pause', async () => {
   const s = steps(),
@@ -213,16 +309,29 @@ it('completes each native step from actual state, blocking duplicates and preser
   expect(state.api.DemonstrationPlay).not.toHaveBeenCalled();
   vi.advanceTimersByTime(64);
   await first;
-  expect(ready).not.toHaveBeenCalled();
-  const second = show.next();
+  expect(ready).toHaveBeenCalledOnce();
+  expect(s.state[1]).toBe('active');
   s.state[1] = 'end';
   vi.advanceTimersByTime(64);
-  await second;
   expect(ready).toHaveBeenCalledOnce();
   expect(error).not.toHaveBeenCalled();
   await expect(show.next()).rejects.toThrow();
   expect(document.querySelector('[data-native-animation-controls]')).toBeNull();
   expect(manager.SlideNum).toBe(0);
+});
+
+it('keeps native completion checks for an effect on a mapped group child', async () => {
+  const s = steps();
+  const child = { Id: 'target', group: undefined as unknown };
+  const group = { Id: 'group', spTree: [child] };
+  child.group = group;
+  s.slide.cSld.spTree = [group];
+  show = createTeachingSlideshow({ doc: document, page: 1, onReady: vi.fn(), onExit: vi.fn(), onError: vi.fn() });
+  const next = show.next();
+  expect(s.state[0]).toBe('active');
+  s.state[0] = 'end';
+  vi.advanceTimersByTime(32);
+  await next;
 });
 it('rejects pending steps on disposal, failure or manual advancement without reporting success', async () => {
   for (const kind of ['dispose', 'advance', 'refuse'] as const) {
@@ -254,7 +363,7 @@ it('rejects unsupported step state, duration, delay, target and changed page bef
   ]) {
     const s = steps();
     Object.assign(s.effects[0], change);
-    expect(() => createTeachingSlideshow(input)).toThrow();
+    expect(() => createTeachingSlideshow({ ...input, timelineStepCount: 2 })).toThrow();
     expect(manager.Mode).toBe(false);
   }
   steps();

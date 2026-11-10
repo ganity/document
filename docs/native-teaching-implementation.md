@@ -33,7 +33,8 @@ of constructing an invalid empty timeline.
 Native attention and speech-animation targets can also be descendants of groups;
 the exact object must still belong to the requested slide. Object lookup stays
 within that slide when validating its chooser or preview. Supported finite native
-automatic/parallel effects and delays finish in the SDK before narration begins.
+automatic/parallel effects and delays retain Part A's concurrent native playback;
+speech-linked steps still complete from actual SDK state.
 For native pages with speech animation cues, the first preview entry automatically
 uses native slideshow playback rather than reporting that canvas playback cannot
 render those animations.

@@ -66,6 +66,11 @@ let duringDraftClear: (() => void) | undefined;
 let storedRecovery: any;
 let clearFailure: boolean;
 let remount: () => void;
+let ttsTasks: any[];
+let holdTtsStatus: boolean;
+let pendingTtsStatusId: string | undefined;
+let catalogFailures: Map<string, string[]>;
+let heldCatalog: { operation: string; id?: string } | undefined;
 const first = () => ({
   id: 'speech',
   type: 'speech',
@@ -95,6 +100,11 @@ beforeEach(() => {
   doc.body.innerHTML =
     '<div id="right-menu"><div class="right-panel"></div><div class="tool-menu-btns"><button id="id-right-menu-slide"></button><button id="id-right-menu-image"></button></div></div>';
   calls = [];
+  ttsTasks = [];
+  holdTtsStatus = false;
+  pendingTtsStatusId = undefined;
+  catalogFailures = new Map();
+  heldCatalog = undefined;
   library = [];
   adoptionFailure = false;
   writeFailure = false;
@@ -119,6 +129,15 @@ beforeEach(() => {
       if (type !== 'document:teaching-request') return;
       calls.push(payload);
       queueMicrotask(() => {
+        if (heldCatalog && heldCatalog.operation === payload.operation) {
+          heldCatalog.id = id;
+          return;
+        }
+        const failure = catalogFailures.get(payload.operation)?.shift();
+        if (failure) {
+          sidebar.receive(id!, { error: failure });
+          return;
+        }
         let result: any;
         switch (payload.operation) {
           case 'open':
@@ -176,8 +195,17 @@ beforeEach(() => {
             result = library;
             break;
           case 'tts:models':
-          case 'tts:list':
             result = [];
+            break;
+          case 'tts:list':
+            result = ttsTasks;
+            break;
+          case 'tts:status':
+            if (holdTtsStatus) {
+              pendingTtsStatusId = id;
+              return;
+            }
+            result = ttsTasks[0];
             break;
           case 'write':
             duringWrite?.();
@@ -264,6 +292,41 @@ it('automatically loads narration and voice in the native property area without 
   expect(doc.querySelector('textarea')!.value).toBe('Hello');
   expect(doc.body.textContent).toContain('语音已就绪');
   expect(calls.map((call) => call.operation)).toEqual(['open', 'draft:get', 'tts:models', 'tts:list', 'media:list']);
+});
+it.each(['tts:models', 'tts:list', 'media:list'])(
+  'recovers one failed %s read without submitting speech',
+  async (operation) => {
+    catalogFailures.set(operation, ['Teaching view changed; reload current page']);
+    await vi.waitFor(() => expect(calls.filter((call) => call.operation === 'open')).toHaveLength(2));
+    await flush();
+    expect(doc.querySelector('[role=alert]')).toBeNull();
+    expect(doc.body.textContent).toContain('语音已就绪');
+    expect(calls.some((call) => /prepare|quote|submit|write/.test(call.operation))).toBe(false);
+  },
+);
+it('limits recovery to one reload and reports the failed read and actual error', async () => {
+  catalogFailures.set('tts:list', ['COURSEWARE_MEDIA_AUTH_REQUIRED', 'COURSEWARE_MEDIA_AUTH_REQUIRED']);
+  await vi.waitFor(() =>
+    expect(doc.querySelector('[role=alert]')?.textContent).toContain('COURSEWARE_MEDIA_AUTH_REQUIRED'),
+  );
+  expect(calls.filter((call) => call.operation === 'open')).toHaveLength(2);
+  expect(doc.querySelector('[role=alert]')!.textContent).toContain('语音任务');
+  expect(doc.querySelector('[role=alert]')!.textContent).not.toContain('语音服务暂不可用');
+  expect(doc.querySelector('textarea')!.value).toBe('Hello');
+  expect(doc.body.textContent).toContain('语音已就绪');
+});
+it('keeps edits made while a voice read fails instead of reloading the form', async () => {
+  heldCatalog = { operation: 'tts:list' };
+  await flush();
+  expect(heldCatalog.id).toBeTruthy();
+  const narration = doc.querySelector('textarea')!;
+  narration.value = 'Unsaved narration';
+  narration.dispatchEvent(new Event('input'));
+  sidebar.receive(heldCatalog.id!, { error: 'Voice task read timed out' });
+  await flush();
+  expect(calls.filter((call) => call.operation === 'open')).toHaveLength(1);
+  expect(doc.querySelector('textarea')!.value).toBe('Unsaved narration');
+  expect(doc.querySelector('[role=alert]')?.textContent).toContain('Voice task read timed out');
 });
 it('edits and saves narration through Host while invalidating stale audio and cues', async () => {
   await flush();
@@ -836,6 +899,33 @@ const lessonSdk = () => {
   state.refresh();
   return { native, played };
 };
+it.each([false, true])('keeps native preparation open when a TTS status poll is pending (%s)', async (inFlight) => {
+  await flush();
+  sidebar.dispose();
+  const { native, played } = lessonSdk();
+  native.WordControl.DemonstrationManager.IsMainSeqFinished = () => false;
+  ttsTasks = [{ intentId: 'pending-tts', phase: 'submitted', task: { state: 'running' } }];
+  remount();
+  await flush();
+  if (inFlight) {
+    holdTtsStatus = true;
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(pendingTtsStatusId).toBeTruthy();
+  }
+  click('幻灯片放映');
+  await flush();
+  expect(doc.querySelector('[data-teaching-slideshow]')).toBeTruthy();
+  if (inFlight) {
+    sidebar.receive(pendingTtsStatusId!, { result: { ...ttsTasks[0], task: { state: 'ready' } } });
+    await flush();
+  } else await vi.advanceTimersByTimeAsync(10000);
+  await vi.advanceTimersByTimeAsync(64);
+  expect(doc.querySelector('[data-teaching-slideshow]')).toBeTruthy();
+  expect(played).toHaveLength(1);
+  native.WordControl.DemonstrationManager.IsMainSeqFinished = () => true;
+  await vi.advanceTimersByTimeAsync(64);
+  expect(played).toHaveLength(1);
+});
 it.each([1, 2])('plays every native page and restores starting page %s without writes', async (initialPage) => {
   const { native, played } = lessonSdk();
   await flush();
@@ -885,6 +975,45 @@ it('skips empty teaching pages during a whole lesson without starting an empty t
   expect(doc.querySelector('[data-status]')!.textContent).toBe('整课教学放映完成');
   expect(state.context.page).toBe(2);
   expect(calls.some(call => call.operation === 'write')).toBe(false);
+});
+
+it('requires a group entrance before spotlighting its mapped child', async () => {
+  const { native } = lessonSdk();
+  Object.assign(native.WordControl.DemonstrationManager, { OnNextSlideAnimPlayer: vi.fn(), StartAnimation: vi.fn() });
+  const child = { Id: 'image', group: undefined as unknown, getUniNvProps: () => ({ cNvPr: { name: 'Image 6' } }) };
+  const group = { Id: 'photo', spTree: [child] };
+  child.group = group;
+  const effect = {
+    cTn: { presetClass: 1, presetID: 10, presetSubtype: 0, nodeType: 2 },
+    getObjectId: () => group.Id,
+    asc_getDuration: () => 500,
+    asc_getDelay: () => 0,
+    isIdle: () => true,
+    isAtEnd: () => false,
+  };
+  const slide = native.WordControl.m_oLogicDocument.Slides[0] as any;
+  slide.cSld.spTree = [group];
+  slide.timing = { getAllAnimEffects: () => [effect], getEffectsSequences: () => [[null, effect]] };
+  teachingObjects = [{ objectId: 'child', status: 'mapped', effectTargetEligible: true, sourceObjectName: 'Image 6' }];
+  persisted = [
+    {
+      ...first(),
+      visualCues: [{ id: 'spot', atMs: 0, endMs: 500, effect: { type: 'spotlight', elementId: 'child' } }],
+    },
+    { id: 'native', type: 'native_animation', version: 1, sourceSha256: sourceSha, stepIndex: 0 },
+  ];
+  const lineage = vi
+    .spyOn(deckwisePageLineage, 'context')
+    .mockReturnValue({ sourceSha256: sourceSha!, pageTokens: [], openedPageTokens: [] });
+  try {
+    await flush();
+    click('幻灯片放映');
+    await flush();
+    expect(doc.querySelector('[role=alert]')?.textContent).toContain('入场动画之后');
+    expect(native.StartDemonstration).not.toHaveBeenCalled();
+  } finally {
+    lineage.mockRestore();
+  }
 });
 it.each(['teaching', 'source'])(
   'stops rather than playing a later page from a different %s revision',
@@ -1513,6 +1642,20 @@ it('saved teaching permits spotlight editing without per-page confirmation', asy
   expect(requests.some((r) => ['confirm', 'tts:prepare', 'tts:submit', 'write'].includes(r.operation))).toBe(false);
 });
 
+it('preserves canvas preview of legacy speech animation without requiring a native schedule', async () => {
+  const { played } = lessonSdk();
+  persisted[0].visualCues = [
+    { id: 'fade', atMs: 0, endMs: 600, effect: { type: 'element_animation', effect: 'fadeIn', elementId: 'target' } },
+  ];
+  await flush();
+  click('画布预览');
+  await flush();
+  expect(doc.querySelector('[role=alert]')?.textContent).toBeUndefined();
+  expect(played).toHaveLength(1);
+  expect(played[0].nodes[0]).toMatchObject({ id: 'speech', type: 'speech' });
+  expect(played[0].native).toBeUndefined();
+});
+
 it.each([1, 2])(
   'starts teaching after a user edits native animation, with %s click steps, without replacing it',
   async (count) => {
@@ -1622,15 +1765,16 @@ it('navigates from a current-page slideshow and replays the selected page', asyn
   await flush();
   click('幻灯片放映');
   await vi.advanceTimersByTimeAsync(32);
-  expect(played.map(p => p.pageId)).toEqual(['p1']);
+  expect(played.map((p) => p.pageId)).toEqual(['p1']);
   const controls = () => doc.querySelector<HTMLElement>('[aria-label="教学放映控制"]')!;
   controls().querySelector<HTMLButtonElement>('[data-preview-command=next]')!.click();
   await vi.advanceTimersByTimeAsync(32);
-  expect(played.map(p => p.pageId)).toEqual(['p1', 'p2']);
+  expect(played.map((p) => p.pageId)).toEqual(['p1', 'p2']);
   controls().querySelector<HTMLButtonElement>('[data-preview-command=replay]')!.click();
   await vi.advanceTimersByTimeAsync(32);
-  expect(played.map(p => p.pageId)).toEqual(['p1', 'p2', 'p2']);
-  played[1].onComplete(); await vi.advanceTimersByTimeAsync(32);
+  expect(played.map((p) => p.pageId)).toEqual(['p1', 'p2', 'p2']);
+  played[1].onComplete();
+  await vi.advanceTimersByTimeAsync(32);
   expect(played).toHaveLength(3);
   expect(doc.querySelector('[data-teaching-slideshow]')).not.toBeNull();
 });

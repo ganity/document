@@ -155,6 +155,13 @@ it('keeps native steps without a speech target manual instead of guessing or blo
   f.actions[0].visualCues.pop();
   expect(nativeSpeechMotionSteps(1, f.actions, f.objects, runtime)).toBeUndefined();
 });
+it('routes edited presets outside the legacy binding subset through the native schedule', () => {
+  const f = setup();
+  integrateGeneratedNativeMotions(1, f.actions, f.objects, runtime);
+  f.effects[0].cTn.presetID = 37;
+  expect(nativeSpeechMotionSteps(1, f.actions, f.objects, runtime)).toBeUndefined();
+  expect(integrateGeneratedNativeMotions(1, f.actions, f.objects, runtime)).toBe(false);
+});
 it('retains successive speech bindings when several speeches animate the same objects', () => {
   const f = setup();
   const second = structuredClone(f.actions[0]);

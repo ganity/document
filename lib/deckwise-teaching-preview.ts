@@ -112,14 +112,17 @@ export const loadTeachingPreviewRuntime = (): Promise<Runtime> => {
   }));
 };
 
-function containsShape(tree: Shape[], shape: Shape): boolean {
-  return tree.some(candidate => candidate === shape || containsShape(candidate.spTree ?? [], shape));
+/** SDK child transforms already include their ancestor groups. Reject detached children. */
+export function teachingShapes<T extends { group?: unknown; spTree?: T[] }>(tree: T[], parent?: T): T[] {
+  return tree.flatMap((shape) =>
+    shape.group && shape.group !== parent ? [] : [shape, ...teachingShapes(shape.spTree ?? [], shape)],
+  );
 }
 
 export function attentionTarget(tree: Shape[], objects: PreviewObject[], id: string): Shape {
   if (hasNativeTeaching()) {
     const shape = nativeTeachingTarget(id, tree) as Shape | undefined;
-    if (!shape || !containsShape(tree, shape)) throw new Error('提示对象已删除或不在当前页');
+    if (!shape || !teachingShapes(tree).includes(shape)) throw new Error('提示对象已删除或不在当前页');
     return shape;
   }
   const matches = objects.filter(
@@ -132,12 +135,13 @@ export function attentionTarget(tree: Shape[], objects: PreviewObject[], id: str
   if (!nativeIdentity && proof.sourceObjectName &&
     objects.filter(o => o.status === 'mapped' && o.sourceObjectName === proof.sourceObjectName).length !== 1)
     throw new Error('提示对象映射不唯一，请重新读取本页');
-  const shapes = tree.filter(s => {
+  // The native converter renumbers OOXML IDs; generated scene names survive conversion.
+  const shapes = teachingShapes(tree).filter((s) => {
     if (nativeIdentity) return !!proof.sourceShapeId && deckwisePageLineage.sourceShapeId(s) === proof.sourceShapeId;
     const props = s.getUniNvProps?.()?.cNvPr;
     return proof.sourceObjectName ? props?.name === proof.sourceObjectName : String(props?.id) === proof.sourceShapeId;
   });
-  if (shapes.length !== 1 || shapes[0].group) throw new Error('提示对象已删除或不再唯一，请重新选择目标');
+  if (shapes.length !== 1) throw new Error('提示对象已删除或不再唯一，请重新选择目标');
   return shapes[0];
 }
 
@@ -147,7 +151,7 @@ export function selectedAttentionTargets(tree: Shape[], selected: Shape[], objec
     throw new Error('请先在画布上选择 1–200 个教学对象');
   const native = hasNativeTeaching();
   return selected.map((shape) => {
-    if (native ? !containsShape(tree, shape) : !tree.includes(shape) || shape.group) throw new Error('请选择当前页的独立对象');
+    if (!teachingShapes(tree).includes(shape)) throw new Error('请选择当前页的教学对象');
     const matches = objects.filter((object) => {
       if (native) return nativeTeachingTarget(object.objectId, tree) === shape;
       if (object.status !== 'mapped' || !object.effectTargetEligible) return false;

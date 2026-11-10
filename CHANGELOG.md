@@ -7,6 +7,22 @@ notes. Entries describe what users experience, not internal refactors.
 
 ## [Unreleased]
 
+- Play speech-linked effects from saved native PPT animations, including separate
+  entrance/exit effects on one object. Report missing native effects instead of
+  manufacturing playback-only animations.
+
+- Start teaching alongside page-entry animations without applying the narrower
+  speech-binding preset restrictions to the whole PPT. Pause/resume background
+  animations with narration and preserve saved timing on exit.
+
+- Retry failed teaching media reads once without regenerating audio, retain edits and report the actual failed read. Keep animation names readable beside unsupported-animation notices.
+
+- Automatically play unlinked PPT animations on page entry alongside narration; reuse unique native group animations at their generated speech cues without requiring manual clicks.
+
+- Play saved PPT-master basic zoom, fill-color and lighten animations during teaching slideshows without rejecting the whole page.
+
+- Resolve teaching spotlights and highlights inside saved PPT groups; keep native preparation open when background speech-task status checks finish.
+
 - Make teaching slideshow controls readable; add page navigation, replay, media seeking and five-second fast-forward.
 
 - Open the first document without an unnecessary teardown delay and avoid duplicate teaching retries when newer selection reads are already queued.

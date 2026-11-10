@@ -32,6 +32,8 @@ test('real Part A teaching and adopted audio survive native edit, undo and PPTX 
     };
   });
   await page.goto('/embed-demo.html');
+  // The demo prints full native payloads; its growing text layout is outside the editor's navigation budget.
+  await page.locator('#log').evaluate(node => { node.style.display = 'none'; });
   await page.evaluate(() => {
     document.querySelector('#status')!.textContent = 'loading';
     (window as any).nativeHostCalls = [];
@@ -155,19 +157,23 @@ test('real Part A teaching and adopted audio survive native edit, undo and PPTX 
     const question = office.locator('[data-teaching-question]');
     await expect(question).toBeVisible({ timeout: 20000 });
     await expect(panel.getByRole('alert')).toHaveCount(0);
-    await question.getByRole('button', { name: '检查答案', exact: true }).click();
-    await expect(question.getByRole('status')).toHaveText('请先选择答案');
+    if (process.env.DECKWISE_NATIVE_MODULE) {
+      await expect(question.getByRole('button', { name: '检查答案', exact: true })).toBeDisabled();
+    } else {
+      await question.getByRole('button', { name: '检查答案', exact: true }).click();
+      await expect(question.getByRole('status')).toHaveText('请先选择答案');
+    }
     await question.getByRole('radio').nth(0).check();
     await question.getByRole('button', { name: '检查答案', exact: true }).click();
     await expect(question.getByRole('status')).toHaveText('再想一想，可以重新选择');
     await question.getByRole('radio').nth(1).check();
     await question.getByRole('button', { name: '检查答案', exact: true }).click();
     await expect(question.getByRole('status')).toHaveText('回答正确');
-    await question.getByRole('button', { name: '继续教学', exact: true }).click();
+    await question.getByRole('button', { name: /^(继续教学|教师继续)$/ }).click();
     if (name === '放映整课教学') {
       await expect(question).toBeVisible({ timeout: 20000 });
       await expect(question).toContainText('谁来举起相册');
-      await question.getByRole('button', { name: '继续教学', exact: true }).click();
+      await question.getByRole('button', { name: /^(继续教学|教师继续)$/ }).click();
     }
     await expect(question).toHaveCount(0);
     await expect(panel.getByRole('alert')).toHaveCount(0);

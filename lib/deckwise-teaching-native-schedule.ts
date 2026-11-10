@@ -1,5 +1,11 @@
 import { requireEditorContext } from './agent-plugin/editor-bridge';
-import { attentionTarget, type PreviewObject, type Runtime } from './deckwise-teaching-preview';
+import {
+  attentionTarget,
+  teachingShapes,
+  type Shape,
+  type PreviewObject,
+  type Runtime,
+} from './deckwise-teaching-preview';
 import { type AnimationCue } from './deckwise-teaching-animation-bindings';
 
 type Effect = {
@@ -17,7 +23,6 @@ type Timing = {
   parent: unknown;
   getAllAnimEffects(): Effect[];
   buildTree(sequences: Array<Array<Effect | string | null>>): void;
-  createEffect(shape: string, kind: number, id: number, subtype: number, color: null): Effect | null;
   setParent(parent: unknown): void;
 };
 export function prepareSpeechNativeSchedule(
@@ -33,9 +38,12 @@ export function prepareSpeechNativeSchedule(
           .map((cue) => ({ actionId: action.id, cue }))
       : [],
   );
-  if (!cues.some(({ cue }) => cue.trigger || cue.nativeAnimation)) return undefined;
-  if (actions.some((action) => action.type === 'native_animation'))
-    throw new Error('Remove legacy page animation bindings before using speech animation links');
+  if (!cues.length) return undefined;
+  if (actions.some((action) => action.type === 'native_animation')) {
+    if (cues.some(({ cue }) => cue.trigger || cue.nativeAnimation))
+      throw new Error('Remove legacy page animation bindings before using speech animation links');
+    return undefined;
+  }
   const context = requireEditorContext();
   const api = context.api;
   const control = Reflect.get(api, 'WordControl');
@@ -50,50 +58,51 @@ export function prepareSpeechNativeSchedule(
   const claimed = new Set<Effect>();
   const build = () => {
     const timing = Reflect.construct(CTiming, []) as Timing;
-    const scheduled = cues.map(({ actionId, cue }, index) => {
-      const shape = attentionTarget(slide.cSld.spTree, objects, cue.effect.elementId);
-      if (!shape.Id) throw new Error('Native animation target is missing');
-      const candidates = existing.filter((effect) => effect.getObjectId() === shape.Id);
-      let effect: Effect;
-      if (cue.nativeAnimation) {
-        if (candidates.length !== 1 || claimed.has(candidates[0]))
-          throw new Error('Linked native animation is missing or ambiguous');
-        claimed.add(candidates[0]);
-        effect = candidates[0].createDuplicate();
-      } else {
-        const preset = runtime.nativeMotionPreset(cue.effect.effect);
-        if (!preset) throw new Error('Unsupported teaching animation');
-        const mirror =
-          !cue.trigger &&
-          candidates.find(
-            (effect) =>
-              !claimed.has(effect) &&
-              effect.cTn.presetClass === preset.presetClass &&
-              effect.cTn.presetID === preset.presetId &&
-              effect.cTn.presetSubtype === preset.subtype,
-          );
-        if (mirror) claimed.add(mirror);
-        if (cue.trigger && candidates.some((effect) => !claimed.has(effect)))
-          throw new Error('Link the existing native animation instead of adding a second owner on the same object');
-        const created = mirror
-          ? mirror.createDuplicate()
-          : timing.createEffect(shape.Id, preset.presetClass, preset.presetId, preset.subtype, null);
-        if (!created) throw new Error('Native animation preset could not be created');
-        effect = created;
-        effect.asc_putDuration(cue.endMs - cue.atMs);
-      }
-      effect.cTn.setNodeType(2);
-      effect.asc_putDelay(0);
-      return {
-        actionId,
-        stepIndex: index,
-        atMs: cue.atMs,
-        endMs: cue.atMs + effect.asc_getDuration(),
-        trigger: cue.trigger,
-        effect,
-        token: effect.Id,
-      };
-    });
+    const shapes = teachingShapes<Shape>(slide.cSld.spTree);
+    const scheduled = cues
+      .flatMap(({ actionId, cue }) => {
+        const shape = attentionTarget(slide.cSld.spTree, objects, cue.effect.elementId);
+        if (!shape.Id) throw new Error('Native animation target is missing');
+        // A pictured teaching target may inherit its entrance from a saved PPT group.
+        let candidates: Effect[] = [];
+        for (
+          let owner: Shape | undefined = shape;
+          owner && shapes.includes(owner);
+          owner = owner.group as Shape | undefined
+        ) {
+          candidates = existing.filter((effect) => effect.getObjectId() === owner!.Id);
+          if (candidates.length) break;
+        }
+        let effect: Effect;
+        if (cue.nativeAnimation) {
+          if (candidates.length !== 1 || claimed.has(candidates[0]))
+            throw new Error('Linked native animation is missing or ambiguous');
+          claimed.add(candidates[0]);
+          effect = candidates[0].createDuplicate();
+        } else {
+          const preset = runtime.nativeMotionPreset(cue.effect.effect);
+          if (!preset) throw new Error('Unsupported teaching animation');
+          const mirror = candidates.find((effect) => !claimed.has(effect) &&
+            effect.cTn.presetClass === preset.presetClass && effect.cTn.presetID === preset.presetId &&
+            (effect.cTn.presetSubtype ?? 0) === preset.subtype && effect.asc_getDuration() === cue.endMs - cue.atMs);
+          if (!mirror) throw new Error('讲解关联的动画尚未写入 PPT，请先完成课件生成并保存原生动画。');
+          claimed.add(mirror);
+          effect = mirror.createDuplicate();
+        }
+        effect.cTn.setNodeType(2);
+        effect.asc_putDelay(0);
+        return [
+          {
+            actionId,
+            atMs: cue.atMs,
+            endMs: cue.atMs + effect.asc_getDuration(),
+            trigger: cue.trigger,
+            effect,
+            token: effect.Id,
+          },
+        ];
+      })
+      .map((entry, stepIndex) => ({ ...entry, stepIndex }));
     // Independent interactive sequences reuse the native renderer without advancing unrelated effects.
     const unbound = existing.filter((effect) => !claimed.has(effect)).map((effect) => effect.createDuplicate());
     timing.buildTree([
