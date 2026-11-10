@@ -131,9 +131,44 @@ export function renderDeckWiseCurrentSlidePreview(
     )
       throw new Error('Native text omission requires ordinary opaque shapes and pictures; review another clean plate');
   }
-  const renderer = common as typeof common & PreviewRenderer;
-  const widthMM = logic?.GetWidthMM?.();
-  const heightMM = logic?.GetHeightMM?.();
+  const dataUrl = renderNativeSlide(slide, logic!, common as typeof common & PreviewRenderer, omitNativeText);
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png;base64,'))
+    throw new Error('Native page preview did not return a PNG');
+  const binary = atob(dataUrl.slice('data:image/png;base64,'.length));
+  if (binary.length < 33 || binary.length > 8 * 1024 * 1024)
+    throw new Error('Native page preview exceeds its PNG budget');
+  const png = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  if (
+    png[0] !== 0x89 ||
+    png[1] !== 0x50 ||
+    png[2] !== 0x4e ||
+    png[3] !== 0x47 ||
+    api !== getEditorApi() ||
+    api.WordControl?.m_oLogicDocument?.Slides?.[page!] !== slide ||
+    api.getCurrentPage?.() !== currentPage ||
+    !target.isCurrent(false) ||
+    !getReadonlyMode() ||
+    hasUnsavedChanges() ||
+    history.Index !== -1 ||
+    history.Points.length !== 0 ||
+    deckwisePageLineage.context()?.pageTokens[page!] !== pageToken
+  )
+    throw new Error('PPTX page changed while rendering; discard this preview');
+  return {
+    sourceSha256: context.sourceSha256,
+    pageToken,
+    page: page! + 1,
+    mime: 'image/png' as const,
+    png,
+    ...(omitNativeText ? { nativeTextOmitted: true as const } : {}),
+  };
+}
+
+/** Render the live slide without changing selection, history, or the current page. */
+export function renderNativeSlide(slide: PreviewSlide, logic: PreviewPresentation, common: PreviewRenderer, omitNativeText = false): string {
+  const renderer = common;
+  const widthMM = logic.GetWidthMM?.();
+  const heightMM = logic.GetHeightMM?.();
   if (
     typeof slide.draw !== 'function' ||
     typeof renderer?.CGraphics !== 'function' ||
@@ -170,34 +205,5 @@ export function renderDeckWiseCurrentSlidePreview(
     if (renderer.g_fontManager2) renderer.g_fontManager2.m_pFont = null;
     canvas.width = canvas.height = 0;
   }
-  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png;base64,'))
-    throw new Error('Native page preview did not return a PNG');
-  const binary = atob(dataUrl.slice('data:image/png;base64,'.length));
-  if (binary.length < 33 || binary.length > 8 * 1024 * 1024)
-    throw new Error('Native page preview exceeds its PNG budget');
-  const png = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  if (
-    png[0] !== 0x89 ||
-    png[1] !== 0x50 ||
-    png[2] !== 0x4e ||
-    png[3] !== 0x47 ||
-    api !== getEditorApi() ||
-    api.WordControl?.m_oLogicDocument?.Slides?.[page!] !== slide ||
-    api.getCurrentPage?.() !== currentPage ||
-    !target.isCurrent(false) ||
-    !getReadonlyMode() ||
-    hasUnsavedChanges() ||
-    history.Index !== -1 ||
-    history.Points.length !== 0 ||
-    deckwisePageLineage.context()?.pageTokens[page!] !== pageToken
-  )
-    throw new Error('PPTX page changed while rendering; discard this preview');
-  return {
-    sourceSha256: context.sourceSha256,
-    pageToken,
-    page: page! + 1,
-    mime: 'image/png' as const,
-    png,
-    ...(omitNativeText ? { nativeTextOmitted: true as const } : {}),
-  };
+  return dataUrl;
 }

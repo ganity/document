@@ -5,10 +5,22 @@ import { routeNativeTeaching } from '../../lib/deckwise-native-teaching-router';
 import { attentionGeometry, selectedAttentionTargets } from '../../lib/deckwise-teaching-preview';
 vi.mock('../../lib/deckwise-page-lineage', () => ({ deckwisePageLineage: { context: () => ({ sourceSha256: 'a'.repeat(64) }) } }));
 const state = vi.hoisted(() => ({ api: {}, readonly: false }));
-vi.mock('../../lib/agent-plugin/editor-bridge', () => ({ getEditorApi: () => state.api }));
+vi.mock('../../lib/agent-plugin/editor-bridge', () => ({ getEditorApi: () => state.api, requireEditorContext: () => ({ api: state.api, AscFormat: { CTiming: Timing, ExecuteNoHistory: (fn: () => unknown) => fn() } }) }));
 vi.mock('../../lib/onlyoffice/guards/slide-source-identity', () => ({ importedSlideShapeId: (shape: any) => shape.sourceId }));
 vi.mock('../../lib/onlyoffice/readonly', () => ({ getReadonlyMode: () => state.readonly }));
 afterEach(() => { document.body.replaceChildren(); state.readonly = false; });
+class Timing {
+  effects: any[] = [];
+  setParent() {}
+  createDuplicate() { const copy = new Timing(); copy.effects = [...this.effects]; return copy; }
+  getAllAnimEffects() { return this.effects; }
+  createEffect(id: string, kind: number, preset: number, subtype: number) {
+    let duration = 0;
+    return { getObjectId: () => id, cTn: { presetClass: kind, presetID: preset, presetSubtype: subtype, setNodeType() {} },
+      asc_getDuration: () => duration, asc_putDuration: (value: number) => { duration = value; }, asc_putDelay() {} };
+  }
+  addEffectsToMainSequence(effects: any[]) { this.effects.push(...effects); }
+}
 function mount(locked = false, slides?: any[]) {
   const data = { schemaVersion: 'deckwise-native-teaching/1', documentId: 'document', revision: 'revision', pages: [{ pageId: 'page', locked, actions: [{ id: 'speech', type: 'speech', text: 'Before', audioAssetId: 'old', durationMs: 1000 }] }], media: [], identity: { pages: [{ pageId: 'page', objects: [{ logicalId: 'object', sourceShapeId: '4', type: 'shape' }] }] } };
   const parts: Array<{ GetXml(): string; Delete(): void }> = [];
@@ -206,7 +218,7 @@ it('retains generated logical requirements and live object evidence after page p
   const teaching = { pageType: 'slide', phase: 'opening', objective: 'Greet', durationSeconds: 30, requiredObjects: [] };
   const root = document.implementation.createDocument(NATIVE_TEACHING_NAMESPACE, 'teaching');
   root.documentElement.textContent = JSON.stringify({ ...data, title: 'Generated lesson', generation: {
-    pages: [{ pageId: 'page', teaching }], educationContext: { schoolStage: 'KINDERGARTEN', subject: 'ENGLISH' },
+    pages: [{ pageId: 'page', teaching, narration: 'Planned narration evidence' }], educationContext: { schoolStage: 'KINDERGARTEN', subject: 'ENGLISH' },
   } });
   parts[0].Delete(); add(new XMLSerializer().serializeToString(root));
   const opened = (await routeNativeTeaching('open', {}, 1))!.value as any;
@@ -215,12 +227,14 @@ it('retains generated logical requirements and live object evidence after page p
   expect(opened.project.educationContext.schoolStage).toBe('KINDERGARTEN');
   const context = (await routeNativeTeaching('narration-context', { viewId: opened.viewId, expectedTeachingRevision: opened.project.teachingRevision }, 1))!.value as any;
   expect(context.evidence.objects[0]).toMatchObject({ objectId: 'object', bbox: [1, 2, 3, 4] });
+  expect(context.evidence.notes).toBe('Planned narration evidence');
 });
 
 it.each(['highlight', 'spotlight'])('resolves generated %s and animation against adopted audio in the same history action', async type => {
   vi.stubGlobal('crypto', webcrypto);
   try {
-    const { logic } = mount(false, [{ cSld: { spTree: [{ sourceId: '4' }] } }]);
+    const slide = { cSld: { spTree: [{ sourceId: '4', Id: 'shape-4' }] }, timing: null as Timing | null, setTiming(value: Timing | null) { this.timing = value; } };
+    const { logic } = mount(false, [slide]);
     const teaching = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions: [
       { id: 'speech', type: 'speech', text: 'Look here.', attention: { type, objectIds: ['object'], animation: 'fadeIn' } },
     ] });
@@ -229,15 +243,120 @@ it.each(['highlight', 'spotlight'])('resolves generated %s and animation against
     const input = { documentId: 'document', expectedRevision: teaching.revision, pageId: 'page', actionId: 'speech', assetId: 'tts-generated', sha256, mimeType: 'audio/mpeg', durationMs: 1000, bytes };
     const adopted = await adoptNativeTeachingAudio(input), action = adopted.pages[0].actions[0];
     expect(action.attention).toBeUndefined();
+    expect(slide.timing?.getAllAnimEffects()).toHaveLength(1);
+    const timing = slide.timing;
+    const repeated = await adoptNativeTeachingAudio({ ...input, expectedRevision: adopted.revision });
+    expect(slide.timing).toBe(timing);
+    expect(repeated.pages[0].actions[0].visualCues).toEqual(action.visualCues);
     expect(action.visualCues).toMatchObject([
       { atMs: 0, endMs: 600, effect: { type: 'element_animation', elementId: 'object', effect: 'fadeIn' } },
       { atMs: 600, endMs: 1000, effect: { type } },
     ]);
-    expect(logic.StartAction).toHaveBeenCalledTimes(2);
-    const changed = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: adopted.revision, pageId: 'page', actions: [
+    expect(logic.StartAction).toHaveBeenCalledTimes(3);
+    const changed = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: repeated.revision, pageId: 'page', actions: [
       { id: 'speech', type: 'speech', text: 'Look here.', attention: { type, objectIds: ['deleted'] } },
     ] });
     await expect(adoptNativeTeachingAudio({ ...input, expectedRevision: changed.revision })).rejects.toThrow('target');
     expect(readNativeTeaching()!.revision).toBe(changed.revision);
   } finally { vi.unstubAllGlobals(); }
+});
+
+it('persists manual speech animation cues with unrelated native effects and rolls back a failed carrier write', () => {
+  const previous = new Timing(); previous.effects.push(previous.createEffect('unrelated', 1, 10, 0));
+  const slide = { cSld: { spTree: [{ sourceId: '4', Id: 'shape-4' }] }, timing: previous, setTiming(value: Timing) { this.timing = value; } };
+  const { parts } = mount(false, [slide]);
+  const actions = [{ id: 'speech', type: 'speech', text: 'Before', visualCues: [{ id: 'cue', atMs: 250, endMs: 850,
+    trigger: { version: 1, kind: 'end' }, effect: { type: 'element_animation', elementId: 'object', effect: 'pulse' } }] }];
+  const oldXml = parts[0].GetXml(), originalDelete = parts[0].Delete;
+  parts[0].Delete = () => { originalDelete(); throw Error('Injected failure'); };
+  const input = { documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions };
+  expect(() => replaceNativeTeachingPage(input)).toThrow('Injected failure');
+  expect(slide.timing).toBe(previous); expect(parts[0].GetXml()).toBe(oldXml);
+  const saved = replaceNativeTeachingPage(input);
+  expect(slide.timing.getAllAnimEffects().map(effect => effect.getObjectId())).toEqual(['unrelated', 'shape-4']);
+  const committed = slide.timing;
+  replaceNativeTeachingPage({ ...input, expectedRevision: saved.revision });
+  expect(slide.timing).toBe(committed);
+  const revision = readNativeTeaching()!.revision, before = parts[0].GetXml();
+  let fail = true;
+  slide.setTiming = (value: Timing) => { slide.timing = value; if (fail) { fail = false; throw Error('Injected timing failure'); } };
+  const changed = structuredClone(actions); changed[0].visualCues[0].endMs = 950;
+  expect(() => replaceNativeTeachingPage({ ...input, expectedRevision: revision, actions: changed })).toThrow('Injected timing failure');
+  expect(slide.timing).toBe(committed); expect(parts[0].GetXml()).toBe(before);
+});
+
+it('opens the existing assessment editor from native data and saves question images with answers using CAS', async () => {
+  vi.stubGlobal('crypto', webcrypto);
+  try {
+    mount(false, [{ cSld: { spTree: [] } }]);
+    replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions: [
+      { id: 'reading', type: 'speech', text: 'Choose\nA. One\nB. Two', audioAssetId: 'old', durationMs: 1000 },
+      { id: 'q', type: 'interaction_checkpoint', checkpointKind: 'chapter_summary', checkpointId: 'q', chapterId: 'page', chapterTitle: 'Count', question: 'Choose',
+        response: { kind: 'single', options: ['One', 'Two'], answerIndices: [0] }, referenceAnswer: { summary: 'One', keyPoints: [] }, context: { chapterSummary: 'Count', sourceSceneIds: ['page'] } },
+    ] });
+    const opened = (await routeNativeTeaching('open', {}, 1))!.value as any;
+    expect(opened.assessment.classroom.scenes[0].content.questions[0].answer).toEqual(['A']);
+    const classroom = structuredClone(opened.assessment.classroom);
+    const question = classroom.scenes[0].content.questions[0];
+    question.question = 'Choose two'; question.answer = ['B']; question.referenceAnswer = 'Two';
+    question.options[1].image = { src: 'data:image/png;base64,aW1hZ2U=', mimeType: 'image/png' };
+    const args = { projectId: 'document', expectedRevision: opened.project.teachingRevision, expectedSourceRevision: opened.project.teachingRevision, classroom, changedPageIds: ['page'] };
+    const saved = (await routeNativeTeaching('assessment-write', args, 1))!.value as any;
+    expect(saved.classroom.scenes[0].content.questions[0]).toEqual(question);
+    const carrier = readNativeTeaching()!;
+    expect(carrier.pages[0].actions.find(a => a.id === 'q')?.response).toEqual({ kind: 'single', options: ['One', 'Two'], answerIndices: [1] });
+    expect(carrier.pages[0].actions[0].audioAssetId).toBeUndefined();
+    expect(carrier.pages[0].actions[0].text).toBe('Choose two\nA. One\nB. Two');
+    await expect(routeNativeTeaching('assessment-write', args, 1)).rejects.toThrow('changed');
+    const reopened = (await routeNativeTeaching('open', {}, 1))!.value as any;
+    expect(reopened.assessment.classroom.scenes[0].content.questions[0].options[1].image).toEqual(question.options[1].image);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it('keeps discussion reference prompts outside the strict playback action through slide duplication', async () => {
+  const slide = { cSld: { spTree: [] }, createDuplicate() { return { cSld: { spTree: [] } }; } };
+  const slides = [slide]; mount(false, slides);
+  const next = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions: [
+    { id: 'q', type: 'interaction_checkpoint', checkpointKind: 'chapter_summary', checkpointId: 'q', chapterId: 'page', chapterTitle: 'Discuss', question: 'Why?',
+      referenceAnswer: { summary: 'Because', keyPoints: [] }, context: { chapterSummary: 'Discuss', sourceSceneIds: ['page'] } },
+  ] });
+  const view = (await routeNativeTeaching('open', {}, 1))!.value as any;
+  expect(view.embeddedAssessment.classroom.scenes[0].content.type).toBe('slide');
+  const classroom = structuredClone(view.embeddedAssessment.classroom);
+  classroom.scenes[0].actions[0].referenceAnswer = { summary: 'Evidence', keyPoints: ['Reason'], label: 'Sample' };
+  classroom.scenes[0].actions[0].constraintPrompt = 'Give one reason';
+  await routeNativeTeaching('assessment-write', { projectId: 'document', expectedRevision: next.revision, expectedSourceRevision: next.revision, classroom, changedPageIds: ['page'] }, 1);
+  const saved = readNativeTeaching()!;
+  expect(saved.pages[0].actions[0].referenceAnswer).toEqual({ summary: 'Evidence', keyPoints: ['Reason'] });
+  expect(saved.pages[0].actions[0]).not.toHaveProperty('constraintPrompt');
+  const reopened = (await routeNativeTeaching('assessment-context', {}, 1))!.value as any;
+  expect(reopened.classroom.scenes[0].actions[0].constraintPrompt).toBe('Give one reason');
+  slides.push(slide.createDuplicate() as typeof slide);
+  const duplicated = (await routeNativeTeaching('assessment-context', {}, 2))!.value as any;
+  expect(duplicated.classroom.scenes[1].actions[0].id).not.toBe('q');
+  expect(duplicated.classroom.scenes[1].actions[0].constraintPrompt).toBe('Give one reason');
+  expect(duplicated.classroom.scenes[1].actions[0].referenceAnswer.label).toBe('Sample');
+});
+it('restores the immutable copy seed when Undo precedes the first copied-page carrier write', () => {
+  const slide = { cSld: { spTree: [] }, createDuplicate() { return { cSld: { spTree: [] } }; } };
+  const slides = [slide], { parts, add } = mount(false, slides);
+  readNativeTeaching(); slides.push(slide.createDuplicate() as typeof slide);
+  const copied = readNativeTeaching()!, originalXml = parts[0].GetXml();
+  replaceNativeTeachingPage({ documentId: copied.documentId, expectedRevision: copied.revision, pageId: copied.pages[1].pageId, actions: [{ id: copied.pages[1].actions[0].id, type: 'speech', text: 'CHANGED' }] });
+  parts.splice(0); add(originalXml);
+  expect(readNativeTeaching()!.pages[1].actions[0].text).toBe('Before');
+});
+it.each(['practice', 'pbl', 'discussion'])('projects %s as a bound interaction rather than an invalid Quiz', async kind => {
+  mount(false, [{ cSld: { spTree: [{ sourceId: '4', getUniNvProps: () => ({ cNvPr: { name: 'Question', id: 8 } }), getDocContent: () => ({ GetText: () => 'Why?' }) }] } }]);
+  replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions: [{ id: 'q', type: 'interaction_checkpoint', checkpointKind: 'chapter_summary', checkpointId: 'cp', chapterId: 'page', chapterTitle: 'Discuss', question: 'Why?', response: { kind, options: [], answerIndices: [] }, referenceAnswer: { summary: '', keyPoints: [] }, context: { chapterSummary: 'Discuss', sourceSceneIds: ['page'] } }] });
+  const value = (await routeNativeTeaching('assessment-context', {}, 1))!.value as any;
+  expect(value.classroom.scenes[0].content.type).toBe('slide');
+  expect(value.classroom.scenes[0].actions[0]).not.toHaveProperty('response');
+  const response = structuredClone(readNativeTeaching()!.pages[0].actions[0].response);
+  expect(response).toMatchObject({ kind });
+  const action = value.classroom.scenes[0].actions[0]; action.referenceAnswer.summary = 'Updated reference';
+  await routeNativeTeaching('assessment-write', { projectId: value.projectId, expectedRevision: value.revision,
+    expectedSourceRevision: value.sourceRevision, classroom: value.classroom, changedPageIds: ['page'] }, 1);
+  expect(readNativeTeaching()!.pages[0].actions[0].response).toEqual(response);
+  expect(readNativeTeaching()!.pages[0].actions[0].referenceAnswer).toEqual({ summary: 'Updated reference', keyPoints: [] });
 });

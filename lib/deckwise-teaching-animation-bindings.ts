@@ -41,6 +41,11 @@ const presets: Array<[string, number, number, number]> = [
   ['gentleRotate', 0, 32, 0],
 ];
 
+export function nativeTeachingMotionPreset(effect: string) {
+  const entry = presets.find(([name]) => name === effect);
+  return entry && { presetClass: entry[1], presetId: entry[2], subtype: entry[3] };
+}
+
 // shortcut: multiple native effects on one object need a persistent effect ID before they can be linked safely.
 /** A logical object with exactly one native effect is stable across SDK IDs and native reorder. */
 export function listTeachingNativeAnimations(page: number, objects: PreviewObject[]) {

@@ -235,7 +235,10 @@ async function handleCommand(message: EmbedMessage): Promise<void> {
     switch (message.type) {
       case 'document:native-teaching': {
         if (!isDeckWiseMode()) throw new Error('Teaching requires DeckWise mode');
-        deckwiseEditorBridge.getContext(payload.binding);
+        const nativeContext = deckwiseEditorBridge.getContext(payload.binding);
+        if (payload.operation === 'route' && payload.routeOperation === 'write' && payload.args?.expectedEditGeneration !== undefined &&
+            (!Number.isSafeInteger(payload.args.expectedEditGeneration) || payload.args.expectedEditGeneration !== nativeContext.editGeneration))
+          throw new Error('Native editor generation changed before narration write');
         if (payload.operation === 'route') reply('document:native-teaching-result', { routed: await routeNativeTeaching(payload.routeOperation, payload.args ?? {}, payload.page) }, message.id);
         else if (payload.operation === 'read') reply('document:native-teaching-result', { teaching: readNativeTeaching() }, message.id);
         else if (payload.operation === 'replace-page') reply('document:native-teaching-result', { teaching: replaceNativeTeachingPage(payload.command) }, message.id);

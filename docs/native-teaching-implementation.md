@@ -60,3 +60,63 @@ Cross-repository details and final evidence:
 `deckwise-desktop/docs/design/2026-11-09-native-teaching/`. General old-data
 migration is excluded by the user's request. Windows/macOS power-loss and named
 external PowerPoint/WPS save compatibility are not qualified by these Linux tests.
+
+## Native speech timing correction, 2026-11-10
+
+Native audio adoption and page writes now materialize missing speech animation
+presets in the SDK timing tree, preserving unrelated effects. A detached tree is
+verified before publishing it with the teaching/media change in the same history
+action. Registered SDK objects must remain available to native Undo/Redo. A
+repeated unchanged adoption/write does not duplicate effects.
+
+The generated-course browser regression checks actual pulse and manually added
+teeter timing, native Undo/Redo, slideshow playback and PPTX reopen. The paired
+Desktop fixed build claims verified persisted speech mirrors exactly once.
+Scene planning narration remains generation evidence until the structured native
+narration step creates final speech. Live notes take precedence as source text.
+
+The initial Desktop parity audit recorded missing vision/whole-course planning
+and assessment/media editor surfaces. The continuation below addresses those
+four gaps; the earlier successful playback alone did not establish parity.
+
+## Native authoring parity continuation, 2026-11-10
+
+`narration-visual` renders the live native slide without a teaching mutation.
+The paired Desktop feeds these PNGs and live UUID evidence into the shared visual
+semantic validator and whole-course narration planner. Native writes validate
+and retain object roles/aliases/target eligibility in `objectSemantics`.
+
+`assessment-context` projects native Quiz/discussion pages into the existing
+assessment editor. `assessment-write` checks revision, page order and locks, then
+commits question/answer/reference changes and rich Quiz image metadata to the
+carrier in one native history action. Changed question readings invalidate old
+audio and cues. Discussion editor prompt/label fields are separate from strict
+playback actions; page copies preserve these details and remap identities.
+The projection is transient, with no editable Host classroom authority.
+
+Media listing returns embedded assets plus a native-service request so Desktop
+can append pending music/video journal entries. Explicit adoption uses the
+existing verified native media service. Narration audio is not reusable music.
+
+The real browser parity regression renders a PNG, edits an image question,
+answer and reference, undoes/redoes, saves a copied PPTX and reopens it with the
+complete question intact. Native-teaching/preview tests and TypeScript checks
+pass. The corresponding Desktop fixed export archives carrier Quiz images and
+restores them into player content. Live providers and external Office save
+compatibility are not qualified by these local tests.
+
+
+### Final assessment parity corrections
+
+Native read views expose read-only state before provider submissions. First-edit
+Undo on copied slides falls back to an immutable copy seed. Practice, PBL and
+discussion project as interaction actions on slides; a unique live question shape
+provides the existing question editor with a stable text binding.
+
+Quiz visual projection is shared with the Desktop legacy editor. It preloads
+validated PNGs, fences the current Office history, then commits the question,
+options, images and carrier in one native action. Bound discussion question edits
+preserve paragraph and run formatting. The browser regression verifies visible
+text and image count through Undo/Redo and save/reopen, as well as practice text
+and its original font size. Desktop generation also packages full Quiz data for
+fixed export before any manual assessment edit.

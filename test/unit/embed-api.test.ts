@@ -413,6 +413,33 @@ describe('embed-api', () => {
       context.mockRestore();
       execute.mockRestore();
     });
+    it('checks the current editor generation before routing narration writes and preserves existing callers', async () => {
+      window.history.pushState({}, '', '/?embed=1&deckwise=1&embedOrigin=https%3A%2F%2Fparent.example.com');
+      const { deckwiseEditorBridge } = await import('../../lib/deckwise-editor-bridge');
+      const router = await import('../../lib/deckwise-native-teaching-router');
+      const context = vi.spyOn(deckwiseEditorBridge, 'getContext').mockReturnValue({
+        ...owner, editGeneration: 4, kind: 'slide', page: 1, selectedText: '', selectionCharacters: 0, readOnly: false, capabilities: [],
+      });
+      const route = vi.spyOn(router, 'routeNativeTeaching').mockResolvedValue({ value: { saved: true } });
+      try {
+        const { initEmbedApi } = await import('../../lib/embed-api');
+        initEmbedApi();
+        for (const expectedEditGeneration of [3, null, '4', 4.5]) {
+          const id = 'native-stale-' + String(expectedEditGeneration);
+          await dispatchMessage({ id, type: 'document:native-teaching', payload: {
+            binding: owner, operation: 'route', routeOperation: 'write', page: 1, args: { expectedEditGeneration },
+          } });
+          expectMessagePosted(postMessageSpy, 'document:error', id, { message: 'Native editor generation changed before narration write' });
+        }
+        expect(route).not.toHaveBeenCalled();
+        for (const args of [{ expectedEditGeneration: 4 }, {}]) {
+          await dispatchMessage({ id: 'native-current-' + route.mock.calls.length, type: 'document:native-teaching', payload: {
+            binding: owner, operation: 'route', routeOperation: 'write', page: 1, args,
+          } });
+        }
+        expect(route).toHaveBeenCalledTimes(2);
+      } finally { context.mockRestore(); route.mockRestore(); }
+    });
     it('rejects command messages outside DeckWise mode', async () => {
       window.history.pushState({}, '', '/?embed=1');
       const { initEmbedApi } = await import('../../lib/embed-api');
@@ -800,7 +827,7 @@ describe('embed-api', () => {
           file,
           pageLineage: {
             ...binding,
-            protocol: 'deckwise-office-page-lineage/1',
+            protocol: 'deckwise-office-page-lineage/2',
             saveRequestId: 'lineage-save',
             sourceSha256: createHash('sha256').update('source').digest('hex'),
             outputSha256: createHash('sha256').update('output').digest('hex'),

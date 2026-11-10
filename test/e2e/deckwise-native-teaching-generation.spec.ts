@@ -60,6 +60,16 @@ test('generated lesson closes the native edit, media, save, reopen and playback 
   const before = await page.evaluate(async binding => (await post('document:native-teaching', { binding, operation: 'read' })).teaching, binding);
   expect(before.documentId).toBe(initial.documentId);
   expect(before.pages).toEqual(initial.pages);
+  // The plan is source evidence; structured speech enters through the same native write route as generation.
+  expect(before.pages[0].actions.some((a: any) => a.type === 'speech')).toBe(false);
+  const narrationText = before.generation.pages[0].narration;
+  await page.evaluate(async ({ binding, text }) => {
+    const current = (await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'open', page: 1 })).routed.value;
+    await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'write', page: 1, args: {
+      viewId: current.viewId, expectedTeachingRevision: current.project.teachingRevision,
+      actions: [{ id: 'body-speech', type: 'speech', text, source: 'generated' }, ...current.project.pages[0].actions],
+    } });
+  }, { binding, text: narrationText });
   const generatedView = await page.evaluate(async binding => (await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'open', page: 1 })).routed.value, binding);
   expect(generatedView.teaching.objective).toBe('Say Hello');
   expect(generatedView.teachingRequirements).toHaveLength(3);
@@ -74,7 +84,7 @@ test('generated lesson closes the native edit, media, save, reopen and playback 
     } });
   }, binding);
   await native.evaluate(() => (Reflect.get(window, 'editor') as unknown as { Undo(): void }).Undo());
-  expect(await page.evaluate(async binding => (await post('document:native-teaching', { binding, operation: 'read' })).teaching.pages[0].actions[0].text, binding)).toBe(initial.pages[0].actions[0].text);
+  expect(await page.evaluate(async binding => (await post('document:native-teaching', { binding, operation: 'read' })).teaching.pages[0].actions[0].text, binding)).toBe(narrationText);
   await native.evaluate(() => (Reflect.get(window, 'editor') as unknown as { Redo(): void }).Redo());
   const mediaResult = await page.evaluate(async ({ binding, video }) => {
     // Local deterministic PCM stands in for the authorized provider response; the real adoption path verifies bytes.
@@ -121,6 +131,30 @@ test('generated lesson closes the native edit, media, save, reopen and playback 
     return { teaching: await read(), objectId, adopted };
   }, { binding, video });
   expect(mediaResult.adopted).toBe(5);
+
+  const readNativeMotions = () => page.frames().find(f => f.name() === 'frameEditor')!.evaluate(() => {
+    const api = Reflect.get(window, 'editor') as unknown as { WordControl: { m_oLogicDocument: { Slides: Array<{ timing?: { getAllAnimEffects(): any[] } }> } } };
+    return api.WordControl.m_oLogicDocument.Slides[0].timing?.getAllAnimEffects().map((effect: any) => ({
+      preset: effect.cTn.presetID, duration: effect.asc_getDuration(), target: effect.getObjectId(),
+    })) ?? [];
+  });
+  expect(await readNativeMotions()).toContainEqual(expect.objectContaining({ preset: 26, duration: 600 }));
+  await page.evaluate(async ({ binding, objectId }) => {
+    const current = (await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'open', page: 1 })).routed.value;
+    const actions = structuredClone(current.project.pages[0].actions);
+    actions[0].visualCues.push({ id: 'manual-motion', atMs: 100, endMs: 500, trigger: { version: 1, kind: 'end' },
+      effect: { type: 'element_animation', elementId: objectId, effect: 'gentleRotate' } });
+    await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'write', page: 1,
+      args: { viewId: current.viewId, expectedTeachingRevision: current.project.teachingRevision, actions } });
+  }, { binding, objectId: mediaResult.objectId });
+  expect(await readNativeMotions()).toContainEqual(expect.objectContaining({ preset: 32, duration: 400 }));
+  await native.evaluate(() => (Reflect.get(window, 'editor') as unknown as { Undo(): void }).Undo());
+  expect(await readNativeMotions()).not.toContainEqual(expect.objectContaining({ preset: 32 }));
+  await native.evaluate(() => (Reflect.get(window, 'editor') as unknown as { Redo(): void }).Redo());
+  expect(await readNativeMotions()).toContainEqual(expect.objectContaining({ preset: 32, duration: 400 }));
+  mediaResult.teaching = await page.evaluate(async binding => (await post('document:native-teaching', { binding, operation: 'read' })).teaching, binding);
+
+
   await page.evaluate(async binding => { (document.querySelector('#editorFrame') as HTMLIFrameElement).contentWindow!.postMessage({ type: 'document:teaching-enable', payload: { binding } }, location.origin); }, binding);
   const office = page.frameLocator('iframe#editorFrame').frameLocator('iframe[name="frameEditor"]');
   const panel = office.getByRole('complementary', { name: '教学时间轴' });
@@ -130,6 +164,11 @@ test('generated lesson closes the native edit, media, save, reopen and playback 
   await expect(office.locator('[data-attention-kind="spotlight"]')).toBeVisible();
   await expect.poll(() => panel.locator('audio').evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0);
   await panel.locator('audio').evaluate((audio: HTMLAudioElement) => audio.pause());
+  await panel.getByRole('button', { name: '画布预览', exact: true }).click();
+  await expect(office.locator('[data-teaching-slideshow]')).toBeVisible();
+  await expect(office.locator('[data-teaching-slideshow] [data-attention-kind="highlight"]')).toBeVisible();
+  await office.getByRole('button', { name: '退出教学放映', exact: true }).click();
+  await expect(panel.getByRole('alert')).toHaveCount(0);
   const exported = await page.evaluate(async () => Array.from(new Uint8Array(await (await post('document:save')).file.arrayBuffer())));
   const output = info.outputPath('generated-native-edited.pptx');
   await writeFile(output, new Uint8Array(exported));
@@ -151,6 +190,8 @@ test('generated lesson closes the native edit, media, save, reopen and playback 
     return { teaching, audioCount };
   }, binding);
   expect(reopened.audioCount).toBe(4);
+  expect(await readNativeMotions()).toContainEqual(expect.objectContaining({ preset: 32, duration: 400 }));
+  expect(await readNativeMotions()).toContainEqual(expect.objectContaining({ preset: 26, duration: 600 }));
   expect(reopened.teaching.pages).toEqual(mediaResult.teaching.pages);
   expect(reopened.teaching.identity.pages[0].objects.some((o: any) => o.logicalId === mediaResult.objectId)).toBe(true);
   await page.evaluate(async binding => { (document.querySelector('#editorFrame') as HTMLIFrameElement).contentWindow!.postMessage({ type: 'document:teaching-enable', payload: { binding } }, location.origin); }, binding);

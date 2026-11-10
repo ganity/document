@@ -2,6 +2,7 @@ import { readPresentationShapeText } from './agent-plugin/slide-text-read';
 import { trackTeachingSlideCopy } from './onlyoffice/guards/slide-teaching-copy';
 import { importedSlideShapeId } from './onlyoffice/guards/slide-source-identity';
 import { getEditorApi } from './agent-plugin/editor-bridge';
+import { prepareNativeTeachingMotions } from './deckwise-native-teaching-motions';
 import { getReadonlyMode } from './onlyoffice/readonly';
 
 export const NATIVE_MEDIA_NAMESPACE = 'urn:deckwise:native-teaching-media:1';
@@ -116,6 +117,7 @@ export function replaceNativeTeachingPage(input: {
   expectedRevision: string;
   pageId: string;
   actions: Action[];
+  semantics?: Array<{ objectId: string; role: string; aliases: string[]; text: string; teachingTarget: boolean }>;
 }) {
   if (getReadonlyMode()) throw new Error('Teaching is read-only');
   const current = readNativeTeaching();
@@ -130,7 +132,7 @@ export function replaceNativeTeachingPage(input: {
     new Set(input.actions.map((a) => a.id)).size !== input.actions.length
   )
     throw new Error('Invalid teaching actions');
-  const next = { ...current, pages: structuredClone(current.pages), media: [...current.media] };
+  const next: NativeTeaching = { ...current, pages: structuredClone(current.pages), media: [...current.media] };
   const actions = structuredClone(input.actions);
   for (const action of actions) {
     const previous = page.actions.find((a) => a.id === action.id);
@@ -143,9 +145,16 @@ export function replaceNativeTeachingPage(input: {
     }
   }
   const changed = next.pages.find((p) => p.pageId === input.pageId)!;
+  if (input.semantics) {
+    const ids = new Set(nativeTeachingObjects(current.pages.findIndex(p => p.pageId === input.pageId) + 1).map(o => o.objectId));
+    if (input.semantics.length > 1000 || new Set(input.semantics.map(o => o.objectId)).size !== input.semantics.length || input.semantics.some(o =>
+      !ids.has(o.objectId) || typeof o.role !== 'string' || o.role.length > 1000 || typeof o.text !== 'string' || o.text.length > 4000 ||
+      typeof o.teachingTarget !== 'boolean' || !Array.isArray(o.aliases) || o.aliases.length > 50 || o.aliases.some(a => typeof a !== 'string' || a.length > 500))) throw new Error('Invalid native object semantics');
+    next.objectSemantics = { ...((current.objectSemantics ?? {}) as object), [input.pageId]: structuredClone(input.semantics) };
+  }
   changed.actions = actions;
   changed.reviewState = 'review';
-  return commitNativeTeaching(next);
+  return commitNativeTeaching(next, true, undefined, () => prepareNativeTeachingMotions(current.pages.findIndex(p => p.pageId === input.pageId) + 1, actions));
 }
 
 function nativeAnimationSignature(pageNumber: number, stepIndex: number): string {
@@ -171,7 +180,60 @@ export function assertNativeTeachingAnimations(pageNumber: number): void {
     throw new Error('PPT 动画顺序或属性已变化，请移除动画绑定后重新关联');
 }
 
-function commitNativeTeaching(next: NativeTeaching, revise = true, mediaXml?: string): NativeTeaching {
+/** Assessment editor writes share the carrier CAS and native Undo transaction. */
+export function replaceNativeAssessments(input: { documentId: string; expectedRevision: string; changedPageIds: string[]; change?: { apply(): void; restore(): void }; scenes: Array<{ id: string; content: any; actions?: Action[] }> }) {
+  if (getReadonlyMode()) throw new Error('Teaching is read-only');
+  const current = readNativeTeaching();
+  if (!current || current.documentId !== input.documentId || current.revision !== input.expectedRevision) throw new Error('Teaching revision changed');
+  if (input.scenes.length !== current.pages.length || input.scenes.some((s, i) => s.id !== current.pages[i].pageId)) throw new Error('Assessment page order changed');
+  const next = structuredClone(current);
+  const assessments = { ...((current.assessments ?? {}) as Record<string, unknown>) };
+  input.scenes.forEach((scene, index) => {
+    const page = next.pages[index];
+    if (!input.changedPageIds.includes(scene.id)) return;
+    if (page.locked) throw new Error('Teaching page locked');
+    for (const speech of scene.actions ?? []) if (speech.type === 'speech') {
+      if (typeof speech.text !== 'string' || speech.text.length > 32000 || !speech.id) throw new Error('Invalid question speech');
+      const old = page.actions.find(a => a.id === speech.id);
+      if (old?.type === 'speech' && old.text !== speech.text) {
+        old.text = speech.text; delete old.audioAssetId; delete old.durationMs; delete old.visualCues; delete old.attention;
+      } else if (!old) page.actions.unshift({ id: speech.id, type: 'speech', text: speech.text });
+    }
+
+    if (scene.content.type !== 'quiz') {
+      for (const action of scene.actions ?? []) if (action.type === 'interaction_checkpoint' && action.checkpointKind === 'chapter_summary') {
+        const old = page.actions.find(a => a.id === action.id && a.type === action.type);
+        if (!old) throw new Error('Native checkpoint identity changed');
+        const reference = action.referenceAnswer as { summary: string; keyPoints: string[]; label?: string };
+        Object.assign(old, { question: action.question, referenceAnswer: { summary: reference.summary, keyPoints: reference.keyPoints }, context: action.context });
+        next.checkpointDetails = { ...((next.checkpointDetails ?? {}) as object), [scene.id]: { actionId: action.id, constraintPrompt: action.constraintPrompt, label: reference.label } };
+      }
+      return;
+    }
+    if (scene.content.questions.length !== 1) throw new Error('Native assessment requires one question per page');
+    const q = scene.content.questions[0];
+    if (!page.actions.some(a => a.type === 'interaction_checkpoint' && a.checkpointKind === 'chapter_summary')) throw new Error('Native question missing');
+    page.actions = page.actions.map(a => a.type === 'interaction_checkpoint' && a.checkpointKind === 'chapter_summary' ? { ...a,
+      question: q.question, response: { kind: q.type, options: (q.options ?? []).map((o: any) => o.label),
+        answerIndices: (q.options ?? []).flatMap((o: any, i: number) => q.answer?.includes(o.value) ? [i] : []) },
+      referenceAnswer: { summary: q.referenceAnswer ?? q.analysis ?? (q.type === 'short_answer' ? q.answer?.join('；') : '') ?? '', keyPoints: q.keyPoints ?? [] } } : a);
+    const oldQuestion = current.pages[index].actions.find(a => a.type === 'interaction_checkpoint' && a.checkpointKind === 'chapter_summary');
+    const newQuestion = page.actions.find(a => a.id === oldQuestion?.id);
+    if (JSON.stringify([oldQuestion?.question, oldQuestion?.response]) !== JSON.stringify([newQuestion?.question, newQuestion?.response])) {
+      const reading = [q.question, ...(q.options ?? []).map((o: any) => `${o.value}. ${o.label}`)].join('\n');
+      page.actions = page.actions.map(a => {
+        if (a.type !== 'speech' || !(a.text === oldQuestion?.question || typeof a.text === 'string' && a.text.startsWith(String(oldQuestion?.question) + '\n'))) return a;
+        const next: Action = { ...a, text: reading }; delete next.audioAssetId; delete next.durationMs; delete next.visualCues; delete next.attention; return next;
+      });
+    }
+    assessments[scene.id] = structuredClone(scene.content);
+    page.reviewState = 'review';
+  });
+  next.assessments = assessments;
+  return commitNativeTeaching(next, true, undefined, input.change ? () => input.change! : undefined);
+}
+
+function commitNativeTeaching(next: NativeTeaching, revise = true, mediaXml?: string, prepareTiming?: () => { apply(): void; restore(): void } | undefined): NativeTeaching {
   validateMedia(next);
   const bindings = (next.nativeAnimationBindings ?? {}) as Record<string, string>;
   const active: Record<string, string> = {};
@@ -194,21 +256,24 @@ function commitNativeTeaching(next: NativeTeaching, revise = true, mediaXml?: st
   const previous = parts.GetByNamespace(NATIVE_TEACHING_NAMESPACE).filter((p) => decode(p));
   const before = previous.map(part => part.GetXml());
   const added: Part[] = [];
+  const timingChange = prepareTiming?.();
   // Export identity is derived metadata, so saving must not add an extra Undo step.
   if (revise) logic.StartAction(description); else history?.TurnOff();
   try {
     if (mediaXml) added.push(parts.Add(mediaXml));
     added.push(parts.Add(encoded));
     previous.forEach((p) => p.Delete());
+    timingChange?.apply();
   } catch (cause) {
     // A failed compound write must retain the old carrier and cannot strand audio.
+    const recoveryErrors: unknown[] = [];
+    try { timingChange?.restore(); } catch (error) { recoveryErrors.push(error); }
     try {
       for (const part of added) if (parts.GetAll().includes(part)) part.Delete();
       const remaining = parts.GetAll().map(part => part.GetXml());
       for (const xml of before) if (!remaining.includes(xml)) parts.Add(xml);
-    } catch (recovery) {
-      throw new AggregateError([cause, recovery], 'Native teaching write and rollback failed');
-    }
+    } catch (recovery) { recoveryErrors.push(recovery); }
+    if (recoveryErrors.length) throw new AggregateError([cause, ...recoveryErrors], 'Native teaching write and rollback failed');
     throw cause;
   } finally {
     if (revise) logic.FinalizeAction(); else history?.TurnOn();
@@ -313,7 +378,8 @@ export async function adoptNativeTeachingAudio(input: {
   }
   const part = document.implementation.createDocument(NATIVE_MEDIA_NAMESPACE, 'media');
   part.documentElement.textContent = JSON.stringify({ id: asset.id, sha256: digest, data });
-  return commitNativeTeaching(next, true, existing ? undefined : new XMLSerializer().serializeToString(part));
+  const motions = action.type === 'speech' ? () => prepareNativeTeachingMotions(current.pages.findIndex(p => p.pageId === input.pageId) + 1, page.actions) : undefined;
+  return commitNativeTeaching(next, true, existing ? undefined : new XMLSerializer().serializeToString(part), motions);
 }
 
 export function setNativeTeachingLock(input: { documentId: string; expectedRevision: string; pageId: string; locked: boolean }) {
@@ -333,7 +399,8 @@ function slideShapes(slide: LiveSlide): LiveShape[] {
   const visit = (shapes: LiveShape[]): LiveShape[] => shapes.flatMap(shape => [shape, ...visit(shape.spTree ?? [])]);
   return visit(slide.cSld?.spTree ?? []);
 }
-let live: { api: unknown; documentId: string; pages: WeakMap<LiveSlide, string>; objects: WeakMap<LiveShape, ObjectIdentity>; teaching: WeakMap<LiveSlide, Page> } | undefined;
+type CopySeed = { page: Page; assessment?: unknown; semantics?: unknown; details?: unknown };
+let live: { copies: WeakMap<LiveSlide, CopySeed>; api: unknown; documentId: string; pages: WeakMap<LiveSlide, string>; objects: WeakMap<LiveShape, ObjectIdentity>; teaching: WeakMap<LiveSlide, Page>; assessments: WeakMap<LiveSlide, unknown>; semantics: WeakMap<LiveSlide, unknown>; checkpointDetails: WeakMap<LiveSlide, unknown> } | undefined;
 
 /** Native object references keep identities stable through reorder, rename, undo and duplication. */
 function projectNativeTeaching(source: NativeTeaching): NativeTeaching {
@@ -342,7 +409,7 @@ function projectNativeTeaching(source: NativeTeaching): NativeTeaching {
   if (!Array.isArray(slides)) return structuredClone(source);
   const identity = source.identity as { pages?: Array<{ pageId?: string; objects?: ObjectIdentity[] }> } | undefined;
   if (!live || live.api !== api || live.documentId !== source.documentId) {
-    live = { api, documentId: source.documentId, pages: new WeakMap(), objects: new WeakMap(), teaching: new WeakMap() };
+    live = { copies: new WeakMap(), api, documentId: source.documentId, pages: new WeakMap(), objects: new WeakMap(), teaching: new WeakMap(), assessments: new WeakMap(), semantics: new WeakMap(), checkpointDetails: new WeakMap() };
     slides.forEach((slide, index) => {
       const page = source.pages[index];
       if (page) live!.pages.set(slide, page.pageId);
@@ -354,13 +421,21 @@ function projectNativeTeaching(source: NativeTeaching): NativeTeaching {
     });
   }
   const next = { ...source, pages: [] } as NativeTeaching;
+  const assessments: Record<string, unknown> = {}, semantics: Record<string, unknown> = {}, checkpointDetails: Record<string, unknown> = {};
   const identities: Array<{ pageId: string; objects: ObjectIdentity[] }> = [];
   slides.forEach(slide => {
     let pageId = live!.pages.get(slide);
     if (!pageId) { pageId = crypto.randomUUID(); live!.pages.set(slide, pageId); }
-    const page: Page = structuredClone(source.pages.find(p => p.pageId === pageId) ?? live!.teaching.get(slide) ?? { pageId, locked: false, reviewState: 'review', actions: [] });
+    const page: Page = structuredClone(source.pages.find(p => p.pageId === pageId) ?? live!.copies.get(slide)?.page ?? { pageId, locked: false, reviewState: 'review', actions: [] });
     live!.teaching.set(slide, page);
     next.pages.push(page);
+    const carried = source.pages.some(p => p.pageId === pageId);
+    const assessment = (source.assessments as Record<string, unknown> | undefined)?.[pageId] ?? (!carried ? live!.copies.get(slide)?.assessment : undefined);
+    const meaning = (source.objectSemantics as Record<string, unknown> | undefined)?.[pageId] ?? (!carried ? live!.copies.get(slide)?.semantics : undefined);
+    if (assessment) { assessments[pageId] = assessment; live!.assessments.set(slide, assessment); } else live!.assessments.delete(slide);
+    if (meaning) { semantics[pageId] = meaning; live!.semantics.set(slide, meaning); } else live!.semantics.delete(slide);
+    const details = (source.checkpointDetails as Record<string, unknown> | undefined)?.[pageId] ?? (!carried ? live!.copies.get(slide)?.details : undefined);
+    if (details) { checkpointDetails[pageId] = details; live!.checkpointDetails.set(slide, details); } else live!.checkpointDetails.delete(slide);
     const objects = (slideShapes(slide)).map(shape => {
       let object = live!.objects.get(shape);
       if (!object) { object = { logicalId: crypto.randomUUID(), type: 'shape' }; live!.objects.set(shape, object); }
@@ -382,16 +457,34 @@ function projectNativeTeaching(source: NativeTeaching): NativeTeaching {
           live!.objects.set(destination, { ...previous, logicalId, sourceShapeId: undefined });
         }
       });
+      const copiedId = (id: string) => {
+        if (!remap.has(id)) remap.set(id, crypto.randomUUID());
+        return remap.get(id)!;
+      };
       const rebind = (value: unknown): unknown => {
         if (Array.isArray(value)) return value.map(rebind);
         if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) =>
-          [key, key === 'id' ? crypto.randomUUID() : rebind(item)]));
+          [key, key === 'id' && typeof item === 'string' ? copiedId(item) : rebind(item)]));
         return typeof value === 'string' ? remap.get(value) ?? value : value;
       };
+      remap.set(from.pageId, copied.pageId);
+      for (const action of copied.actions) {
+        copiedId(action.id);
+        if (typeof action.checkpointId === 'string') copiedId(action.checkpointId);
+      }
       copied.actions = copied.actions.map(action => rebind(action) as Action);
+      const assessment = live.assessments.get(slide), semantics = live.semantics.get(slide);
+      if (assessment) live.assessments.set(copy, rebind(assessment));
+      if (semantics) live.semantics.set(copy, rebind(semantics));
+      const details = live.checkpointDetails.get(slide);
+      if (details) live.checkpointDetails.set(copy, rebind(details));
+      live.copies.set(copy, structuredClone({ page: copied, assessment: assessment && rebind(assessment), semantics: semantics && rebind(semantics), details: details && rebind(details) }));
       live.pages.set(copy, copied.pageId); live.teaching.set(copy, copied);
     });
   });
+  if (Object.keys(assessments).length) next.assessments = assessments;
+  if (Object.keys(semantics).length) next.objectSemantics = semantics;
+  if (Object.keys(checkpointDetails).length) next.checkpointDetails = checkpointDetails;
   next.identity = { ...identity, pages: identities };
   // Media bytes stay shared and immutable; cloning them on every selection would block the UI.
   return next;
