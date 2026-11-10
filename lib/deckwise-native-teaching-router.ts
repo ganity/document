@@ -12,9 +12,14 @@ export async function routeNativeTeaching(operation: string, args: Record<string
   for (const current of teaching.pages) for (const action of current.actions) if (action.type === 'native_animation') action.sourceSha256 = sourceSha256;
   const page = teaching.pages[pageNumber - 1];
   if (!page) throw new Error('Native teaching page is unavailable');
+  const generation = teaching.generation && typeof teaching.generation === 'object' ? teaching.generation as Record<string, unknown> : undefined;
+  const requirements = Array.isArray(generation?.pages) ? generation.pages.filter((p: unknown): p is { pageId: string; teaching: unknown } =>
+    !!p && typeof p === 'object' && typeof Reflect.get(p, 'pageId') === 'string' && !!Reflect.get(p, 'teaching'))
+    .filter(p => teaching.pages.some(page => page.pageId === p.pageId)).map(({ pageId, teaching }) => ({ pageId, teaching })) : [];
   const view = () => {
-    return { nativeTeaching: true, viewId: teaching.documentId + '.' + page.pageId, pageId: page.pageId, pageNumber,
-      project: { schemaVersion: 'deckwise-courseware/1', projectId: teaching.documentId, taskType: 'plain', title: 'Native teaching', teachingRevision: teaching.revision,
+    return { nativeTeaching: true, teaching: requirements.find(p => p.pageId === page.pageId)?.teaching, teachingRequirements: requirements, viewId: teaching.documentId + '.' + page.pageId, pageId: page.pageId, pageNumber,
+      project: { schemaVersion: 'deckwise-courseware/1', projectId: teaching.documentId, taskType: 'plain', title: typeof teaching.title === 'string' ? teaching.title : 'Native teaching', teachingRevision: teaching.revision,
+        ...(generation?.educationContext ? { educationContext: generation.educationContext } : {}),
         source: { revision: teaching.revision, sha256: deckwisePageLineage.context()?.sourceSha256 ?? '' }, pages: teaching.pages },
       teachingObjects: nativeTeachingObjects(pageNumber).map(({ nativeShape, ...object }) => ({ ...object, aliases: [] })) };
   };
@@ -27,7 +32,16 @@ export async function routeNativeTeaching(operation: string, args: Record<string
   if (operation === 'narration-context') {
     const api = getEditorApi() as any;
     const slide = api?.WordControl?.m_oLogicDocument?.Slides?.[pageNumber - 1];
-    return { value: { view: view(), text: (slide?.cSld?.spTree ?? []).map(readPresentationShapeText).filter(Boolean).join('\n') } };
+    const text = (slide?.cSld?.spTree ?? []).map(readPresentationShapeText).filter(Boolean).join('\n');
+    return { value: { view: view(), text, evidence: {
+      notes: (slide?.notes?.cSld?.spTree ?? []).map(readPresentationShapeText).filter(Boolean).join('\n').trim(), visualSummary: text,
+      objects: nativeTeachingObjects(pageNumber).map(({ nativeShape, objectId, name }) => {
+        const shape = nativeShape as unknown as { x?: number; y?: number; extX?: number; extY?: number; isImage?(): boolean };
+        const text = readPresentationShapeText(nativeShape);
+        return { objectId, name, aliases: [name], text, kind: text.trim() ? 'text' : shape.isImage?.() ? 'image' : 'shape',
+          bbox: [shape.x ?? 0, shape.y ?? 0, shape.extX ?? 0, shape.extY ?? 0] };
+      }),
+    } } };
   }
   if (['history', 'draft:get', 'draft:set'].includes(operation) && args.viewId !== teaching.documentId + '.' + page.pageId) throw new Error('Native teaching view changed');
   if (operation === 'history') return { value: { entries: [], skippedEntryCount: 0 } };

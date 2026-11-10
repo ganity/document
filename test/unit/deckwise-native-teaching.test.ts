@@ -200,3 +200,44 @@ it('activates a fresh document from loaded notes once without a Host or parser',
   expect(initializeNativeTeaching().documentId).toBe(created.documentId);
   expect(logic.StartAction).toHaveBeenCalledOnce();
 });
+
+it('retains generated logical requirements and live object evidence after page projection', async () => {
+  const { parts, add, data } = mount(false, [{ cSld: { spTree: [{ sourceId: '4', x: 1, y: 2, extX: 3, extY: 4 }] } }]);
+  const teaching = { pageType: 'slide', phase: 'opening', objective: 'Greet', durationSeconds: 30, requiredObjects: [] };
+  const root = document.implementation.createDocument(NATIVE_TEACHING_NAMESPACE, 'teaching');
+  root.documentElement.textContent = JSON.stringify({ ...data, title: 'Generated lesson', generation: {
+    pages: [{ pageId: 'page', teaching }], educationContext: { schoolStage: 'KINDERGARTEN', subject: 'ENGLISH' },
+  } });
+  parts[0].Delete(); add(new XMLSerializer().serializeToString(root));
+  const opened = (await routeNativeTeaching('open', {}, 1))!.value as any;
+  expect(opened.teaching).toEqual(teaching);
+  expect(opened.project.title).toBe('Generated lesson');
+  expect(opened.project.educationContext.schoolStage).toBe('KINDERGARTEN');
+  const context = (await routeNativeTeaching('narration-context', { viewId: opened.viewId, expectedTeachingRevision: opened.project.teachingRevision }, 1))!.value as any;
+  expect(context.evidence.objects[0]).toMatchObject({ objectId: 'object', bbox: [1, 2, 3, 4] });
+});
+
+it.each(['highlight', 'spotlight'])('resolves generated %s and animation against adopted audio in the same history action', async type => {
+  vi.stubGlobal('crypto', webcrypto);
+  try {
+    const { logic } = mount(false, [{ cSld: { spTree: [{ sourceId: '4' }] } }]);
+    const teaching = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions: [
+      { id: 'speech', type: 'speech', text: 'Look here.', attention: { type, objectIds: ['object'], animation: 'fadeIn' } },
+    ] });
+    const bytes = new TextEncoder().encode('generated audio bytes').buffer;
+    const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
+    const input = { documentId: 'document', expectedRevision: teaching.revision, pageId: 'page', actionId: 'speech', assetId: 'tts-generated', sha256, mimeType: 'audio/mpeg', durationMs: 1000, bytes };
+    const adopted = await adoptNativeTeachingAudio(input), action = adopted.pages[0].actions[0];
+    expect(action.attention).toBeUndefined();
+    expect(action.visualCues).toMatchObject([
+      { atMs: 0, endMs: 600, effect: { type: 'element_animation', elementId: 'object', effect: 'fadeIn' } },
+      { atMs: 600, endMs: 1000, effect: { type } },
+    ]);
+    expect(logic.StartAction).toHaveBeenCalledTimes(2);
+    const changed = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: adopted.revision, pageId: 'page', actions: [
+      { id: 'speech', type: 'speech', text: 'Look here.', attention: { type, objectIds: ['deleted'] } },
+    ] });
+    await expect(adoptNativeTeachingAudio({ ...input, expectedRevision: changed.revision })).rejects.toThrow('target');
+    expect(readNativeTeaching()!.revision).toBe(changed.revision);
+  } finally { vi.unstubAllGlobals(); }
+});

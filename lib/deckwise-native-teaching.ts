@@ -290,6 +290,27 @@ export async function adoptNativeTeachingAudio(input: {
   next.media = [...next.media.filter(m => m.id !== asset.id), existing?.data ? { ...asset, data: existing.data } : asset];
   action[action.type === 'video_clip' ? 'videoAssetId' : 'audioAssetId'] = asset.id;
   action.durationMs = input.durationMs;
+  if (action.type === 'speech' && action.attention !== undefined) {
+    const intent = action.attention as { type?: string; objectIds?: unknown[]; animation?: unknown };
+    const ids = intent?.objectIds;
+    const pageNumber = current.pages.findIndex(p => p.pageId === input.pageId) + 1;
+    const objects = nativeTeachingObjects(pageNumber);
+    if (!intent || !['highlight', 'spotlight'].includes(String(intent.type)) || !Array.isArray(ids) ||
+        ids.length < 1 || ids.length > 8 || new Set(ids).size !== ids.length ||
+        ids.some(id => typeof id !== 'string' || !objects.some(o => o.objectId === id && o.effectTargetEligible)) ||
+        Object.keys(intent).some(key => !['type', 'objectIds', 'animation'].includes(key)) ||
+        intent.animation !== undefined && !['fadeIn', 'pulse', 'zoomIn', 'slideInLeft', 'slideInRight', 'gentleRotate'].includes(String(intent.animation)) ||
+        input.durationMs > 3600000) throw new Error('Native speech attention target or timing changed');
+    const duration = Math.min(input.durationMs, 600);
+    const reveal = ['fadeIn', 'zoomIn', 'slideInLeft', 'slideInRight'].includes(String(intent.animation));
+    action.visualCues = [
+      ...(intent.animation ? ids.map((id, index) => ({ id: `motion-${action!.id}-${index}`, atMs: 0, endMs: duration,
+        trigger: { version: 1, kind: 'start' }, effect: { type: 'element_animation', elementId: id, effect: intent.animation } })) : []),
+      { id: `focus-${action.id}`, atMs: reveal ? Math.min(duration, input.durationMs - 1) : 0, endMs: input.durationMs,
+        effect: intent.type === 'highlight' ? { type: 'highlight', elementIds: ids } : { type: 'spotlight', elementId: ids[0], elementIds: ids.slice(1) } },
+    ];
+    delete action.attention;
+  }
   const part = document.implementation.createDocument(NATIVE_MEDIA_NAMESPACE, 'media');
   part.documentElement.textContent = JSON.stringify({ id: asset.id, sha256: digest, data });
   return commitNativeTeaching(next, true, existing ? undefined : new XMLSerializer().serializeToString(part));
