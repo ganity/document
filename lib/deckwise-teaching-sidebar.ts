@@ -27,6 +27,7 @@ import { createTeachingSlideshow, inspectTeachingAnimations } from './deckwise-t
 import {
   createTeachingAttentionPreview,
   attentionTarget,
+  teachingShapes,
   selectedAttentionTargets,
   loadTeachingPreviewRuntime,
   type TimelinePreview,
@@ -377,7 +378,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       return { data: data!, target };
     }
   };
-  const load = async (next: Context, preserveLesson?: LessonRun) => {
+  const load = async (next: Context, preserveLesson?: LessonRun, retryMediaRead = true) => {
     const samePage = !!view && view.pageNumber === next.page;
     const selectionRefresh = samePage && context?.editGeneration !== next.editGeneration;
     clearTimeout(saveTimer);
@@ -478,6 +479,35 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         request('media:list', scope()),
       ]);
       if (disposed || token !== epoch || view?.viewId !== owner) return;
+      const catalogs = ['teachingVoiceModels', 'teachingVoiceTasks', 'teachingMediaLibrary'] as const;
+      const failures = results.flatMap((result, index) => {
+        if (result.status !== 'rejected') return [];
+        const operation = ['tts:models', 'tts:list', 'media:list'][index];
+        const reason = String(result.reason instanceof Error ? result.reason.message : result.reason).slice(0, 500);
+        console.warn('[teaching-media-read]', operation, reason);
+        return [
+          t('teachingMediaReadFailed', {
+            catalog: t(catalogs[index]),
+            reason,
+          }),
+        ];
+      });
+      // Retry reads once from a fresh binding; never replay paid submissions or discard edits.
+      if (
+        failures.length &&
+        retryMediaRead &&
+        !changed() &&
+        !lesson &&
+        !running &&
+        !timeline &&
+        !previewAudio &&
+        !teachingSlideshow &&
+        !panel?.contains(nativeDocument?.activeElement ?? null)
+      ) {
+        notice(`${t('teachingMediaReload')}…`);
+        await load(deckwiseEditorBridge.getContext(binding), preserveLesson, false);
+        return;
+      }
       if (results[0].status === 'fulfilled') models = results[0].value;
       if (results[1].status === 'fulfilled') tasks = results[1].value;
       if (results[2].status === 'fulfilled' && Array.isArray(results[2].value)) mediaLibrary = results[2].value;
@@ -492,9 +522,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         !panel?.contains(nativeDocument?.activeElement ?? null)
       )
         render();
-      if (results.slice(0, 2).some((result) => result.status === 'rejected'))
-        notice('本页讲解已读取，语音服务暂不可用；可稍后重试。', true);
-      else if (results[2].status === 'rejected') notice('本页讲解已读取，已有素材列表暂不可用，可点击刷新重试。', true);
+      if (failures.length) notice(failures.join('；'), true);
     } catch (error) {
       if (token === epoch) {
         busy = false;
@@ -629,7 +657,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     clearTimeout(statusTimer);
     statusTimer = setTimeout(async () => {
       if (disposed) return;
-      if (!view || busy || running || changed() || previewAudio || timeline) {
+      if (!view || busy || running || changed() || previewAudio || timeline || teachingSlideshow || startingSlideshow) {
         pollTasks();
         return;
       }
@@ -645,7 +673,19 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
           if (token !== epoch || disposed) return;
           tasks = tasks.map((entry) => (entry.intentId === next.intentId ? next : entry));
         }
-        if (!lesson && waiting.length && !panel?.contains(nativeDocument?.activeElement ?? null)) render();
+        if (
+          !busy &&
+          !running &&
+          !changed() &&
+          !lesson &&
+          !previewAudio &&
+          !timeline &&
+          !teachingSlideshow &&
+          !startingSlideshow &&
+          waiting.length &&
+          !panel?.contains(nativeDocument?.activeElement ?? null)
+        )
+          render();
       } catch (error) {
         if (token === epoch) notice(`语音状态检查失败：${String(error)}`, true);
       } finally {
@@ -741,18 +781,17 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
               effect.type === 'highlight' ? effect.elementIds : [effect.elementId, ...(effect.elementIds ?? [])];
             for (const id of ids) {
               const proof = view!.teachingObjects?.find((object) => object.objectId === id);
-              const matches = slide.cSld.spTree.filter((shape: any) => {
+              const matches = teachingShapes<any>(slide.cSld.spTree).filter((shape) => {
                 const props = shape.getUniNvProps?.()?.cNvPr;
                 return proof?.sourceObjectName
                   ? props?.name === proof.sourceObjectName
                   : proof?.sourceShapeId && String(props?.id) === proof.sourceShapeId;
               });
               if (matches.length !== 1) throw new Error('教学提示目标映射不唯一，请重新读取本页');
-              if (
-                nativeTargets.has(matches[0].Id) &&
-                (effect.type === 'element_animation' || !revealed.has(matches[0].Id))
-              )
-                throw new Error('请将高亮或聚光讲解放到对象的 PPT 入场动画之后；同一对象不能重复添加教学动画');
+              for (let shape = matches[0]; shape; shape = shape.group) {
+                if (nativeTargets.has(shape.Id) && (effect.type === 'element_animation' || !revealed.has(shape.Id)))
+                  throw new Error('请将高亮或聚光讲解放到对象的 PPT 入场动画之后；同一对象不能重复添加教学动画');
+              }
             }
           }
         }
@@ -765,14 +804,27 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       try {
         const shared = await loadTeachingPreviewRuntime();
         if (!isCurrent()) return;
-        schedule = prepareSpeechNativeSchedule(view!.pageNumber, content, view!.teachingObjects ?? [], shared);
-        if (schedule && !inSlideshow) throw new Error(t('teachingAnimationSlideshowRequired'));
-        const motionSteps =
-          schedule?.motions ??
-          (inSlideshow
+        const legacyMotions =
+          inSlideshow &&
+          content.every((action) =>
+            (action.visualCues ?? []).every(
+              (cue: AttentionCue) =>
+                cue.effect?.type !== 'element_animation' || (!cue.trigger && !cue.nativeAnimation && cue.atMs === 0),
+            ),
+          )
             ? nativeSpeechMotionSteps(view!.pageNumber, content, view!.teachingObjects ?? [], shared)
-            : undefined) ??
-          [];
+            : undefined;
+        const needsNativeSchedule =
+          inSlideshow ||
+          content.some((action) =>
+            (action.visualCues ?? []).some((cue: AttentionCue) => cue.trigger || cue.nativeAnimation),
+          );
+        schedule =
+          !legacyMotions && needsNativeSchedule
+            ? prepareSpeechNativeSchedule(view!.pageNumber, content, view!.teachingObjects ?? [], shared)
+            : undefined;
+        if (schedule && !inSlideshow) throw new Error(t('teachingAnimationSlideshowRequired'));
+        const motionSteps = schedule?.motions ?? legacyMotions ?? [];
         const stepCount = nativeNodes.length || motionSteps.length;
         const nodes: Array<Record<string, unknown>> = [];
         let bytesTotal = 0;
@@ -924,7 +976,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
           notice(
             nativeNodes.length
               ? '正在按教学时间轴自动放映 PPT 动画与讲解'
-              : '正在放映本页；如有未绑定的原生动画，请使用「下一步 PPT 动画」，随后自动播放教学时间轴',
+              : '正在播放讲解与原生动画；已关联的动画跟随讲解播放',
           );
           renderPreviewControls();
         } else await startTeaching();
@@ -972,7 +1024,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             pageId: view!.pageId,
             nodes,
             speechMotions: motionSteps.length ? motionSteps : undefined,
-            native: stepCount
+            native: inSlideshow
               ? {
                   sourceSha256: view!.project.source!.sha256,
                   stepCount,

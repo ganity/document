@@ -3,7 +3,7 @@ import { slideImageFingerprint } from './agent-plugin/slide-image-transform';
 import { getReadonlyMode } from './onlyoffice/readonly';
 import { hasUnsavedChanges } from './unsaved-guard';
 import { attentionTarget, type PreviewObject, type Runtime } from './deckwise-teaching-preview';
-import { inspectTeachingAnimations } from './deckwise-teaching-slideshow';
+import { inspectTeachingAnimations, TeachingAnimationSyncError } from './deckwise-teaching-slideshow';
 
 type Cue = { id: string; atMs: number; endMs: number; effect: { type: string; elementId?: string; effect?: string } };
 type Speech = { id: string; type: string; visualCues?: Cue[] };
@@ -50,7 +50,7 @@ export function generatedMotionBindings(
     if (nodeType === 2) stepIndex++;
     previousAction = actionId;
     const shape = attentionTarget(inspected.slide.cSld.spTree, objects, cue.effect.elementId);
-    if (shape.group || typeof shape.Id !== 'string' || !shape.Id) throw new Error('Unsupported native motion target');
+    if (typeof shape.Id !== 'string' || !shape.Id) throw new Error('Unsupported native motion target');
     return { actionId, cueId: cue.id, stepIndex, nodeType, shape, preset, duration: cue.endMs };
   });
   const matches = (effect: Effect, binding: (typeof bindings)[number]) =>
@@ -72,7 +72,15 @@ export function nativeSpeechMotionSteps(
   objects: PreviewObject[],
   runtime: Pick<Runtime, 'nativeMotionPreset'>,
 ) {
-  const planned = generatedMotionBindings(page, actions, objects, runtime);
+  const native = inspectTeachingAnimations(page, true, 'native');
+  // Imported timing is owned by the native schedule, not the legacy click-step projection.
+  if (native.effects.some((effect) => effect.cTn.nodeType !== 2 && effect.cTn.nodeType !== 7 || effect.asc_getDelay() !== 0)) return undefined;
+  let planned: ReturnType<typeof generatedMotionBindings>;
+  try { planned = generatedMotionBindings(page, actions, objects, runtime); }
+  catch (error) {
+    if (error instanceof TeachingAnimationSyncError) return undefined;
+    throw error;
+  }
   if (!planned?.steps.length) return undefined;
   const result: Array<{ actionId: string; stepIndex: number }> = [];
   let previous = -1;
@@ -99,6 +107,7 @@ export function integrateGeneratedNativeMotions(
   objects: PreviewObject[],
   runtime: Pick<Runtime, 'nativeMotionPreset'>,
 ): boolean {
+  if (inspectTeachingAnimations(page, true, 'native').effects.length) return false;
   const planned = generatedMotionBindings(page, actions, objects, runtime);
   if (!planned || !planned.bindings.length || planned.effects.length) return false;
   const context = requireEditorContext();

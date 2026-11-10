@@ -50,6 +50,22 @@ it('uses an explicitly mapped unique compiler name after native IDs are rewritte
   expect(() => read([native], [proof, { ...proof, objectId: 'peer' }])).toThrow();
 });
 
+it('resolves a mapped child inside nested PPT-master groups using its native slide transform', () => {
+  const image = { ...shape(987), group: undefined as unknown, getUniNvProps: () => ({ cNvPr: { name: 'Image 6' } }) };
+  const group = { ...shape(100), spTree: [image], group: undefined as unknown };
+  const outer = { ...shape(101), spTree: [group] };
+  image.group = group;
+  group.group = outer;
+  const proof = { ...object, sourceObjectName: 'Image 6' };
+  const result = attentionGeometry([outer], [proof], ['logical'], 100, 50, (x, y) => ({ X: x, Y: y }));
+  expect(result.targets[0].shape).toBe(image);
+  expect(result.targets[0].rect).toEqual({ x: 9.6, y: 9.4, w: 20.8, h: 21.2 });
+  expect(selectedAttentionTargets([outer], [image], [proof])).toEqual(['logical']);
+  const duplicate = { ...image };
+  group.spTree.push(duplicate);
+  expect(() => attentionGeometry([outer], [proof], ['logical'], 100, 50, (x, y) => ({ X: x, Y: y }))).toThrow();
+});
+
 it('maps canvas multi-selection through saved object identities, never drawing order', () => {
   const panda = shape(),
     monkey = shape(43);

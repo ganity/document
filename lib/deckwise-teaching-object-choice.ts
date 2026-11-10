@@ -60,8 +60,14 @@ export function teachingObjectChoices(page: number, objects: ObjectDescription[]
           controller = logic?.GetCurrentController?.();
         if (!controller?.selectObject) throw new Error(t('teachingNativeEditorUnavailable'));
         controller.resetSelection();
-        controller.selectObject(shape, page - 1);
+        const group = shape.group && Reflect.get(shape.group, 'getMainGroup')?.call(shape.group);
+        if (group) {
+          controller.selectObject(group, page - 1);
+          controller.selection.groupSelection = group;
+          group.selectObject(shape, page - 1);
+        } else controller.selectObject(shape, page - 1);
         logic.Document_UpdateSelectionState?.();
+        controller.updateOverlay?.();
         Reflect.get(api ?? {}, 'asc_UpdateInterfaceState')?.call(api);
       },
     };

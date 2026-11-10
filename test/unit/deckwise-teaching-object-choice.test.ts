@@ -15,7 +15,7 @@ it('uses Chinese semantics, real slide text or visual type instead of English de
     getText: () => (name === 'b' ? 'Hello, Teddy Bear!' : ''),
     getBase64Img: vi.fn(() => 'data:image/png;base64,AA=='),
   }));
-  const controller = { resetSelection: vi.fn(), selectObject: vi.fn() };
+  const controller = { resetSelection: vi.fn(), selectObject: vi.fn(), updateOverlay: vi.fn() };
   state.api = {
     WordControl: {
       m_oLogicDocument: { Slides: [{ cSld: { spTree: shapes } }], GetCurrentController: () => controller },
@@ -44,6 +44,7 @@ it('uses Chinese semantics, real slide text or visual type instead of English de
   document.querySelector('button')!.click();
   expect(controller.resetSelection).toHaveBeenCalledOnce();
   expect(controller.selectObject).toHaveBeenCalledWith(shapes[0], 0);
+  expect(controller.updateOverlay).toHaveBeenCalledOnce();
   expect(box.checked).toBe(false);
 });
 it('keeps unavailable objects selectable but rejects unsafe thumbnail sources and locating stale mappings', () => {
@@ -60,4 +61,23 @@ it('keeps unavailable objects selectable but rejects unsafe thumbnail sources an
   expect(choice.name).toBe('图形 1');
   expect(choice.thumbnail()).toBeUndefined();
   expect(() => choice.locate()).toThrow();
+});
+it('enters the native group selection when locating a group member', () => {
+  const group = {
+    spTree: [] as unknown[],
+    getMainGroup() { return this; },
+    selectObject: vi.fn(),
+  };
+  const shape = { group, getUniNvProps: () => ({ cNvPr: { name: 'word' } }) };
+  group.spTree.push(shape);
+  const controller = { resetSelection: vi.fn(), selectObject: vi.fn(), selection: { groupSelection: null as unknown }, updateOverlay: vi.fn() };
+  state.api = { WordControl: { m_oLogicDocument: {
+    Slides: [{ cSld: { spTree: [group] } }], GetCurrentController: () => controller,
+  } } };
+  const [choice] = teachingObjectChoices(1, [{ objectId: 'word', sourceObjectName: 'word', status: 'mapped', effectTargetEligible: true }]);
+  choice.locate();
+  expect(controller.selectObject).toHaveBeenCalledWith(group, 0);
+  expect(controller.selection.groupSelection).toBe(group);
+  expect(group.selectObject).toHaveBeenCalledWith(shape, 0);
+  expect(controller.updateOverlay).toHaveBeenCalledOnce();
 });

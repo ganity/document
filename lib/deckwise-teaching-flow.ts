@@ -244,7 +244,7 @@ export const teachingFlowStyles = `
   .deckwise-teaching-sidebar .teaching-cue-actions { display:flex; gap:8px; margin-top:12px; }
   .deckwise-teaching-sidebar .teaching-cue-actions button { min-width:64px; min-height:32px; padding:6px 16px; cursor:pointer; }
   .deckwise-teaching-sidebar .teaching-cue-actions .teaching-secondary { border-color:var(--teaching-line); background:var(--background-normal,#fff); }
-  .deckwise-teaching-sidebar .teaching-object-choice { display:flex; align-items:center; gap:5px; padding:7px 0; border-bottom:1px solid var(--teaching-line); }
+  .deckwise-teaching-sidebar .teaching-object-choice { display:flex; flex-wrap:wrap; align-items:center; gap:5px; padding:7px 0; border-bottom:1px solid var(--teaching-line); }
   .deckwise-teaching-sidebar .teaching-object-choice .teaching-target { display:grid; grid-template-columns:16px 54px minmax(0,1fr); align-items:center; gap:7px; flex:1; min-width:0; padding:0; margin:0; border:0; cursor:pointer; }
   .deckwise-teaching-sidebar .teaching-object-choice .teaching-target > span:last-child { font-size:11px; line-height:1.5; overflow-wrap:anywhere; }
   .deckwise-teaching-sidebar .teaching-object-choice .teaching-target input { width:14px; height:14px; margin:0; }
@@ -252,7 +252,7 @@ export const teachingFlowStyles = `
   .deckwise-teaching-sidebar .teaching-object-picture { display:grid; place-items:center; width:54px; height:46px; border:1px solid var(--teaching-line); border-radius:5px; background:#fff; overflow:hidden; }
   .deckwise-teaching-sidebar .teaching-object-picture img { width:100%; height:100%; object-fit:contain; }
   .deckwise-teaching-sidebar .teaching-object-choice > button { flex:none; padding:4px; font-size:10px; color:var(--teaching-accent); }
-  .deckwise-teaching-sidebar .teaching-object-choice > small { color:var(--teaching-muted); font-size:10px; }
+  .deckwise-teaching-sidebar .teaching-object-choice > small { flex-basis:100%; color:var(--teaching-muted); font-size:10px; }
   .deckwise-teaching-sidebar .teaching-attention fieldset { max-height:280px; padding:8px; }
   .deckwise-teaching-sidebar .teaching-attention fieldset > p { font-size:10px; color:var(--teaching-muted); margin:0 0 5px; }
   .deckwise-teaching-sidebar .teaching-target { font-size:11px; }

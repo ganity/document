@@ -617,6 +617,10 @@ export interface I18nMessages {
   teachingVoiceGenerating: string;
   teachingVoicePrepared: string;
   teachingMediaFailed: string;
+  teachingMediaReadFailed: string;
+  teachingVoiceModels: string;
+  teachingVoiceTasks: string;
+  teachingMediaLibrary: string;
   teachingMediaDuration: string;
   teachingMediaDurationLoading: string;
   teachingMediaReload: string;

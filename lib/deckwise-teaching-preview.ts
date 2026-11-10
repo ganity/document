@@ -5,9 +5,10 @@ import { hasUnsavedChanges } from './unsaved-guard';
 
 type Point = { X: number; Y: number; Error?: boolean };
 type Rect = { x: number; y: number; w: number; h: number };
-type Shape = {
+export type Shape = {
   Id?: string;
   group?: unknown;
+  spTree?: Shape[];
   extX: number;
   extY: number;
   transform: { TransformPointX(x: number, y: number): number; TransformPointY(x: number, y: number): number };
@@ -110,6 +111,13 @@ export const loadTeachingPreviewRuntime = (): Promise<Runtime> => {
   }));
 };
 
+/** SDK child transforms already include their ancestor groups. Reject detached children. */
+export function teachingShapes<T extends { group?: unknown; spTree?: T[] }>(tree: T[], parent?: T): T[] {
+  return tree.flatMap((shape) =>
+    shape.group && shape.group !== parent ? [] : [shape, ...teachingShapes(shape.spTree ?? [], shape)],
+  );
+}
+
 export function attentionTarget(tree: Shape[], objects: PreviewObject[], id: string): Shape {
   const matches = objects.filter(
     (o) =>
@@ -123,11 +131,11 @@ export function attentionTarget(tree: Shape[], objects: PreviewObject[], id: str
   )
     throw new Error('提示对象映射不唯一，请重新读取本页');
   // The native converter renumbers OOXML IDs; generated scene names survive conversion.
-  const shapes = tree.filter((s) => {
+  const shapes = teachingShapes(tree).filter((s) => {
     const props = s.getUniNvProps?.()?.cNvPr;
     return proof.sourceObjectName ? props?.name === proof.sourceObjectName : String(props?.id) === proof.sourceShapeId;
   });
-  if (shapes.length !== 1 || shapes[0].group) throw new Error('提示对象已删除或不再唯一，请重新选择目标');
+  if (shapes.length !== 1) throw new Error('提示对象已删除或不再唯一，请重新选择目标');
   return shapes[0];
 }
 
@@ -136,7 +144,7 @@ export function selectedAttentionTargets(tree: Shape[], selected: Shape[], objec
   if (!selected.length || selected.length > 200 || new Set(selected).size !== selected.length)
     throw new Error('请先在画布上选择 1–200 个教学对象');
   return selected.map((shape) => {
-    if (!tree.includes(shape) || shape.group) throw new Error('请选择当前页的独立对象');
+    if (!teachingShapes(tree).includes(shape)) throw new Error('请选择当前页的教学对象');
     const matches = objects.filter((object) => {
       if (object.status !== 'mapped' || !object.effectTargetEligible) return false;
       const props = shape.getUniNvProps?.()?.cNvPr;
