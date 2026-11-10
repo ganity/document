@@ -1,3 +1,4 @@
+import { importedSlideShapeId } from './onlyoffice/guards/slide-source-identity';
 import { getEditorApi, type EditorApi } from './agent-plugin/editor-bridge';
 
 interface Binding {
@@ -6,7 +7,7 @@ interface Binding {
   sessionId: string;
 }
 interface Shape {
-  getUniNvProps?(): { cNvPr?: { name?: string } };
+  getUniNvProps?(): { cNvPr?: { name?: string; id?: number | string } };
 }
 interface Slide {
   cSld?: { spTree?: Shape[] };
@@ -33,11 +34,12 @@ export class DeckWisePageLineage {
         logic: Presentation;
         tokens: WeakMap<object, string>;
         openedPageTokens: string[];
-        shapes: WeakMap<Shape, { sourcePageToken: string; sourceName: string }>;
+        identityCaptured: boolean;
+        shapes: WeakMap<Shape, { sourcePageToken: string; sourceName?: string; sourceShapeId?: string }>;
         animations: WeakMap<Slide, { effects: any[]; signature: string }>;
       }
     | undefined;
-  private exported: { outputSha256: string; shapes: WeakMap<Shape, { sourcePageToken: string; sourceName: string }>;
+  private exported: { outputSha256: string; shapes: WeakMap<Shape, { sourcePageToken: string; sourceName?: string; sourceShapeId?: string }>;
     animations: WeakMap<Slide, { effects: any[]; signature: string }> } | undefined;
   private epoch = 0;
 
@@ -101,7 +103,7 @@ export class DeckWisePageLineage {
       tokens.set(slide, token);
       return token;
     });
-    this.opened = { ...pending, api, logic, tokens, openedPageTokens, shapes: new WeakMap(), animations: new WeakMap() };
+    this.opened = { ...pending, api, logic, tokens, openedPageTokens, identityCaptured: logic.Slides.every(slide => (slide.cSld?.spTree ?? []).every(shape => importedSlideShapeId(shape) !== undefined)), shapes: new WeakMap(), animations: new WeakMap() };
     this.recordObjects();
   }
 
@@ -135,6 +137,14 @@ export class DeckWisePageLineage {
     return { sourceSha256: opened.sourceSha256, openedPageTokens: [...opened.openedPageTokens], pageTokens };
   }
 
+  hasSourceIdentity(): boolean {
+    return !!this.context() && !!this.opened?.identityCaptured;
+  }
+
+  sourceShapeId(shape: Shape): string | undefined {
+    return this.context() ? this.opened?.shapes.get(shape)?.sourceShapeId : importedSlideShapeId(shape);
+  }
+
   private animation(slide: Slide) {
     const effects = slide.timing?.getAllAnimEffects?.() ?? [];
     const signature = JSON.stringify(effects.map(effect => [effect.getObjectId?.(), effect.cTn?.presetClass,
@@ -150,7 +160,7 @@ export class DeckWisePageLineage {
       const sourcePageToken = opened.tokens.get(slide)!;
       for (const shape of slide.cSld?.spTree ?? []) {
         const name = shape.getUniNvProps?.()?.cNvPr?.name;
-        if (name) opened.shapes.set(shape, { sourcePageToken, sourceName: name });
+        if (name || importedSlideShapeId(shape)) opened.shapes.set(shape, { sourcePageToken, sourceName: name || undefined, sourceShapeId: importedSlideShapeId(shape) });
       }
       opened.animations.set(slide, this.animation(slide));
     }
@@ -176,14 +186,15 @@ export class DeckWisePageLineage {
     if (!opened || !context) return undefined;
     const slides = [...opened.logic.Slides];
     const objects = slides.map(slide => (slide.cSld?.spTree ?? []).map(shape => ({
-      ...(opened.shapes.get(shape) ?? {}), name: shape.getUniNvProps?.()?.cNvPr?.name ?? '',
+      ...(opened.shapes.get(shape) ?? {}), name: shape.getUniNvProps?.()?.cNvPr?.name ?? '', shapeId: String(shape.getUniNvProps?.()?.cNvPr?.id ?? ''),
     })));
-    const savedShapes = new WeakMap<Shape, { sourcePageToken: string; sourceName: string }>();
+    const nativeIdentity = opened.identityCaptured && objects.every(items => items.every(item => /^\d{1,10}$/.test(item.shapeId)));
+    const savedShapes = new WeakMap<Shape, { sourcePageToken: string; sourceName?: string; sourceShapeId?: string }>();
     const savedAnimations = new WeakMap<Slide, { effects: any[]; signature: string }>();
     slides.forEach((slide, index) => {
       for (const shape of slide.cSld?.spTree ?? []) {
         const name = shape.getUniNvProps?.()?.cNvPr?.name;
-        if (name) savedShapes.set(shape, { sourcePageToken: context.pageTokens[index], sourceName: name });
+        if (name || nativeIdentity) savedShapes.set(shape, { sourcePageToken: context.pageTokens[index], sourceName: name || undefined, sourceShapeId: String(shape.getUniNvProps?.()?.cNvPr?.id ?? '') });
       }
       savedAnimations.set(slide, this.animation(slide));
     });
@@ -204,11 +215,11 @@ export class DeckWisePageLineage {
         return undefined;
       this.exported = { outputSha256, shapes: savedShapes, animations: savedAnimations };
       return {
-        protocol: 'deckwise-office-page-lineage/1' as const,
+        protocol: nativeIdentity ? 'deckwise-office-page-lineage/2' as const : 'deckwise-office-page-lineage/1' as const,
         ...opened.owner,
         saveRequestId,
         ...context,
-        objects, animationUnchanged,
+        objects: nativeIdentity ? objects : objects.map(items => items.map(({ shapeId, sourceShapeId, ...item }) => item)), animationUnchanged,
         outputSha256,
       };
     };

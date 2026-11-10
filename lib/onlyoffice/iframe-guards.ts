@@ -1,3 +1,4 @@
+import { installSlideSourceIdentity } from './guards/slide-source-identity';
 import { installOpenFailureGuard } from './open-failure';
 import { injectLocalChromeCss } from './guards/chrome';
 import { shadowSharedWorker } from './guards/shared-worker';
@@ -44,6 +45,7 @@ export function prepareEditorIframe(): boolean {
       if (!doc) continue;
 
       installOpenFailureGuard(win);
+      installSlideSourceIdentity(win);
       injectLocalChromeCss(doc);
 
       const sharedWorkerShadowed = shadowSharedWorker(win);

@@ -1,3 +1,6 @@
+import { assertNativeTeachingAnimations } from './deckwise-native-teaching';
+import { hasNativeTeaching, nativeTeachingObjects, readNativeTeaching, replaceNativeTeachingPage } from './deckwise-native-teaching';
+import { routeNativeTeaching, nativeTeachingHistory } from './deckwise-native-teaching-router';
 import { teachingObjectChoices, appendTeachingObjectChoice } from './deckwise-teaching-object-choice';
 import { createTeachingAnimationForm } from './deckwise-teaching-animation-form';
 import {
@@ -72,6 +75,7 @@ type LessonRun = {
 
 /** UI only: authoritative teaching, drafts and paid media operations stay with Host. */
 export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, payload: any, id?: string) => void) {
+  let lifecycle: ReturnType<typeof mountPanelContext> | undefined;
   let disposed = false,
     open = true,
     busy = false,
@@ -167,8 +171,13 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
   const page = () => view?.project.pages.find((entry) => entry.pageId === view?.pageId);
   const changed = () => JSON.stringify(actions) !== baseline;
   const editable = () => !!view && !page()?.locked && !busy && !draftError && !lesson;
-  const request = (operation: string, args: any = {}, target = context) =>
-    new Promise<any>((resolve, reject) => {
+  const request = async (operation: string, args: any = {}, target = context): Promise<any> => {
+    if (!target || disposed) throw new Error('Teaching context is unavailable');
+    if (hasNativeTeaching()) {
+      const native = await routeNativeTeaching(operation, args, target.page ?? 1);
+      if (native && !(native.value as { nativeService?: boolean })?.nativeService) return native.value;
+    }
+    return new Promise<any>((resolve, reject) => {
       if (!target || disposed) return reject(new Error('Teaching context is unavailable'));
       const id = crypto.randomUUID();
       const timer = setTimeout(() => {
@@ -178,6 +187,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       pending.set(id, { resolve, reject, timer });
       send('document:teaching-request', { operation, args, context: target }, id);
     });
+  };
   const scope = () => ({ viewId: view!.viewId, expectedTeachingRevision: view!.project.teachingRevision });
   const element = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string) => {
     const node = nativeDocument!.createElement(tag);
@@ -259,7 +269,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     renderPreviewControls();
     panel?.querySelectorAll<HTMLButtonElement>('[data-teaching-history]').forEach((node) => {
       const entries = node.dataset.teachingHistory === 'undo' ? undoActions : redoActions;
-      node.disabled = !editable() || running || !entries.length;
+      node.disabled = !editable() || running || (!hasNativeTeaching() && !entries.length);
     });
     panel?.querySelectorAll<HTMLButtonElement>('[data-adopt-media]').forEach((node) => {
       const select = panel?.querySelector<HTMLSelectElement>('[data-media-library]');
@@ -269,8 +279,21 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       ?.querySelectorAll<HTMLButtonElement>('[data-save]')
       .forEach((node) => (node.disabled = !editable() || !changed()));
   }
+  const replaceNativeTeachingPageForSidebar = (current: NonNullable<ReturnType<typeof readNativeTeaching>>) =>
+    replaceNativeTeachingPage({ documentId: current.documentId, expectedRevision: view!.project.teachingRevision, pageId: view!.pageId, actions });
   const persistDraft = () => {
     if (!view || !context) return;
+    if (hasNativeTeaching()) {
+      const next = readNativeTeaching()!;
+      const updated = replaceNativeTeachingPageForSidebar(next);
+      view.project.pages = updated.pages;
+      view.project.teachingRevision = updated.revision;
+      actions = structuredClone(updated.pages.find(p => p.pageId === view!.pageId)!.actions);
+      baseline = JSON.stringify(actions);
+      notice('教学修改已进入原生保存流程');
+      renderControls();
+      return;
+    }
     localDrafts.set(view.pageId, { actions: structuredClone(actions), baseline: JSON.stringify(view.project) });
     const args = { viewId: view.viewId },
       target = context,
@@ -306,13 +329,20 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       return;
     }
     stopAudio();
-    remember(undoActions, JSON.stringify(actions));
+    if (!hasNativeTeaching()) remember(undoActions, JSON.stringify(actions));
     redoActions.length = 0;
     actions = next;
     persistDraft();
     if (redraw) render();
   };
   const changeHistory = (undo: boolean) => {
+    if (hasNativeTeaching()) {
+      if (!view || page()?.locked || running || lesson || draftError) return;
+      stopAudio();
+      nativeTeachingHistory(undo);
+      void load(deckwiseEditorBridge.getContext(binding));
+      return;
+    }
     if (!editable() || running) return;
     const from = undo ? undoActions : redoActions,
       to = undo ? redoActions : undoActions;
@@ -410,7 +440,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       const current = deckwiseEditorBridge.getContext(binding);
       if (current.page !== target.page || current.editGeneration !== target.editGeneration) {
         busy = false;
-        queueMicrotask(() => lifecycle.update());
+        queueMicrotask(() => lifecycle?.update());
         return;
       }
       context = target;
@@ -423,6 +453,12 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         data.pageId === view.pageId &&
         JSON.stringify({ ...data, viewId: undefined }) === JSON.stringify({ ...view, viewId: undefined })
       ) {
+        view = data;
+        busy = false;
+        renderControls();
+        return;
+      }
+      if (hasNativeTeaching() && samePage && view?.project.teachingRevision === data.project.teachingRevision) {
         view = data;
         busy = false;
         renderControls();
@@ -467,7 +503,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             notice(`PPT 动画同步未完成：${String(error)}`, true);
           } finally {
             projectingMotions = false;
-            if (!disposed) lifecycle.update();
+            if (!disposed) lifecycle?.update();
           }
         }
       }
@@ -628,7 +664,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
   const pollTasks = () => {
     clearTimeout(statusTimer);
     statusTimer = setTimeout(async () => {
-      if (disposed) return;
+      if (disposed || !open) return;
       if (!view || busy || running || changed() || previewAudio || timeline) {
         pollTasks();
         return;
@@ -716,6 +752,8 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             throw new Error(t('teachingTimingMarkRequired'));
         }
       const nativeNodes = content.filter((node) => node.type === 'native_animation');
+      if (!inSlideshow && hasNativeTeaching() && (nativeNodes.length || content.some(node =>
+        node.visualCues?.some((cue: AttentionCue) => cue.effect?.type === 'element_animation')))) inSlideshow = true;
       if (nativeNodes.length && !inSlideshow)
         throw new Error('本页已绑定 PPT 动画，请使用「幻灯片放映」预览完整时间轴');
       if (
@@ -726,6 +764,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       )
         throw new Error('PPT 动画绑定已过期，请重新绑定已保存的当前页');
       if (nativeNodes.length) {
+        assertNativeTeachingAnimations(view!.pageNumber);
         if (deckwisePageLineage.context()?.sourceSha256 !== view!.project.source?.sha256)
           throw new Error('请保存并重新打开当前 PPT 后放映');
         const { effects, slide } = inspectTeachingAnimations(view!.pageNumber);
@@ -740,17 +779,11 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             const ids =
               effect.type === 'highlight' ? effect.elementIds : [effect.elementId, ...(effect.elementIds ?? [])];
             for (const id of ids) {
-              const proof = view!.teachingObjects?.find((object) => object.objectId === id);
-              const matches = slide.cSld.spTree.filter((shape: any) => {
-                const props = shape.getUniNvProps?.()?.cNvPr;
-                return proof?.sourceObjectName
-                  ? props?.name === proof.sourceObjectName
-                  : proof?.sourceShapeId && String(props?.id) === proof.sourceShapeId;
-              });
-              if (matches.length !== 1) throw new Error('教学提示目标映射不唯一，请重新读取本页');
+              const target = attentionTarget(slide.cSld.spTree, view!.teachingObjects ?? [], id);
+              if (!target.Id) throw new Error('教学提示目标缺少原生对象标识');
               if (
-                nativeTargets.has(matches[0].Id) &&
-                (effect.type === 'element_animation' || !revealed.has(matches[0].Id))
+                nativeTargets.has(target.Id) &&
+                (effect.type === 'element_animation' || !revealed.has(target.Id))
               )
                 throw new Error('请将高亮或聚光讲解放到对象的 PPT 入场动画之后；同一对象不能重复添加教学动画');
             }
@@ -1079,6 +1112,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             onError(error) {
               if (isCurrent()) {
                 if (nativeNodes.length) {
+        assertNativeTeachingAnimations(view!.pageNumber);
                   stopAudio();
                   notice(`播放失败：${error.message}。请重新开始教学放映。`, true);
                 } else notice(`播放失败：${error.message}。可继续重试或停止预览。`, true);
@@ -1194,6 +1228,8 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         } finally {
           current.navigating = false;
         }
+        // Pages without teaching steps have nothing to run; the shared timeline requires at least one node.
+        if (!actions.length) continue;
         let finished = false;
         const done = new Promise<Error | undefined>((resolve) => {
           current.finishPage = (error) => {
@@ -2469,14 +2505,22 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
 
   function setOpen(expanded: boolean) {
     if (disposed) return;
+    const visibilityChanged = open !== expanded;
     if (expanded && panel && (nativeDocument?.getElementById('right-menu')?.getBoundingClientRect().width ?? 0) <= 50)
       nativeDocument?.getElementById('id-right-menu-slide')?.click();
     open = expanded;
-    if (!open) stopAudio();
+    if (!open) {
+      clearTimeout(statusTimer);
+      stopAudio();
+    }
     if (panel) panel.hidden = !open;
     sidebar.update(true, open);
     panelLayout?.sync(open);
     send('document:ui-changed', { teachingOpen: open });
+    if (visibilityChanged) {
+      lifecycle?.update();
+      if (open) pollTasks();
+    }
   }
   const sidebar = createSidebarEntry(
     () => setOpen(!open),
@@ -2556,25 +2600,35 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       return;
     }
   };
-  const lifecycle = mountPanelContext({
-    isActive: () => !disposed,
+  lifecycle = mountPanelContext({
+    isActive: () => !disposed && open,
     refresh: () => {
+      if (disposed || !open) return;
       mount();
       try {
         if (lesson?.navigating || projectingMotions) return;
-        if (hasUnsavedChanges()) {
+        if (hasUnsavedChanges() && !hasNativeTeaching()) {
           notice('PPT 正在自动保存，完成后将同步教学时间轴。');
           return;
         }
         const next = deckwiseEditorBridge.getContext(binding);
-        if (!context || next.page !== context.page || next.editGeneration !== context.editGeneration) void load(next);
+        const native = hasNativeTeaching() ? readNativeTeaching() : undefined;
+        if (native && view && next.page === view.pageNumber && native.revision === view.project.teachingRevision) {
+          context = next;
+          view.teachingObjects = nativeTeachingObjects(next.page ?? 1).map(({ nativeShape, ...object }) => ({ ...object, aliases: [] }));
+          return;
+        }
+        if (!context || next.page !== context.page || next.editGeneration !== context.editGeneration ||
+            (native && native.revision !== view?.project.teachingRevision)) void load(next);
       } catch {
         /* The next SDK context event retries after initialization. */
       }
     },
   });
+  const nativeChanged = () => queueMicrotask(() => lifecycle?.update());
+  window.addEventListener('deckwise-native-teaching-changed', nativeChanged);
   sidebar.update(true, true);
-  lifecycle.update();
+  lifecycle?.update();
   pollTasks();
   return {
     refresh,
@@ -2588,6 +2642,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       else entry.resolve(payload.result);
     },
     dispose() {
+      window.removeEventListener('deckwise-native-teaching-changed', nativeChanged);
       disposed = true;
       epoch++;
       clearTimeout(statusTimer);
@@ -2595,7 +2650,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       stopAudio();
       sidebar.dispose();
       panelLayout?.dispose();
-      lifecycle.dispose();
+      lifecycle?.dispose();
       stopNativeClicks?.();
       panel?.remove();
       for (const entry of pending.values()) {

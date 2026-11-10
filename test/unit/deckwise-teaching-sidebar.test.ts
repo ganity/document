@@ -871,6 +871,21 @@ it.each([1, 2])('plays every native page and restores starting page %s without w
     false,
   );
 });
+it('skips empty teaching pages during a whole lesson without starting an empty timeline', async () => {
+  persisted = [];
+  state.context.page = 2;
+  const { native, played } = lessonSdk();
+  await flush();
+  click('放映整课教学');
+  await vi.advanceTimersByTimeAsync(32);
+  expect(played.map(input => input.pageId)).toEqual(['p2']);
+  expect(native.StartDemonstration).toHaveBeenCalledTimes(1);
+  played[0].onComplete();
+  await vi.advanceTimersByTimeAsync(32);
+  expect(doc.querySelector('[data-status]')!.textContent).toBe('整课教学放映完成');
+  expect(state.context.page).toBe(2);
+  expect(calls.some(call => call.operation === 'write')).toBe(false);
+});
 it.each(['teaching', 'source'])(
   'stops rather than playing a later page from a different %s revision',
   async (change) => {
@@ -1618,4 +1633,18 @@ it('navigates from a current-page slideshow and replays the selected page', asyn
   played[1].onComplete(); await vi.advanceTimersByTimeAsync(32);
   expect(played).toHaveLength(3);
   expect(doc.querySelector('[data-teaching-slideshow]')).not.toBeNull();
+});
+
+it('suspends hidden teaching reads and refreshes the current page when reopened', async () => {
+  await flush();
+  sidebar.setOpen(false);
+  const count = calls.length;
+  state.context = { ...state.context, page: 2, editGeneration: state.context.editGeneration + 1 };
+  state.refresh();
+  await flush();
+  expect(calls).toHaveLength(count);
+  sidebar.setOpen(true);
+  await flush();
+  expect(calls.slice(count).find((call) => call.operation === 'open')?.context.page).toBe(2);
+  expect(doc.querySelector('textarea')!.value).toBe('Page two');
 });

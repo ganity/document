@@ -56,11 +56,29 @@ test('native PPT edits automatically export with object lineage and renew the sa
   expect(first.objects[0][0].sourcePageToken).toBe(first.openedPageTokens[0]);
   const xml = await zipEntryText(Uint8Array.from(first.bytes), 'ppt/slides/slide1.xml');
   expect(xml).toContain('name="Title 1"');
-  await move();
+  await native.evaluate(() => {
+    const w = window as any, api = w.editor, logic = api.WordControl.m_oLogicDocument;
+    const slide = logic.Slides[0], original = slide.cSld.spTree[0];
+    logic.StartAction(w.AscDFH.historydescription_Presentation_ApplyShapeProps);
+    original.getUniNvProps().cNvPr.setName('Same renamed object');
+    const copy = original.copy();
+    slide.addToSpTreeToPos(slide.cSld.spTree.length, copy);
+    logic.Recalculate();
+    logic.FinalizeAction();
+    api.CheckChangedDocument();
+    document.dispatchEvent(new Event('pointerup'));
+  });
   await expect.poll(() => page.evaluate(() => (window as any).automaticSaves.length), { timeout: 60_000 }).toBe(2);
   const second = await page.evaluate(() => (window as any).automaticSaves[1]);
   expect(second.sourceSha256).toBe(first.outputSha256);
-  expect(second.objects[0][0].sourceName).toBe('Title 1');
+  expect(first.protocol).toBe('deckwise-office-page-lineage/2');
+  expect(second.protocol).toBe('deckwise-office-page-lineage/2');
+  expect(second.objects[0][0]).toMatchObject({ sourceName: 'Title 1', name: 'Same renamed object', sourceShapeId: first.objects[0][0].shapeId });
+  expect(second.objects[0]).toHaveLength(2);
+  expect(second.objects[0][1]).toMatchObject({ name: 'Same renamed object' });
+  expect(second.objects[0][1].sourceShapeId).toBeUndefined();
+  expect(second.objects[0][1].sourcePageToken).toBeUndefined();
+  expect(second.objects[0][1].shapeId).not.toBe(second.objects[0][0].shapeId);
   if (process.env.DECKWISE_AUTOSAVE_FIXTURE) {
     const directory = process.env.DECKWISE_AUTOSAVE_FIXTURE;
     await mkdir(directory, { recursive: true });

@@ -1,14 +1,16 @@
+import { hasNativeTeaching, nativeTeachingTarget } from './deckwise-native-teaching';
 import type { SpeechNativeSchedule } from './deckwise-teaching-native-schedule';
 import { getEditorApi } from './agent-plugin/editor-bridge';
 import { hasUnsavedChanges } from './unsaved-guard';
 
 /** Read the supported saved main sequence without starting a presentation. */
 export function inspectTeachingAnimations(page: number, grouped = false) {
+  const native = hasNativeTeaching();
   const api = getEditorApi() as any;
   const manager = api?.WordControl?.DemonstrationManager;
   const slide = api?.WordControl?.m_oLogicDocument?.Slides?.[page - 1];
   if (
-    hasUnsavedChanges() ||
+    (hasUnsavedChanges() && !hasNativeTeaching()) ||
     !slide ||
     api.isSlideShow?.() ||
     !manager?.IsMainSeqFinished ||
@@ -18,7 +20,9 @@ export function inspectTeachingAnimations(page: number, grouped = false) {
     !api.EndDemonstration
   )
     throw new Error('请先保存并重新打开 PPT，再启动教学放映');
-  // Only finite whole-object presets may share the teaching timeline.
+  // Native documents also retain finite automatic effects and nested group targets.
+  const flatten = (shapes: any[]): any[] => shapes.flatMap(shape => [shape, ...flatten(shape.spTree ?? [])]);
+  const targets = native ? flatten(slide.cSld.spTree) : slide.cSld.spTree;
   let effects: any[] = [];
   if (slide.timing) {
     effects = slide.timing.getAllAnimEffects?.();
@@ -45,19 +49,23 @@ export function inspectTeachingAnimations(page: number, grouped = false) {
             [1, 2, 8],
             [1, 2, 2],
             [0, 32, 0],
+            ...(native ? [[0, 6, 0], [1, 37, 0], [1, 22, 4], [1, 23, 16]] : []),
           ].some(
             ([kind, id, subtype]) =>
               effect.cTn?.presetClass === kind && effect.cTn.presetID === id && effect.cTn.presetSubtype === subtype,
           ) ||
-          (effect.cTn.nodeType !== 2 && !(grouped && effect.cTn.nodeType === 7)) ||
+          (effect.cTn.nodeType !== 2 && !(grouped && effect.cTn.nodeType === 7) &&
+            !(native && [0, 7].includes(effect.cTn.nodeType))) ||
           typeof effect.isIdle !== 'function' ||
           typeof effect.isAtEnd !== 'function' ||
           typeof effect.getObjectId !== 'function' ||
-          slide.cSld.spTree.filter((shape: any) => !shape.group && shape.Id === effect.getObjectId()).length !== 1 ||
+          targets.filter((shape: any) => (native || !shape.group) && shape.Id === effect.getObjectId()).length !== 1 ||
           !Number.isInteger(effect.asc_getDuration?.()) ||
           effect.asc_getDuration() < 1 ||
           effect.asc_getDuration() > 5000 ||
-          effect.asc_getDelay?.() !== 0 ||
+          (native
+            ? !Number.isInteger(effect.asc_getDelay?.()) || effect.asc_getDelay() < 0 || effect.asc_getDelay() > 5000
+            : effect.asc_getDelay?.() !== 0) ||
           (effect.asc_getRepeatCount?.() ?? 1000) !== 1000 ||
           effect.asc_getRewind?.(),
       )
@@ -82,7 +90,7 @@ export function inspectTeachingAnimations(page: number, grouped = false) {
     throw new Error('当前编辑器不支持逐步播放原生动画');
   const steps: (typeof effects)[] = [];
   for (const effect of effects) {
-    if (effect.cTn.nodeType === 2) steps.push([effect]);
+    if (effect.cTn.nodeType === 2 || (native && !steps.length)) steps.push([effect]);
     else if (!steps.length) throw new Error('Native sequence must start with an on-click effect');
     else steps[steps.length - 1].push(effect);
   }
@@ -169,7 +177,7 @@ export function createTeachingSlideshow(input: {
   };
   const next = async (expectedIndex?: number): Promise<void> => {
     if (
-      hasUnsavedChanges() ||
+      (hasUnsavedChanges() && !hasNativeTeaching()) ||
       getEditorApi() !== api ||
       !manager.Mode ||
       manager.DemonstrationDiv !== canvas ||
@@ -311,7 +319,7 @@ export function createTeachingSlideshow(input: {
         manager.SlideNum !== input.page - 1 ||
         api.WordControl.m_oLogicDocument.Slides[input.page - 1] !== slide ||
         getEditorApi() !== api ||
-        hasUnsavedChanges()
+        (hasUnsavedChanges() && !hasNativeTeaching())
       ) {
         input.onExit();
         return;

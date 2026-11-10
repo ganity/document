@@ -1,4 +1,5 @@
-import { expect, it } from 'vitest';
+import { deckwisePageLineage } from '../../lib/deckwise-page-lineage';
+import { expect, it, vi } from 'vitest';
 import { attentionGeometry, selectedAttentionTargets } from '../../lib/deckwise-teaching-preview';
 const object = { objectId: 'logical', sourceShapeId: '42', status: 'mapped', effectTargetEligible: true };
 const shape = (id = 42) => ({
@@ -59,4 +60,20 @@ it('maps canvas multi-selection through saved object identities, never drawing o
     expect(() => selectedAttentionTargets([panda, monkey], selected, objects)).toThrow();
   expect(() => selectedAttentionTargets([panda], [panda], [...objects, object])).toThrow();
   expect(() => selectedAttentionTargets([panda], [panda], [{ ...object, effectTargetEligible: false }])).toThrow();
+});
+
+it('resolves renamed and same-name shapes by captured package identity and never binds a copy', () => {
+  const original = { ...shape(987), getUniNvProps: () => ({ cNvPr: { id: 987, name: 'renamed' } }) };
+  const peer = { ...shape(988), getUniNvProps: () => ({ cNvPr: { id: 988, name: 'renamed' } }) };
+  const copy = { ...original };
+  const capability = vi.spyOn(deckwisePageLineage, 'hasSourceIdentity').mockReturnValue(true);
+  const identity = vi.spyOn(deckwisePageLineage, 'sourceShapeId').mockImplementation(s =>
+    s === original ? '42' : s === peer ? '43' : undefined);
+  try {
+    const proofs = [object, { ...object, objectId: 'peer', sourceShapeId: '43' }];
+    expect(selectedAttentionTargets([original, peer, copy], [peer, original], proofs)).toEqual(['peer', 'logical']);
+    expect(attentionGeometry([copy, peer, original], proofs, ['logical'], 100, 50, (X, Y) => ({ X, Y })).targets[0].shape).toBe(original);
+    expect(() => selectedAttentionTargets([copy, peer], [copy], proofs)).toThrow();
+    expect(() => attentionGeometry([copy, peer], proofs, ['logical'], 100, 50, (X, Y) => ({ X, Y }))).toThrow();
+  } finally { capability.mockRestore(); identity.mockRestore(); }
 });

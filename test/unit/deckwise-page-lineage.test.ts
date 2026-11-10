@@ -41,7 +41,7 @@ describe('session-bound native page lineage', () => {
     expect(new Set(context.pageTokens).size).toBe(3);
     const capture = lineage.captureSave()!;
     expect(await capture(file('edited-output'), 'save-1', () => true)).toEqual({
-      protocol: 'deckwise-office-page-lineage/1',
+      protocol: 'deckwise-office-page-lineage/2',
       ...owner,
       saveRequestId: 'save-1',
       ...context,

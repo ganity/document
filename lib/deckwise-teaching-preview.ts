@@ -1,3 +1,4 @@
+import { hasNativeTeaching, nativeTeachingTarget } from './deckwise-native-teaching';
 import type { SpeechTrigger } from './deckwise-teaching-animation-bindings';
 import { getEditorApi } from './agent-plugin/editor-bridge';
 import { deckwisePageLineage } from './deckwise-page-lineage';
@@ -5,9 +6,10 @@ import { hasUnsavedChanges } from './unsaved-guard';
 
 type Point = { X: number; Y: number; Error?: boolean };
 type Rect = { x: number; y: number; w: number; h: number };
-type Shape = {
+export type Shape = {
   Id?: string;
   group?: unknown;
+  spTree?: Shape[];
   extX: number;
   extY: number;
   transform: { TransformPointX(x: number, y: number): number; TransformPointY(x: number, y: number): number };
@@ -110,20 +112,28 @@ export const loadTeachingPreviewRuntime = (): Promise<Runtime> => {
   }));
 };
 
+function containsShape(tree: Shape[], shape: Shape): boolean {
+  return tree.some(candidate => candidate === shape || containsShape(candidate.spTree ?? [], shape));
+}
+
 export function attentionTarget(tree: Shape[], objects: PreviewObject[], id: string): Shape {
+  if (hasNativeTeaching()) {
+    const shape = nativeTeachingTarget(id, tree) as Shape | undefined;
+    if (!shape || !containsShape(tree, shape)) throw new Error('提示对象已删除或不在当前页');
+    return shape;
+  }
   const matches = objects.filter(
     (o) =>
       o.objectId === id && o.status === 'mapped' && o.effectTargetEligible && (o.sourceShapeId || o.sourceObjectName),
   );
   if (matches.length !== 1) throw new Error('提示对象缺少当前映射，请保存并重新打开 PPT');
   const proof = matches[0];
-  if (
-    proof.sourceObjectName &&
-    objects.filter((o) => o.status === 'mapped' && o.sourceObjectName === proof.sourceObjectName).length !== 1
-  )
+  const nativeIdentity = deckwisePageLineage.hasSourceIdentity();
+  if (!nativeIdentity && proof.sourceObjectName &&
+    objects.filter(o => o.status === 'mapped' && o.sourceObjectName === proof.sourceObjectName).length !== 1)
     throw new Error('提示对象映射不唯一，请重新读取本页');
-  // The native converter renumbers OOXML IDs; generated scene names survive conversion.
-  const shapes = tree.filter((s) => {
+  const shapes = tree.filter(s => {
+    if (nativeIdentity) return !!proof.sourceShapeId && deckwisePageLineage.sourceShapeId(s) === proof.sourceShapeId;
     const props = s.getUniNvProps?.()?.cNvPr;
     return proof.sourceObjectName ? props?.name === proof.sourceObjectName : String(props?.id) === proof.sourceShapeId;
   });
@@ -135,10 +145,14 @@ export function attentionTarget(tree: Shape[], objects: PreviewObject[], id: str
 export function selectedAttentionTargets(tree: Shape[], selected: Shape[], objects: PreviewObject[]): string[] {
   if (!selected.length || selected.length > 200 || new Set(selected).size !== selected.length)
     throw new Error('请先在画布上选择 1–200 个教学对象');
+  const native = hasNativeTeaching();
   return selected.map((shape) => {
-    if (!tree.includes(shape) || shape.group) throw new Error('请选择当前页的独立对象');
+    if (native ? !containsShape(tree, shape) : !tree.includes(shape) || shape.group) throw new Error('请选择当前页的独立对象');
     const matches = objects.filter((object) => {
+      if (native) return nativeTeachingTarget(object.objectId, tree) === shape;
       if (object.status !== 'mapped' || !object.effectTargetEligible) return false;
+      if (deckwisePageLineage.hasSourceIdentity())
+        return !!object.sourceShapeId && deckwisePageLineage.sourceShapeId(shape) === object.sourceShapeId;
       const props = shape.getUniNvProps?.()?.cNvPr;
       return object.sourceObjectName
         ? props?.name === object.sourceObjectName
@@ -206,7 +220,7 @@ export async function createTeachingAttentionPreview(input: {
   onError(error: Error): void;
   slideshow?: HTMLElement;
 }) {
-  if (hasUnsavedChanges()) throw new Error('请先保存并重新打开 PPT，再预览教学提示');
+  if ((hasUnsavedChanges() && !hasNativeTeaching())) throw new Error('请先保存并重新打开 PPT，再预览教学提示');
   const shared = await loadTeachingPreviewRuntime();
   const api = getEditorApi() as any;
   const logic = api?.WordControl?.m_oLogicDocument;
@@ -220,7 +234,7 @@ export async function createTeachingAttentionPreview(input: {
     );
   if (deckwisePageLineage.context()?.sourceSha256 !== input.sourceSha256)
     throw new Error('页面来源已变化，请保存并重新打开当前 PPT 后预览教学提示');
-  if (hasUnsavedChanges()) throw new Error('请先保存并重新打开 PPT，再预览教学提示');
+  if ((hasUnsavedChanges() && !hasNativeTeaching())) throw new Error('请先保存并重新打开 PPT，再预览教学提示');
   const layer = input.doc.createElement('div');
   layer.dataset.teachingPreview = '';
   layer.setAttribute('aria-hidden', 'true');
@@ -240,7 +254,7 @@ export async function createTeachingAttentionPreview(input: {
     if (disposed) return;
     try {
       if (
-        hasUnsavedChanges() ||
+        (hasUnsavedChanges() && !hasNativeTeaching()) ||
         getEditorApi() !== api ||
         logic.Slides[input.page - 1] !== slide ||
         (input.slideshow

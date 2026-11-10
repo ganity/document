@@ -1,3 +1,4 @@
+import { hasNativeTeaching, nativeTeachingTarget } from './deckwise-native-teaching';
 import { requireEditorContext } from './agent-plugin/editor-bridge';
 import { slideImageFingerprint } from './agent-plugin/slide-image-transform';
 import { getReadonlyMode } from './onlyoffice/readonly';
@@ -50,7 +51,7 @@ export function generatedMotionBindings(
     if (nodeType === 2) stepIndex++;
     previousAction = actionId;
     const shape = attentionTarget(inspected.slide.cSld.spTree, objects, cue.effect.elementId);
-    if (shape.group || typeof shape.Id !== 'string' || !shape.Id) throw new Error('Unsupported native motion target');
+    if ((!hasNativeTeaching() && shape.group) || typeof shape.Id !== 'string' || !shape.Id) throw new Error('Unsupported native motion target');
     return { actionId, cueId: cue.id, stepIndex, nodeType, shape, preset, duration: cue.endMs };
   });
   const matches = (effect: Effect, binding: (typeof bindings)[number]) =>
@@ -108,7 +109,7 @@ export function integrateGeneratedNativeMotions(
   const changeType = Reflect.get(context.AscCommon ?? {}, 'changestype_Timing');
   if (
     getReadonlyMode() ||
-    hasUnsavedChanges() ||
+    (hasUnsavedChanges() && !hasNativeTeaching()) ||
     !api.isDocumentLoadComplete ||
     !api.isLoadFullApi ||
     api.asc_IsStartedAnimationPreview?.() !== false ||

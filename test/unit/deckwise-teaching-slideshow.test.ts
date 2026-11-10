@@ -3,6 +3,7 @@ const state = vi.hoisted(() => ({ api: null as any, dirty: false }));
 vi.mock('../../lib/agent-plugin/editor-bridge', () => ({ getEditorApi: () => state.api }));
 vi.mock('../../lib/unsaved-guard', () => ({ hasUnsavedChanges: () => state.dirty }));
 import { createTeachingSlideshow } from '../../lib/deckwise-teaching-slideshow';
+import * as nativeTeaching from '../../lib/deckwise-native-teaching';
 let manager: any, callbacks: Map<string, () => void>, complete: boolean;
 let show: ReturnType<typeof createTeachingSlideshow> | undefined;
 beforeEach(() => {
@@ -154,7 +155,7 @@ function steps() {
     cTn: { presetClass: 1, presetID: 10, presetSubtype: 0, nodeType: 2 },
     getObjectId: () => 'target',
     asc_getDuration: () => 500,
-    asc_getDelay: () => 0,
+    asc_getDelay: (): number => 0,
     isIdle: () => state[index] === 'idle',
     isAtEnd: () => state[index] === 'end',
   }));
@@ -173,6 +174,25 @@ function steps() {
 function stateApiSlide() {
   return state.api.WordControl.m_oLogicDocument.Slides[0];
 }
+it('lets native teaching finish finite automatic group animations before starting narration', () => {
+  const native = vi.spyOn(nativeTeaching, 'hasNativeTeaching').mockReturnValue(true);
+  try {
+    const s = steps();
+    const group = { Id: 'group', spTree: [] as any[] };
+    group.spTree.push({ Id: 'target', group });
+    s.slide.cSld.spTree = [group];
+    s.effects[0].cTn.nodeType = 7;
+    Object.assign(s.effects[1].cTn, { nodeType: 0, presetClass: 0, presetID: 6 });
+    s.effects[1].asc_getDelay = () => 500;
+    const ready = vi.fn();
+    show = createTeachingSlideshow({ doc: document, page: 1, onReady: ready, onExit: vi.fn(), onError: vi.fn() });
+    vi.advanceTimersByTime(64);
+    expect(ready).not.toHaveBeenCalled();
+    s.state.fill('end');
+    vi.advanceTimersByTime(64);
+    expect(ready).toHaveBeenCalledOnce();
+  } finally { native.mockRestore(); }
+});
 it('completes each native step from actual state, blocking duplicates and preserving pause', async () => {
   const s = steps(),
     ready = vi.fn(),

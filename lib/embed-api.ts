@@ -1,3 +1,5 @@
+import { routeNativeTeaching } from './deckwise-native-teaching-router';
+import { readNativeTeaching, replaceNativeTeachingPage, adoptNativeTeachingAudio, nativeTeachingAudio, prepareNativeTeachingSave, initializeNativeTeaching } from './deckwise-native-teaching';
 import { mountPanelContext } from './agent-plugin/ui/panel-context';
 import { mountDeckwiseTeachingSidebar } from './deckwise-teaching-sidebar';
 import { clearActiveSource } from './active-document-source';
@@ -18,6 +20,7 @@ import { deckwisePageLineage } from './deckwise-page-lineage';
 import { renderDeckWiseCurrentSlidePreview } from './deckwise-slide-preview';
 
 type EmbedMessageType =
+  | 'document:native-teaching'
   | 'document:open'
   | 'document:open-url'
   | 'document:open-file'
@@ -230,9 +233,21 @@ async function handleCommand(message: EmbedMessage): Promise<void> {
     if (['document:save', 'document:commit-save', 'document:set-readonly'].includes(String(message.type)))
       deckwiseEditorBridge.revokeFade();
     switch (message.type) {
+      case 'document:native-teaching': {
+        if (!isDeckWiseMode()) throw new Error('Teaching requires DeckWise mode');
+        deckwiseEditorBridge.getContext(payload.binding);
+        if (payload.operation === 'route') reply('document:native-teaching-result', { routed: await routeNativeTeaching(payload.routeOperation, payload.args ?? {}, payload.page) }, message.id);
+        else if (payload.operation === 'read') reply('document:native-teaching-result', { teaching: readNativeTeaching() }, message.id);
+        else if (payload.operation === 'replace-page') reply('document:native-teaching-result', { teaching: replaceNativeTeachingPage(payload.command) }, message.id);
+        else if (payload.operation === 'adopt-audio') reply('document:native-teaching-result', { teaching: await adoptNativeTeachingAudio(payload.command) }, message.id);
+        else if (payload.operation === 'audio') reply('document:native-teaching-result', { audio: await nativeTeachingAudio(payload.assetId) }, message.id);
+        else throw new Error('Unsupported native teaching operation');
+        break;
+      }
       case 'document:teaching-enable':
         if (!isDeckWiseMode()) throw new Error('Teaching requires DeckWise mode');
         deckwiseEditorBridge.getContext(payload.binding);
+        if (payload.nativeTeaching === true) initializeNativeTeaching();
         teachingSidebar?.dispose();
         teachingSidebar = mountDeckwiseTeachingSidebar(payload.binding, postToParent);
         if (moduleUi.teachingOpen !== undefined) teachingSidebar.setOpen(moduleUi.teachingOpen);
@@ -406,6 +421,7 @@ async function handleCommand(message: EmbedMessage): Promise<void> {
         const returnOriginalOnTimeout = hostManaged ? false : Boolean(payload.returnOriginalOnTimeout);
         // Taken before the export starts: edits made while it runs are not in
         // the bytes the host receives, so they must keep the document dirty.
+        if (isDeckWiseMode()) prepareNativeTeachingSave();
         const savePoint = captureSavePoint();
         const captureLineage = hostManaged && isDeckWiseMode() ? deckwisePageLineage.captureSave() : undefined;
         const pending = hostManaged ? { id: message.id!, point: savePoint, exported: false } : null;
