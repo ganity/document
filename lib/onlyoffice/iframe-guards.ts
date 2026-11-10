@@ -17,6 +17,11 @@ import { installHintFallbackGuard } from './guards/hint-fallback';
 import { installAboutSourceNotice } from './guards/about-source';
 import { installBadImageUrlGuard } from './guards/bad-image-url';
 import { installX2tWorkerProxy } from './guards/x2t-worker';
+import { installEastAsianPunctuationGuard } from './guards/east-asian-punctuation';
+import { installMixedScriptLineMetricsGuard } from './guards/mixed-script-line-metrics';
+import { installImageColorKeyGuard } from './guards/image-color-key';
+import { installEastAsianVerticalGuard } from './guards/east-asian-vertical';
+import { installImageSoftEdgeGuard } from './guards/image-soft-edge';
 
 /**
  * Same-origin preparation of the editor iframe, applied from onAppReady and
@@ -62,6 +67,14 @@ export function prepareEditorIframe(): boolean {
       installHintFallbackGuard(win);
       installBadImageUrlGuard(win);
       const x2tWorkerProxied = installX2tWorkerProxy(win);
+      const punctuationGuarded = !win.location.pathname.includes('/presentationeditor/') ||
+        installEastAsianPunctuationGuard(win);
+      if (win.location.pathname.includes('/presentationeditor/')) {
+        installMixedScriptLineMetricsGuard(win);
+        installImageColorKeyGuard(win);
+        installEastAsianVerticalGuard(win);
+        installImageSoftEdgeGuard(win);
+      }
       // Save tracking wraps the final converter, including the worker proxy.
       const saveSemanticsInstalled = installServerlessSaveSemantics(win);
       installAboutSourceNotice(doc);
@@ -74,6 +87,7 @@ export function prepareEditorIframe(): boolean {
         saveSemanticsInstalled &&
         longActionGuarded &&
         x2tWorkerProxied &&
+        punctuationGuarded &&
         wasmBinaryHandled
       ) {
         fullyApplied = true;

@@ -376,6 +376,7 @@ describe('embed-api', () => {
         page: 1,
         selectedText: '',
         selectionCharacters: 0,
+        selectedObjects: [],
         readOnly: false,
         capabilities: [],
       });

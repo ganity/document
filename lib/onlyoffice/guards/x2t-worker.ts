@@ -40,6 +40,11 @@
  */
 
 import { waitForFontSystem, type FontSystemWindow } from '../font-system';
+import { installEastAsianPunctuationGuard } from './east-asian-punctuation';
+import { installMixedScriptLineMetricsGuard } from './mixed-script-line-metrics';
+import { installImageColorKeyGuard } from './image-color-key';
+import { installEastAsianVerticalGuard } from './east-asian-vertical';
+import { installImageSoftEdgeGuard } from './image-soft-edge';
 
 /** How long an idle worker is kept before its heap is handed back. */
 const IDLE_TERMINATE_MS = 30_000;
@@ -339,6 +344,15 @@ export function installX2tWorkerProxy(win: Window): boolean {
 
   converter.convertToBin = async (data: unknown, fileName?: string, fileExt?: string) => {
     if (data == null) throw new Error('Document conversion failed: nothing to convert');
+    // Font-slot selection must be installed before the SDK shapes imported
+    // text; onDocumentReady is too late because the first layout is cached.
+    if (frame.location.pathname.includes('/presentationeditor/')) {
+      installEastAsianPunctuationGuard(frame);
+      installMixedScriptLineMetricsGuard(frame);
+      installImageColorKeyGuard(frame);
+      installEastAsianVerticalGuard(frame);
+      installImageSoftEdgeGuard(frame);
+    }
     // Whatever could not be resolved here crosses as it came: the worker runs
     // the same handleFileData, so a form this does not know is still the
     // vendor's to interpret rather than ours to reject.

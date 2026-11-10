@@ -1,5 +1,6 @@
 import { readZipEntries, readZipEntry, rewriteZip, zipHasEntry } from 'ranuts/utils';
 import type { ZipEntry } from 'ranuts/utils';
+import { resolvePptxThemeEastAsianFonts } from './pptx-theme-fonts';
 
 // OOXML (DOCX / XLSX / PPTX) files are ZIP archives. The ZIP plumbing itself —
 // central-directory parsing, DEFLATE inflation, CRC, archive rebuilding — comes
@@ -96,6 +97,19 @@ export async function preprocessXlsxLineBreaks(xlsxBytes: Uint8Array): Promise<U
 export async function preprocessPptx(pptxBytes: Uint8Array): Promise<Uint8Array> {
   const hasAppXml = zipHasEntry(pptxBytes, 'docProps/app.xml');
   const hasCoreXml = zipHasEntry(pptxBytes, 'docProps/core.xml');
+  // Hans is a Chinese-source adaptation, not a universal EA fallback: standard
+  // Office themes also carry Hans in Japanese/Korean/traditional-Chinese decks.
+  let hasHansLanguage = false;
+  let hasOtherEastAsianLanguage = false;
+  for (const entry of readZipEntries(pptxBytes)) {
+    if (!/^ppt\/(?:presentation\.xml|slides\/slide\d+\.xml)$/.test(entry.name)) continue;
+    const data = await readZipEntry(pptxBytes, entry);
+    if (!data) continue;
+    const xml = new TextDecoder().decode(data);
+    hasHansLanguage ||= /\blang=["']zh-(?:CN|SG)["']/i.test(xml);
+    hasOtherEastAsianLanguage ||= /\blang=["'](?:ja-JP|ko-KR|zh-(?:TW|HK|MO))["']/i.test(xml);
+  }
+  const resolveHansFonts = hasHansLanguage && !hasOtherEastAsianLanguage;
 
   const enc = new TextEncoder();
   const inject: Array<{ name: string; data: Uint8Array }> = [];
@@ -133,9 +147,11 @@ export async function preprocessPptx(pptxBytes: Uint8Array): Promise<Uint8Array>
   return rewriteXmlEntries(
     pptxBytes,
     (name) =>
+      (resolveHansFonts && name.startsWith('ppt/theme/') && name.endsWith('.xml')) ||
       ((name.startsWith('ppt/notesSlides/') || name.startsWith('ppt/notesMasters/')) && name.endsWith('.xml')) ||
       (needsRels && name === '_rels/.rels'),
     (xml, name) => {
+      if (name.startsWith('ppt/theme/')) return resolvePptxThemeEastAsianFonts(xml);
       if (name === '_rels/.rels') {
         let out = xml;
         const end = out.lastIndexOf('</Relationships>');

@@ -5,6 +5,7 @@ import { defineConfig, type Plugin } from 'vite';
 import { workspaceSourceAliases } from './bin/workspace-aliases.mjs';
 import { PAGES, generate as generatePages } from './bin/build-pages.mjs';
 import { generate as generateLlmsFull } from './bin/llms-full.mjs';
+import { localSystemFonts } from './bin/local-system-fonts.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -224,6 +225,7 @@ export default defineConfig(({ command }) => {
       },
     },
     plugins: [
+      localSystemFonts(__dirname),
       localIsolationHeaders(),
       modelWorkerCsp(),
       generatedPages(),

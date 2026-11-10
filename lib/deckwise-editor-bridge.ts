@@ -16,6 +16,7 @@ import { canSetSlideFade, prepareSlideFade } from './agent-plugin/slide-fade';
 import { canSetSlideImageSize, setSlideImageSize } from './agent-plugin/slide-image-size';
 import { canSetSlideImagePosition, setSlideImagePosition } from './agent-plugin/slide-image-position';
 import { canAddSlideObjectAnimation, addSlideObjectAnimation } from './agent-plugin/slide-object-animation';
+import { readDeckWiseSelectedObjects } from './deckwise-object-selection';
 
 export interface DeckWiseEditorBinding {
   projectId: string;
@@ -431,6 +432,7 @@ export class DeckWiseEditorBridge {
       page: target.context.page,
       selectedText: target.selectedText.slice(0, 8000),
       selectionCharacters: target.selectedText.length,
+      selectedObjects: readDeckWiseSelectedObjects(),
       readOnly,
       capabilities,
     };

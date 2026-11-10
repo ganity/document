@@ -60,6 +60,15 @@ describe('font catalog licensing', () => {
 });
 
 describe('font catalog integrity', () => {
+  it('maps every Calibri style to the corresponding Carlito face', () => {
+    // A regular-only alias shapes bold/italic with the backing family's real
+    // face, then paints the regular face's unrelated glyph IDs (e.g. 701—762
+    // becomes mojibake in an imported PowerPoint). File existence is not enough.
+    const alias = infos.find((row) => row[0] === 'Calibri')!;
+    const backing = infos.find((row) => row[0] === 'Carlito')!;
+    expect(alias.slice(1)).toEqual(backing.slice(1));
+  });
+
   it('references only faces that exist on disk', () => {
     const onDisk = new Set(slots);
     const missing = new Set<string>();
