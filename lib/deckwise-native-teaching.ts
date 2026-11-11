@@ -1,9 +1,11 @@
+import { isCoursewareEnrichment, type CoursewareEnrichment } from "./deckwise-teaching-enrichment";
 import { readPresentationShapeText } from './agent-plugin/slide-text-read';
 import { trackTeachingSlideCopy } from './onlyoffice/guards/slide-teaching-copy';
 import { importedSlideShapeId } from './onlyoffice/guards/slide-source-identity';
 import { getEditorApi } from './agent-plugin/editor-bridge';
 import { prepareNativeTeachingMotions } from './deckwise-native-teaching-motions';
 import { getReadonlyMode } from './onlyoffice/readonly';
+import { markDocumentDirty } from './unsaved-guard';
 
 export const NATIVE_MEDIA_NAMESPACE = 'urn:deckwise:native-teaching-media:1';
 export const NATIVE_TEACHING_NAMESPACE = 'urn:deckwise:native-teaching:1';
@@ -14,6 +16,7 @@ export type NativeTeaching = {
   documentId: string;
   revision: string;
   pages: Page[];
+  enrichment?: CoursewareEnrichment;
   media: Array<{ id: string; sha256: string; mimeType: string; byteLength: number; durationMs: number; data?: string }>;
   [key: string]: unknown;
 };
@@ -47,6 +50,7 @@ function decode(part: Part): NativeTeaching | undefined {
   const root = new DOMParser().parseFromString(xml, 'application/xml').documentElement;
   if (root.namespaceURI !== NATIVE_TEACHING_NAMESPACE || root.localName !== 'teaching' || root.children.length) throw new Error('Invalid native teaching XML');
   const value = JSON.parse(root.textContent ?? '') as NativeTeaching;
+  if (value?.enrichment !== undefined && !isCoursewareEnrichment(value.enrichment)) throw new Error('Unsupported or invalid teaching enrichment');
   if (
     !value || typeof value !== 'object' || value.schemaVersion !== 'deckwise-native-teaching/1' ||
     typeof value.documentId !== 'string' || !/^[\w.-]{1,128}$/.test(value.documentId) ||
@@ -117,6 +121,7 @@ export function replaceNativeTeachingPage(input: {
   expectedRevision: string;
   pageId: string;
   actions: Action[];
+  enrichment?: CoursewareEnrichment;
   semantics?: Array<{ objectId: string; role: string; aliases: string[]; text: string; teachingTarget: boolean }>;
 }) {
   if (getReadonlyMode()) throw new Error('Teaching is read-only');
@@ -133,6 +138,12 @@ export function replaceNativeTeachingPage(input: {
   )
     throw new Error('Invalid teaching actions');
   const next: NativeTeaching = { ...current, pages: structuredClone(current.pages), media: [...current.media] };
+  if (input.enrichment !== undefined) {
+    if (!isCoursewareEnrichment(input.enrichment)) throw new Error('Unsupported or invalid teaching enrichment');
+    if (current.enrichment && JSON.stringify(input.enrichment.originalPages) !== JSON.stringify(current.enrichment.originalPages))
+      throw new Error('Original page identity cannot be replaced');
+    next.enrichment = structuredClone(input.enrichment);
+  }
   const actions = structuredClone(input.actions);
   for (const action of actions) {
     const previous = page.actions.find((a) => a.id === action.id);
@@ -155,6 +166,33 @@ export function replaceNativeTeachingPage(input: {
   changed.actions = actions;
   changed.reviewState = 'review';
   return commitNativeTeaching(next, true, undefined, () => prepareNativeTeachingMotions(current.pages.findIndex(p => p.pageId === input.pageId) + 1, actions));
+}
+
+/** Insert one independent assessment; visible content, answer data and source binding share one Undo action. */
+export function insertNativeTeachingAssessment(input: {
+  documentId: string; expectedRevision: string; afterPageId: string; pageId: string; actions: Action[];
+  enrichment: CoursewareEnrichment; quiz?: unknown;
+  change: { assertCurrent(): void; apply(): LiveSlide; restore(): void };
+}) {
+  if (getReadonlyMode()) throw new Error('Teaching is read-only');
+  const current = readNativeTeaching();
+  if (!current || current.documentId !== input.documentId || current.revision !== input.expectedRevision ||
+      !current.enrichment || JSON.stringify(current.enrichment.originalPages) !== JSON.stringify(input.enrichment.originalPages))
+    throw new Error('Teaching or original page identity changed');
+  const after = current.pages.findIndex(p => p.pageId === input.afterPageId);
+  if (after < 0 || current.pages[after].locked || current.pages.length >= 100 || current.pages.some(p => p.pageId === input.pageId) ||
+      !/^[\w.-]{1,128}$/.test(input.pageId) || !isCoursewareEnrichment(input.enrichment) || !Array.isArray(input.actions) ||
+      input.actions.length > 10 || input.actions.some(a => !a || typeof a.id !== 'string' || !['speech', 'interaction_checkpoint'].includes(a.type)))
+    throw new Error('Invalid independent assessment insertion');
+  input.change.assertCurrent();
+  const next: NativeTeaching = { ...current, pages: structuredClone(current.pages), enrichment: structuredClone(input.enrichment) };
+  next.pages.splice(after + 1, 0, { pageId: input.pageId, locked: false, reviewState: 'review', actions: structuredClone(input.actions) });
+  if (input.quiz) next.assessments = { ...((current.assessments ?? {}) as object), [input.pageId]: structuredClone(input.quiz) };
+  return commitNativeTeaching(next, true, undefined, () => ({ apply() {
+    const slide = input.change.apply();
+    if (!live) throw new Error('Native page identity is unavailable');
+    live.pages.set(slide, input.pageId);
+  }, restore() { input.change.restore(); } }));
 }
 
 function nativeAnimationSignature(pageNumber: number, stepIndex: number): string {
@@ -278,7 +316,10 @@ function commitNativeTeaching(next: NativeTeaching, revise = true, mediaXml?: st
   } finally {
     if (revise) logic.FinalizeAction(); else history?.TurnOn();
   }
-  if (revise) window.dispatchEvent(new Event('deckwise-native-teaching-changed'));
+  if (revise) {
+    markDocumentDirty();
+    window.dispatchEvent(new Event('deckwise-native-teaching-changed'));
+  }
   return projectNativeTeaching(next);
 }
 

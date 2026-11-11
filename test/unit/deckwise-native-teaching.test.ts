@@ -3,12 +3,13 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { initializeNativeTeaching, assertNativeTeachingAnimations, hasNativeTeaching, readNativeTeaching, replaceNativeTeachingPage, nativeTeachingAudio, adoptNativeTeachingAudio, NATIVE_MEDIA_NAMESPACE, NATIVE_TEACHING_NAMESPACE, nativeTeachingObjects, nativeTeachingTarget, setNativeTeachingLock, prepareNativeTeachingSave } from '../../lib/deckwise-native-teaching';
 import { routeNativeTeaching } from '../../lib/deckwise-native-teaching-router';
 import { attentionGeometry, selectedAttentionTargets } from '../../lib/deckwise-teaching-preview';
+import { hasUnsavedChanges, resetUnsavedChanges } from '../../lib/unsaved-guard';
 vi.mock('../../lib/deckwise-page-lineage', () => ({ deckwisePageLineage: { context: () => ({ sourceSha256: 'a'.repeat(64) }) } }));
 const state = vi.hoisted(() => ({ api: {}, readonly: false }));
 vi.mock('../../lib/agent-plugin/editor-bridge', () => ({ getEditorApi: () => state.api, requireEditorContext: () => ({ api: state.api, AscFormat: { CTiming: Timing, ExecuteNoHistory: (fn: () => unknown) => fn() } }) }));
 vi.mock('../../lib/onlyoffice/guards/slide-source-identity', () => ({ importedSlideShapeId: (shape: any) => shape.sourceId }));
 vi.mock('../../lib/onlyoffice/readonly', () => ({ getReadonlyMode: () => state.readonly }));
-afterEach(() => { document.body.replaceChildren(); state.readonly = false; });
+afterEach(() => { document.body.replaceChildren(); state.readonly = false; resetUnsavedChanges(); });
 class Timing {
   effects: any[] = [];
   setParent() {}
@@ -54,6 +55,13 @@ it('checks native presence without serializing the metadata on every object or s
   expect(read).not.toHaveBeenCalled();
   expect(readNativeTeaching()?.revision).toBe('revision');
   expect(read).toHaveBeenCalledOnce();
+});
+it('marks teaching writes dirty so the host saves them before reporting success', () => {
+  mount();
+  resetUnsavedChanges();
+  expect(hasUnsavedChanges()).toBe(false);
+  replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions: [] });
+  expect(hasUnsavedChanges()).toBe(true);
 });
 it('changes one page with CAS and invalidates audio after text changes', () => {
   const { logic } = mount();
@@ -359,4 +367,43 @@ it.each(['practice', 'pbl', 'discussion'])('projects %s as a bound interaction r
     expectedSourceRevision: value.sourceRevision, classroom: value.classroom, changedPageIds: ['page'] }, 1);
   expect(readNativeTeaching()!.pages[0].actions[0].response).toEqual(response);
   expect(readNativeTeaching()!.pages[0].actions[0].referenceAnswer).toEqual({ summary: 'Updated reference', keyPoints: [] });
+});
+
+it('carries accepted script provenance atomically with speech and preserves it through older page writers', async () => {
+  const { logic } = mount(false, [{ cSld: { spTree: [] } }]);
+  const enrichment = { schemaVersion: 'deckwise-teaching-enrichment/1' as const,
+    originalPages: [{ pageId: 'page', pageNumber: 1 }], script: { sha256: 'a'.repeat(64), policy: 'preserve' as const,
+      silentPageIds: [], segments: [{ id: 'segment-1', text: 'Exact. 1.25 kg.', sourceLine: 1, pageId: 'page', actionId: 'speech' }] } };
+  const opened = (await routeNativeTeaching('open', {}, 1))!.value as any;
+  expect(opened.enrichmentCapabilities).toEqual({ version: 1 });
+  const written = (await routeNativeTeaching('write', { viewId: opened.viewId, expectedTeachingRevision: opened.project.teachingRevision,
+    actions: [{ id: 'speech', type: 'speech', text: 'Exact. 1.25 kg.' }], enrichment }, 1))!.value as any;
+  expect(written.enrichment).toEqual(enrichment);
+  expect(logic.StartAction).toHaveBeenCalledOnce();
+  const oldWriter = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: written.project.teachingRevision, pageId: 'page',
+    actions: [{ id: 'speech', type: 'speech', text: 'Teacher edit' }] });
+  expect(oldWriter.enrichment).toEqual(enrichment);
+  expect(readNativeTeaching()?.pages[0].actions[0].text).toBe('Teacher edit');
+  prepareNativeTeachingSave();
+  expect(readNativeTeaching()?.enrichment).toEqual(enrichment);
+  expect(() => replaceNativeTeachingPage({ documentId: 'document', expectedRevision: oldWriter.revision, pageId: 'page', actions: [],
+    enrichment: { ...enrichment, originalPages: [{ pageId: 'foreign', pageNumber: 1 }] } })).toThrow('identity');
+});
+
+it('rejects unsupported source metadata before changing native history or speech', async () => {
+  const { logic } = mount();
+  const opened = (await routeNativeTeaching('open', {}, 1))!.value as any;
+  await expect(routeNativeTeaching('write', { viewId: opened.viewId, expectedTeachingRevision: opened.project.teachingRevision,
+    actions: [], enrichment: { schemaVersion: 'future', originalPages: [] } }, 1)).rejects.toThrow('enrichment');
+  expect(readNativeTeaching()?.pages[0].actions[0].text).toBe('Before');
+  expect(logic.StartAction).not.toHaveBeenCalled();
+});
+
+
+it('rejects an assessment insertion for another view before preparing visible changes', async () => {
+  const { logic } = mount(false, [{ cSld: { spTree: [] } }]);
+  await expect(routeNativeTeaching('assessment-insert', { viewId: 'other.page', expectedTeachingRevision: 'revision' }, 1))
+    .rejects.toThrow('view changed');
+  expect(readNativeTeaching()?.pages).toHaveLength(1);
+  expect(logic.StartAction).not.toHaveBeenCalled();
 });

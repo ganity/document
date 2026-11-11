@@ -1,3 +1,4 @@
+import { prepareAssessmentInsertion, type AssessmentProjection } from "./agent-plugin/slide-assessment-insertion";
 import { prepareQuizProjection } from './agent-plugin/slide-quiz-projection';
 import { prepareAssessmentText } from './agent-plugin/slide-assessment-text';
 import { renderNativeSlide } from './deckwise-slide-preview';
@@ -6,7 +7,7 @@ import { readPresentationShapeText } from './agent-plugin/slide-text-read';
 import { getReadonlyMode } from './onlyoffice/readonly';
 import { getEditorApi } from './agent-plugin/editor-bridge';
 import { deckwisePageLineage } from './deckwise-page-lineage';
-import { replaceNativeAssessments, assertNativeTeachingAnimations, readNativeTeaching, replaceNativeTeachingPage, nativeTeachingAudio, setNativeTeachingLock, nativeTeachingObjects, adoptNativeTeachingAudio, confirmNativeTeachingPage } from './deckwise-native-teaching';
+import { insertNativeTeachingAssessment, replaceNativeAssessments, assertNativeTeachingAnimations, readNativeTeaching, replaceNativeTeachingPage, nativeTeachingAudio, setNativeTeachingLock, nativeTeachingObjects, adoptNativeTeachingAudio, confirmNativeTeachingPage } from './deckwise-native-teaching';
 
 /** Return undefined only for a legacy document. Native documents never write through the legacy Host. */
 export async function routeNativeTeaching(operation: string, args: Record<string, unknown>, pageNumber: number): Promise<{ value: unknown } | undefined> {
@@ -57,7 +58,7 @@ export async function routeNativeTeaching(operation: string, args: Record<string
           metadata: { ...(interaction?.questionId ? { nativeQuestionElementId: interaction.questionId } : {}), assessmentSpeechIds: Object.fromEntries((checkpoint ? [discussion ? checkpoint.id : p.pageId] : []).map(id => [id, p.actions.find(s => s.type === 'speech')?.id ?? `${id}-question-tts`])) } };
       }) } });
   const view = () => {
-    return { nativeTeaching: true, readOnly: getReadonlyMode(), teaching: requirements.find(p => p.pageId === page.pageId)?.teaching, teachingRequirements: requirements, viewId: teaching.documentId + '.' + page.pageId, pageId: page.pageId, pageNumber,
+    return { nativeTeaching: true, enrichmentCapabilities: { version: 1 }, ...(teaching.enrichment ? { enrichment: teaching.enrichment } : {}), readOnly: getReadonlyMode(), teaching: requirements.find(p => p.pageId === page.pageId)?.teaching, teachingRequirements: requirements, viewId: teaching.documentId + '.' + page.pageId, pageId: page.pageId, pageNumber,
       ...(page.actions.some(a => a.type === 'interaction_checkpoint' && a.checkpointKind === 'chapter_summary') ? (page.actions.some(a => a.type === 'interaction_checkpoint' && isDiscussion(a)) ? { embeddedAssessment: assessment() } : { assessment: assessment() }) : {}),
       project: { schemaVersion: 'deckwise-courseware/1', projectId: teaching.documentId, taskType: 'plain', title: typeof teaching.title === 'string' ? teaching.title : 'Native teaching', teachingRevision: teaching.revision,
         ...(generation?.educationContext ? { educationContext: generation.educationContext } : {}),
@@ -150,9 +151,20 @@ export async function routeNativeTeaching(operation: string, args: Record<string
     nativeTeachingHistory(operation === 'undo');
     return routeNativeTeaching('open', {}, pageNumber);
   }
+  if (operation === 'assessment-insert') {
+    if (args.viewId !== teaching.documentId + '.' + page.pageId) throw new Error('Native teaching view changed');
+    const projection = args.projection as AssessmentProjection;
+    if (projection?.slideId !== args.pageId) throw new Error('Assessment projection identity changed');
+    const change = prepareAssessmentInsertion(pageNumber - 1, projection);
+    insertNativeTeachingAssessment({ documentId: teaching.documentId, expectedRevision: String(args.expectedTeachingRevision),
+      afterPageId: page.pageId, pageId: String(args.pageId), actions: args.actions as Parameters<typeof insertNativeTeachingAssessment>[0]['actions'],
+      enrichment: args.enrichment as Parameters<typeof insertNativeTeachingAssessment>[0]['enrichment'], quiz: args.quiz, change });
+    return routeNativeTeaching('open', {}, pageNumber + 1);
+  }
   if (operation === 'write') {
     if (args.viewId !== teaching.documentId + '.' + page.pageId) throw new Error('Native teaching view changed');
     const next = replaceNativeTeachingPage({ documentId: teaching.documentId, expectedRevision: String(args.expectedTeachingRevision), pageId: page.pageId,
+      enrichment: args.enrichment as Parameters<typeof replaceNativeTeachingPage>[0]['enrichment'],
       semantics: args.semantics as Parameters<typeof replaceNativeTeachingPage>[0]['semantics'],
       actions: args.actions as Parameters<typeof replaceNativeTeachingPage>[0]['actions'] });
     return routeNativeTeaching('open', {}, next.pages.findIndex(p => p.pageId === page.pageId) + 1);

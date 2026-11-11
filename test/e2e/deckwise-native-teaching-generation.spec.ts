@@ -6,6 +6,8 @@ test('generated lesson closes the native edit, media, save, reopen and playback 
   test.setTimeout(240000);
   const fixture = process.env.DECKWISE_NATIVE_GENERATED_FIXTURE;
   test.skip(!fixture, 'Requires a lesson produced by the real Desktop generation/Host test');
+  if (process.env.DECKWISE_TEACHING_PREVIEW_FILE) await page.route('**/.deckwise/teaching-preview.mjs*', route =>
+    route.fulfill({ path: process.env.DECKWISE_TEACHING_PREVIEW_FILE!, contentType: 'text/javascript' }));
   const original = await readFile(fixture + '/native.pptx');
   const initial = JSON.parse(await readFile(fixture + '/teaching.json', 'utf8'));
   const video = toBase64(await readFile(fixture + '/video.mp4'));
@@ -36,7 +38,7 @@ test('generated lesson closes the native edit, media, save, reopen and playback 
       if (event.data?.type !== 'document:teaching-request') return;
       const operation = event.data.payload.operation;
       (window as any).nativeHostCalls.push(operation);
-      if (!['tts:models', 'tts:list'].includes(operation)) throw new Error('Unexpected legacy teaching request: ' + operation);
+      if (!['tts:models', 'tts:list', 'media:list'].includes(operation)) throw new Error('Unexpected legacy teaching request: ' + operation);
       (document.querySelector('#editorFrame') as HTMLIFrameElement).contentWindow!.postMessage({
         type: 'document:teaching-response', id: event.data.id, payload: { result: [] },
       }, location.origin);

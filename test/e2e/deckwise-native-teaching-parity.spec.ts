@@ -10,6 +10,7 @@ test('native visual evidence and assessment pictures survive real Office save an
   const binding = { projectId: 'parity', documentId: 'lesson', sessionId: 'isolated' };
   await page.goto('/embed-demo.html');
   await page.evaluate(() => {
+    document.querySelector('#status')!.textContent = 'loading';
     document.querySelector('#log')!.setAttribute('style', 'display:none');
     (document.querySelector('#editorFrame') as HTMLIFrameElement).src = '/editor?embed=1&deckwise=1&locale=zh-CN';
   });
