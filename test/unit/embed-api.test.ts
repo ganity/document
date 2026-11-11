@@ -419,7 +419,7 @@ describe('embed-api', () => {
       const { deckwiseEditorBridge } = await import('../../lib/deckwise-editor-bridge');
       const router = await import('../../lib/deckwise-native-teaching-router');
       const context = vi.spyOn(deckwiseEditorBridge, 'getContext').mockReturnValue({
-        ...owner, editGeneration: 4, kind: 'slide', page: 1, selectedText: '', selectionCharacters: 0, readOnly: false, capabilities: [],
+        ...owner, editGeneration: 4, kind: 'slide', page: 1, selectedText: '', selectionCharacters: 0, selectedObjects: [], readOnly: false, capabilities: [],
       });
       const route = vi.spyOn(router, 'routeNativeTeaching').mockResolvedValue({ value: { saved: true } });
       try {
