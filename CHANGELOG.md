@@ -7,6 +7,9 @@ notes. Entries describe what users experience, not internal refactors.
 
 ## [Unreleased]
 
+- Acknowledge native teaching initialization independently of sidebar mounting
+  and visibility, so closed panels and hidden DeckWise workers can execute tools.
+
 - Play speech-linked effects from saved native PPT animations, including separate
   entrance/exit effects on one object. Report missing native effects instead of
   manufacturing playback-only animations.

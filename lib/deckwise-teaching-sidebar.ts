@@ -2647,7 +2647,6 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       };
       setOpen(open);
       render();
-      send('document:teaching-ready', {});
       return;
     }
   };

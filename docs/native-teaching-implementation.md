@@ -120,3 +120,11 @@ preserve paragraph and run formatting. The browser regression verifies visible
 text and image count through Undo/Redo and save/reopen, as well as practice text
 and its original font size. Desktop generation also packages full Quiz data for
 fixed export before any manual assessment edit.
+
+### Native readiness without sidebar visibility
+
+`document:teaching-enable` acknowledges `document:teaching-ready` after the bound
+SDK context and native teaching initialization succeed. The sidebar no longer
+owns this acknowledgement: a closed panel or hidden host does not need sidebar
+DOM to execute source-bound native tools. Failed initialization emits the existing
+command error and must not emit readiness. See `deckwise-teaching-ready.test.ts`.

@@ -254,6 +254,7 @@ async function handleCommand(message: EmbedMessage): Promise<void> {
         teachingSidebar?.dispose();
         teachingSidebar = mountDeckwiseTeachingSidebar(payload.binding, postToParent);
         if (moduleUi.teachingOpen !== undefined) teachingSidebar.setOpen(moduleUi.teachingOpen);
+        postToParent('document:teaching-ready');
         break;
       case 'document:teaching-response':
         teachingSidebar?.receive(message.id ?? '', payload);
