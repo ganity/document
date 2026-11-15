@@ -121,6 +121,20 @@ text and image count through Undo/Redo and save/reopen, as well as practice text
 and its original font size. Desktop generation also packages full Quiz data for
 fixed export before any manual assessment edit.
 
+
+## Replacing persisted speech motions, 2026-11-11
+
+Replacing or removing a speech cue now reconciles its previous native timing
+mirror in the same atomic teaching write. Matching includes the logical target,
+preset and duration; unrelated native effects and explicitly linked imported
+animations are retained. A failed timing/carrier commit restores the old tree.
+This prevents an obsolete zoom entrance from surviving a correction to fade and
+conflicting with the fixed player after save/reopen. Existing audio parts and
+assessment pages are untouched. The real-fixture regression
+`deckwise-native-speech-motion-replacement.spec.ts` checks the SDK tree, saved
+PPTX, reopen and subsequent removal; its input is an explicitly supplied copy of
+the real generated lesson, not a remote model or TTS mock.
+
 ### Native readiness without sidebar visibility
 
 `document:teaching-enable` acknowledges `document:teaching-ready` after the bound
@@ -128,3 +142,18 @@ SDK context and native teaching initialization succeed. The sidebar no longer
 owns this acknowledgement: a closed panel or hidden host does not need sidebar
 DOM to execute source-bound native tools. Failed initialization emits the existing
 command error and must not emit readiness. See `deckwise-teaching-ready.test.ts`.
+
+## Grouped Quiz picture recovery (2026-11-15)
+
+The native assessment projector resolves exported object names recursively and
+matches the question anchor without export-inserted line breaks. A complete
+assessment group is rebuilt from the canonical Quiz projection at its original
+stacking position. A group containing any unowned object is rejected. Native
+history, slide identity and nested object arrays are rechecked after image
+preloading; transaction rollback restores the original objects. This also repairs
+already-saved grouped Quiz files when adopting an existing image task.
+
+Regression coverage: `test/unit/slide-quiz-projection.test.ts` and
+`test/e2e/deckwise-grouped-quiz-recovery.spec.ts`. The latter takes a real generated
+fixture through projection, native save and reopen and checks the picture plus
+unchanged teaching actions. It uses a local PNG and makes no paid request.

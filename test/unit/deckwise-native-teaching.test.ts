@@ -1,6 +1,6 @@
 import { webcrypto } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
-import { initializeNativeTeaching, assertNativeTeachingAnimations, hasNativeTeaching, readNativeTeaching, replaceNativeTeachingPage, nativeTeachingAudio, adoptNativeTeachingAudio, NATIVE_MEDIA_NAMESPACE, NATIVE_TEACHING_NAMESPACE, nativeTeachingObjects, nativeTeachingTarget, setNativeTeachingLock, prepareNativeTeachingSave } from '../../lib/deckwise-native-teaching';
+import { initializeNativeTeaching, insertNativeTeachingAssessment, assertNativeTeachingAnimations, hasNativeTeaching, readNativeTeaching, replaceNativeTeachingPage, nativeTeachingAudio, adoptNativeTeachingAudio, NATIVE_MEDIA_NAMESPACE, NATIVE_TEACHING_NAMESPACE, nativeTeachingObjects, nativeTeachingTarget, setNativeTeachingLock, prepareNativeTeachingSave } from '../../lib/deckwise-native-teaching';
 import { routeNativeTeaching } from '../../lib/deckwise-native-teaching-router';
 import { attentionGeometry, selectedAttentionTargets } from '../../lib/deckwise-teaching-preview';
 import { hasUnsavedChanges, resetUnsavedChanges } from '../../lib/unsaved-guard';
@@ -21,6 +21,7 @@ class Timing {
       asc_getDuration: () => duration, asc_putDuration: (value: number) => { duration = value; }, asc_putDelay() {} };
   }
   addEffectsToMainSequence(effects: any[]) { this.effects.push(...effects); }
+  removeEffects(effects: any[]) { this.effects = this.effects.filter(effect => !effects.includes(effect)); }
 }
 function mount(locked = false, slides?: any[]) {
   const data = { schemaVersion: 'deckwise-native-teaching/1', documentId: 'document', revision: 'revision', pages: [{ pageId: 'page', locked, actions: [{ id: 'speech', type: 'speech', text: 'Before', audioAssetId: 'old', durationMs: 1000 }] }], media: [], identity: { pages: [{ pageId: 'page', objects: [{ logicalId: 'object', sourceShapeId: '4', type: 'shape' }] }] } };
@@ -129,6 +130,14 @@ it('locks and unlocks the native page with revision CAS', () => {
   expect(() => replaceNativeTeachingPage({ documentId: 'document', expectedRevision: next.revision, pageId: 'page', actions: [] })).toThrow('locked');
   const unlocked = setNativeTeachingLock({ documentId: 'document', expectedRevision: next.revision, pageId: 'page', locked: false });
   expect(unlocked.pages[0].locked).toBe(false);
+});
+
+it('distinguishes native groups from leaf narration targets', async () => {
+  const group = { sourceId: '10', spTree: [{ sourceId: '4', x: 1, y: 2, extX: 20, extY: 10 }], extX: 40, extY: 30 };
+  mount(false, [{ cSld: { spTree: [group] } }]);
+  const context = (await routeNativeTeaching('narration-context', {}, 1))!.value as any;
+  expect(context.evidence.objects.find((object: any) => object.objectId === 'object')?.kind).toBe('shape');
+  expect(context.evidence.objects.find((object: any) => object.objectId !== 'object')?.kind).toBe('group');
 });
 
 it('resolves nested native teaching targets without replacing them with their parent group', () => {
@@ -269,6 +278,22 @@ it.each(['highlight', 'spotlight'])('resolves generated %s and animation against
   } finally { vi.unstubAllGlobals(); }
 });
 
+it('resolves newly repaired attention using retained embedded audio without re-adoption', async () => {
+  vi.stubGlobal('crypto', webcrypto);
+  try {
+    const slide = { cSld: { spTree: [{ sourceId: '4', Id: 'shape-4' }] }, timing: null as Timing | null, setTiming(value: Timing | null) { this.timing = value; } };
+    mount(false, [slide]);
+    const bytes = new TextEncoder().encode('existing audio').buffer;
+    const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
+    const adopted = await adoptNativeTeachingAudio({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actionId: 'speech', assetId: 'tts-existing', sha256, mimeType: 'audio/mpeg', durationMs: 1200, bytes });
+    const repaired = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: adopted.revision, pageId: 'page', actions: [{ ...adopted.pages[0].actions[0], attention: { type: 'spotlight', objectIds: ['object'], animation: 'fadeIn' } }] });
+    expect(repaired.pages[0].actions[0].attention).toBeUndefined();
+    expect(repaired.pages[0].actions[0]).toMatchObject({ text: 'Before', audioAssetId: 'tts-existing', durationMs: 1200 });
+    expect(repaired.pages[0].actions[0].visualCues).toHaveLength(2);
+    expect(repaired.media).toEqual(adopted.media);
+  } finally { vi.unstubAllGlobals(); }
+});
+
 it('persists manual speech animation cues with unrelated native effects and rolls back a failed carrier write', () => {
   const previous = new Timing(); previous.effects.push(previous.createEffect('unrelated', 1, 10, 0));
   const slide = { cSld: { spTree: [{ sourceId: '4', Id: 'shape-4' }] }, timing: previous, setTiming(value: Timing) { this.timing = value; } };
@@ -406,4 +431,75 @@ it('rejects an assessment insertion for another view before preparing visible ch
     .rejects.toThrow('view changed');
   expect(readNativeTeaching()?.pages).toHaveLength(1);
   expect(logic.StartAction).not.toHaveBeenCalled();
+});
+
+it.each(['import', 'ppt-master', 'scene'])('keeps the %s original body editor when old narration contains a question', async origin => {
+  mount(false, [{ cSld: { spTree: [] } }]);
+  const enrichment = { schemaVersion: 'deckwise-teaching-enrichment/1' as const, originalPages: [{ pageId: 'page', pageNumber: 1 }] };
+  const actions = [{ id: 'lecture', type: 'speech', text: `Original ${origin} lecture`, audioAssetId: 'old', durationMs: 1000 },
+    { id: 'q', type: 'interaction_checkpoint', checkpointKind: 'chapter_summary', checkpointId: 'q', chapterId: 'page', chapterTitle: 'Practice', question: 'Why?',
+      response: { kind: 'short_answer', options: [], answerIndices: [] }, referenceAnswer: { summary: 'Because', keyPoints: [] }, context: { chapterSummary: 'Practice', sourceSceneIds: ['page'] } }];
+  replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions, enrichment });
+  const before = structuredClone(readNativeTeaching());
+  const opened = (await routeNativeTeaching('open', {}, 1))!.value as any;
+  expect(opened.assessment).toBeUndefined();
+  expect(opened.embeddedAssessment).toBeUndefined();
+  expect(readNativeTeaching()).toEqual(before);
+  expect(opened.project.pages[0].actions[0].text).toBe(`Original ${origin} lecture`);
+});
+
+it.each(['quiz', 'checkpoint'] as const)('uses the accepted %s page purpose for short-answer activities after reopen', async kind => {
+  mount(false, [{ cSld: { spTree: [] } }]);
+  const enrichment = { schemaVersion: 'deckwise-teaching-enrichment/1' as const, originalPages: [{ pageId: 'page', pageNumber: 1 }],
+    plan: { sha256: 'c'.repeat(64), units: [{ id: 'review', title: 'Review', evidence: 'Because', kind, pageIds: ['page'], activityId: 'q' }] } };
+  replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', enrichment, actions: [
+    { id: 'reading', type: 'speech', text: 'Why?' },
+    { id: 'q', type: 'interaction_checkpoint', checkpointKind: 'chapter_summary', checkpointId: 'q', chapterId: 'page', chapterTitle: 'Review', question: 'Why?',
+      response: { kind: 'short_answer', options: [], answerIndices: [] }, referenceAnswer: { summary: 'Because', keyPoints: [] }, context: { chapterSummary: 'Review', sourceSceneIds: ['page'] } },
+  ] });
+  for (let reopen = 0; reopen < 2; reopen++) {
+    const view = (await routeNativeTeaching('open', {}, 1))!.value as any;
+    const projected = kind === 'quiz' ? view.assessment : view.embeddedAssessment;
+    expect(projected.classroom.scenes[0].type).toBe(kind === 'quiz' ? 'quiz' : 'slide');
+    expect(projected.classroom.scenes[0].actions[0].text).toBe('Why?');
+    expect(readNativeTeaching()!.pages).toHaveLength(1);
+  }
+});
+
+it('inserts an accepted activity as a new physical slide and retains the original lecture and audio', async () => {
+  const original = { cSld: { spTree: [] } }, added = { cSld: { spTree: [] } }, slides = [original];
+  mount(false, slides);
+  const enrichment = { schemaVersion: 'deckwise-teaching-enrichment/1' as const, originalPages: [{ pageId: 'page', pageNumber: 1 }],
+    plan: { sha256: 'c'.repeat(64), units: [{ id: 'review', title: 'Review', evidence: 'Because', kind: 'checkpoint' as const, pageIds: [] as string[] }] } };
+  const before = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions: readNativeTeaching()!.pages[0].actions, enrichment });
+  const originalPage = structuredClone(before.pages[0]);
+  const mapped = { ...enrichment, plan: { ...enrichment.plan, units: [{ ...enrichment.plan.units[0], pageIds: ['activity'], activityId: 'q' }] } };
+  insertNativeTeachingAssessment({ documentId: 'document', expectedRevision: before.revision, afterPageId: 'page', pageId: 'activity', enrichment: mapped,
+    actions: [{ id: 'reading', type: 'speech', text: 'Why?' },
+      { id: 'q', type: 'interaction_checkpoint', checkpointKind: 'chapter_summary', checkpointId: 'q', chapterId: 'activity', chapterTitle: 'Review', question: 'Why?',
+        response: { kind: 'short_answer', options: [], answerIndices: [] }, referenceAnswer: { summary: 'Because', keyPoints: [] }, context: { chapterSummary: 'Review', sourceSceneIds: ['page'] } }],
+    change: { assertCurrent() {}, apply() { slides.splice(1, 0, added); return added; }, restore() { slides.splice(1, 1); } },
+  });
+  expect(slides).toHaveLength(2);
+  const saved = readNativeTeaching()!;
+  expect(saved.pages.map(p => p.pageId)).toEqual(['page', 'activity']);
+  expect(saved.pages[0]).toEqual(originalPage);
+  const opened = (await routeNativeTeaching('open', {}, 2))!.value as any;
+  expect(opened.embeddedAssessment.classroom.scenes[1].actions[1].question).toBe('Why?');
+});
+
+
+it('replaces and removes mirrored speech motions without accumulating old native effects or losing manual effects', () => {
+  const previous = new Timing(); previous.effects.push(previous.createEffect('unrelated', 1, 10, 0));
+  const slide = { cSld: { spTree: [{ sourceId: '4', Id: 'shape-4' }] }, timing: previous, setTiming(value: Timing) { this.timing = value; } };
+  mount(false, [slide]);
+  const actions = [{ id: 'speech', type: 'speech', text: 'Before', visualCues: [{ id: 'cue', atMs: 0, endMs: 600,
+    effect: { type: 'element_animation', elementId: 'object', effect: 'zoomIn' } }] }];
+  const first = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions });
+  const repaired = structuredClone(actions); repaired[0].visualCues[0].effect.effect = 'fadeIn';
+  const second = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: first.revision, pageId: 'page', actions: repaired });
+  expect(slide.timing.getAllAnimEffects().map(effect => [effect.getObjectId(), effect.cTn.presetID])).toEqual([['unrelated', 10], ['shape-4', 10]]);
+  const third = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: second.revision, pageId: 'page', actions: [{ id: 'speech', type: 'speech', text: 'Before' }] });
+  expect(slide.timing.getAllAnimEffects().map(effect => effect.getObjectId())).toEqual(['unrelated']);
+  expect(third.pages[0].actions[0].text).toBe('Before');
 });

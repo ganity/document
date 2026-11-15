@@ -70,8 +70,9 @@ export function prepareSpeechNativeSchedule(
           owner && shapes.includes(owner);
           owner = owner.group as Shape | undefined
         ) {
-          candidates = existing.filter((effect) => effect.getObjectId() === owner!.Id);
-          if (candidates.length) break;
+          const own = existing.filter((effect) => effect.getObjectId() === owner!.Id);
+          candidates.push(...own);
+          if (cue.nativeAnimation && own.length) break;
         }
         let effect: Effect;
         if (cue.nativeAnimation) {

@@ -22,6 +22,25 @@ export async function routeNativeTeaching(operation: string, args: Record<string
     !!p && typeof p === 'object' && typeof Reflect.get(p, 'pageId') === 'string' && !!Reflect.get(p, 'teaching'))
     .filter(p => teaching.pages.some(page => page.pageId === p.pageId)).map(({ pageId, teaching }) => ({ pageId, teaching })) : [];
   const isDiscussion = (action: any) => !action.response?.kind || ['discussion', 'practice', 'pbl'].includes(action.response.kind);
+  // Page purpose comes from saved planning, never from a question mixed into a lecture.
+  const pageRole = (p: typeof page): 'quiz' | 'checkpoint' | undefined => {
+    const saved = (teaching.assessments as Record<string, unknown> | undefined)?.[p.pageId];
+    const planned = Array.isArray(generation?.pages) ? generation.pages.find(g => g?.pageId === p.pageId) : undefined;
+    if (saved || planned?.quiz || planned?.teaching?.pageType === 'quiz') return 'quiz';
+    if (['interactive', 'pbl'].includes(planned?.teaching?.pageType)) return 'checkpoint';
+    if (planned) return;
+    const unit = teaching.enrichment?.plan?.units.find(u => u.kind !== 'teaching' && u.activityId && u.pageIds.includes(p.pageId) && p.actions.some(a => a.id === u.activityId));
+    if (unit) return unit.kind === 'quiz' ? 'quiz' : 'checkpoint';
+    if (teaching.enrichment?.originalPages.some(original => original.pageId === p.pageId)) return;
+    // Older standalone activities have only their question reading and a checkpoint.
+    const checkpoints = p.actions.filter(a => a.type === 'interaction_checkpoint' && a.checkpointKind === 'chapter_summary');
+    if (checkpoints.length !== 1) return;
+    const checkpoint = checkpoints[0];
+    const response = checkpoint.response as { options?: string[] } | undefined;
+    const reading = [checkpoint.question, ...(response?.options ?? []).map((option, i) => `${String.fromCharCode(65 + i)}. ${option}`)].join('\n');
+    if (p.actions.some(a => a.type !== 'interaction_checkpoint' && (a.type !== 'speech' || a.text !== reading))) return;
+    return isDiscussion(checkpoint) ? 'checkpoint' : 'quiz';
+  };
   const interactionCanvas = (p: typeof page, number: number, checkpoint: any) => {
     const objects = nativeTeachingObjects(number);
     const targets = objects.filter(({ nativeShape }) => readPresentationShapeText(nativeShape).trim() === String(checkpoint?.question ?? '').trim());
@@ -32,7 +51,7 @@ export async function routeNativeTeaching(operation: string, args: Record<string
   const assessment = () => ({ nativeTeaching: true, readOnly: getReadonlyMode(), sourceSha256, canvas: { width: 1000, height: (() => { const logic = (getEditorApi() as any)?.WordControl?.m_oLogicDocument; return (logic?.GetHeightMM?.() ?? 562.5) / (logic?.GetWidthMM?.() ?? 1000) * 1000; })() }, projectId: teaching.documentId, revision: teaching.revision, sourceRevision: teaching.revision,
     classroom: { id: teaching.documentId, stage: { id: teaching.documentId, name: String(teaching.title ?? 'Teaching'), createdAt: 0, updatedAt: 0 }, createdAt: new Date(0).toISOString(),
       scenes: teaching.pages.map((p, index) => {
-        let checkpoint = p.actions.find(a => a.type === 'interaction_checkpoint' && a.checkpointKind === 'chapter_summary');
+        let checkpoint = pageRole(p) ? p.actions.find(a => a.type === 'interaction_checkpoint' && a.checkpointKind === 'chapter_summary') : undefined;
         const details = (teaching.checkpointDetails as Record<string, any> | undefined)?.[p.pageId];
         if (checkpoint && details?.actionId === checkpoint.id) checkpoint = { ...checkpoint,
           ...(details.constraintPrompt ? { constraintPrompt: details.constraintPrompt } : {}),
@@ -44,7 +63,7 @@ export async function routeNativeTeaching(operation: string, args: Record<string
             question: checkpoint.question, options: (response?.options ?? []).map((label: string, i: number) => ({ value: String.fromCharCode(65 + i), label })),
             answer: (response?.answerIndices ?? []).map((i: number) => String.fromCharCode(65 + i)), hasAnswer: true, points: 1,
             referenceAnswer: reference?.summary ?? '', keyPoints: reference?.keyPoints ?? [] }] } : { type: 'slide', canvas: { id: p.pageId, viewportSize: 1280, viewportRatio: 0.5625, theme: { backgroundColor: '#fff', themeColors: [], fontColor: '#222', fontName: 'Arial' }, elements: [] } });
-        const discussion = checkpoint && isDiscussion(checkpoint);
+        const discussion = checkpoint && pageRole(p) === 'checkpoint';
         // Project the MAIC contract explicitly; native playback fields stay in the document.
         const interactionAction = discussion && checkpoint ? {
           id: checkpoint.id, type: checkpoint.type, checkpointKind: checkpoint.checkpointKind,
@@ -59,7 +78,7 @@ export async function routeNativeTeaching(operation: string, args: Record<string
       }) } });
   const view = () => {
     return { nativeTeaching: true, enrichmentCapabilities: { version: 1 }, ...(teaching.enrichment ? { enrichment: teaching.enrichment } : {}), readOnly: getReadonlyMode(), teaching: requirements.find(p => p.pageId === page.pageId)?.teaching, teachingRequirements: requirements, viewId: teaching.documentId + '.' + page.pageId, pageId: page.pageId, pageNumber,
-      ...(page.actions.some(a => a.type === 'interaction_checkpoint' && a.checkpointKind === 'chapter_summary') ? (page.actions.some(a => a.type === 'interaction_checkpoint' && isDiscussion(a)) ? { embeddedAssessment: assessment() } : { assessment: assessment() }) : {}),
+      ...(pageRole(page) === 'checkpoint' ? { embeddedAssessment: assessment() } : pageRole(page) === 'quiz' ? { assessment: assessment() } : {}),
       project: { schemaVersion: 'deckwise-courseware/1', projectId: teaching.documentId, taskType: 'plain', title: typeof teaching.title === 'string' ? teaching.title : 'Native teaching', teachingRevision: teaching.revision,
         ...(generation?.educationContext ? { educationContext: generation.educationContext } : {}),
         source: { revision: teaching.revision, sha256: deckwisePageLineage.context()?.sourceSha256 ?? '' }, pages: teaching.pages },
@@ -122,9 +141,9 @@ export async function routeNativeTeaching(operation: string, args: Record<string
       width: api?.WordControl?.m_oLogicDocument?.GetWidthMM?.() ?? 0, height: api?.WordControl?.m_oLogicDocument?.GetHeightMM?.() ?? 0,
       notes: notes || (typeof plannedPage?.narration === 'string' ? plannedPage.narration : ''), visualSummary: text,
       objects: nativeTeachingObjects(pageNumber).map(({ nativeShape, objectId, name }) => {
-        const shape = nativeShape as unknown as { x?: number; y?: number; extX?: number; extY?: number; isImage?(): boolean };
+        const shape = nativeShape as unknown as { x?: number; y?: number; extX?: number; extY?: number; spTree?: unknown[]; isImage?(): boolean };
         const text = readPresentationShapeText(nativeShape);
-        return { objectId, name, aliases: [name], text, kind: text.trim() ? 'text' : shape.isImage?.() ? 'image' : 'shape',
+        return { objectId, name, aliases: [name], text, kind: shape.spTree?.length ? 'group' : text.trim() ? 'text' : shape.isImage?.() ? 'image' : 'shape',
           bbox: [shape.x ?? 0, shape.y ?? 0, shape.extX ?? 0, shape.extY ?? 0] };
       }),
     } } };

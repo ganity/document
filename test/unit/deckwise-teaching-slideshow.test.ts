@@ -43,6 +43,33 @@ afterEach(() => {
   show = undefined;
   document.body.replaceChildren();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+it('defers control layout writes outside ResizeObserver delivery and cancels them on exit', () => {
+  let resized: () => void = () => {};
+  const disconnect = vi.fn();
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback: () => void) { resized = callback; }
+    observe() {}
+    disconnect = disconnect;
+  });
+  show = createTeachingSlideshow({ doc: document, page: 1, onReady: vi.fn(), onExit: vi.fn(), onError: vi.fn() });
+  const height = vi.spyOn(show.controls, 'getBoundingClientRect').mockReturnValue({ height: 128 } as DOMRect);
+  const style = vi.spyOn(show.surface.style, 'setProperty');
+  resized();
+  resized();
+  expect(style).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(32);
+  expect(style).toHaveBeenCalledExactlyOnceWith('--teaching-controls-height', '128px');
+  resized();
+  vi.advanceTimersByTime(32);
+  expect(style).toHaveBeenCalledTimes(1);
+  height.mockReturnValue({ height: 160 } as DOMRect);
+  resized();
+  show.dispose();
+  vi.advanceTimersByTime(32);
+  expect(style).toHaveBeenCalledTimes(1);
+  expect(disconnect).toHaveBeenCalledOnce();
 });
 it('starts teaching exactly once when the native canvas is ready', () => {
   const ready = vi.fn();

@@ -15,14 +15,18 @@ type Timing = {
   getAllAnimEffects(): Effect[];
   createEffect(id: string, kind: number, preset: number, subtype: number, color: null): Effect;
   addEffectsToMainSequence(effects: Effect[]): void;
+  removeEffects(effects: Effect[]): void;
 };
 type Slide = { timing?: Timing | null; setTiming(value: Timing | null): void };
 
+type MotionAction = { type: string; visualCues?: unknown };
+
 /** Stage a detached timing tree; publish it with media and metadata in one native Undo action. */
-export function prepareNativeTeachingMotions(pageNumber: number, actions: Array<{ type: string; visualCues?: unknown }>) {
-  const groups = actions.filter(action => action.type === 'speech').map(action =>
+export function prepareNativeTeachingMotions(pageNumber: number, actions: MotionAction[], previousActions: MotionAction[]) {
+  const motionGroups = (values: MotionAction[]) => values.filter(action => action.type === 'speech').map(action =>
     (Array.isArray(action.visualCues) ? action.visualCues as AnimationCue[] : []).filter(cue => cue.effect?.type === 'element_animation' && !cue.nativeAnimation));
-  if (!groups.some(group => group.length)) return;
+  const groups = motionGroups(actions), previousGroups = motionGroups(previousActions);
+  if (!groups.some(group => group.length) && !previousGroups.some(group => group.length)) return;
   if (groups.flat().length > 200) throw new Error('Too many native speech animations');
   const context = requireEditorContext();
   const logic = (context.api.WordControl as { m_oLogicDocument: { Slides: Slide[] } }).m_oLogicDocument;
@@ -30,22 +34,35 @@ export function prepareNativeTeachingMotions(pageNumber: number, actions: Array<
   const format = context.AscFormat as unknown as { CTiming: new () => Timing; ExecuteNoHistory<T>(fn: () => T, scope: null, args: [], keepIds: boolean): T };
   if (!slide || typeof slide.setTiming !== 'function' || !format?.CTiming || !format.ExecuteNoHistory)
     throw new Error('Native speech animation persistence is unavailable');
-  const existing = previous?.getAllAnimEffects() ?? [], claimed = new Set<Effect>();
-  const additions = groups.map(group => group.flatMap(cue => {
+  const existing = previous?.getAllAnimEffects() ?? [], claimed = new Set<Effect>(), owned = new Set<Effect>();
+  const describe = (cue: AnimationCue) => {
     const preset = nativeTeachingMotionPreset(cue.effect.effect);
     const shape = nativeTeachingTarget(cue.effect.elementId) as { Id?: string };
     const duration = cue.endMs - cue.atMs;
     if (!preset || !shape?.Id || !Number.isInteger(cue.atMs) || cue.atMs < 0 || !Number.isInteger(duration) || duration < 1 || duration > 5000)
       throw new Error('Invalid native speech animation target or duration');
-    const match = existing.find(effect => !claimed.has(effect) && effect.getObjectId() === shape.Id &&
-      effect.cTn.presetClass === preset.presetClass && effect.cTn.presetID === preset.presetId &&
-      (effect.cTn.presetSubtype ?? 0) === preset.subtype && effect.asc_getDuration() === duration);
+    return { shapeId: shape.Id, preset, duration };
+  };
+  const matches = (effect: Effect, motion: ReturnType<typeof describe>) => effect.getObjectId() === motion.shapeId &&
+    effect.cTn.presetClass === motion.preset.presetClass && effect.cTn.presetID === motion.preset.presetId &&
+    (effect.cTn.presetSubtype ?? 0) === motion.preset.subtype && effect.asc_getDuration() === motion.duration;
+  // Only previous speech mirrors can be removed; unrelated native effects stay intact.
+  for (const cue of previousGroups.flat()) {
+    const motion = describe(cue);
+    const match = existing.find(effect => !owned.has(effect) && matches(effect, motion));
+    if (match) owned.add(match);
+  }
+  const additions = groups.map(group => group.flatMap(cue => {
+    const motion = describe(cue);
+    const match = existing.find(effect => !claimed.has(effect) && matches(effect, motion));
     if (match) { claimed.add(match); return []; }
-    return [{ shapeId: shape.Id, preset, duration }];
+    return [motion];
   }));
-  if (!additions.some(group => group.length)) return;
-  if (actions.some(action => action.type === 'native_animation')) throw new Error('Rebind legacy native animation steps before adding speech animations');
-  if (existing.length + additions.flat().length > 200) throw new Error('Native speech animation limit exceeded');
+  const removals = existing.flatMap((effect, index) => owned.has(effect) && !claimed.has(effect) ? [index] : []);
+  if (!additions.some(group => group.length) && !removals.length) return;
+  if (actions.some(action => action.type === 'native_animation')) throw new Error('Rebind legacy native animation steps before changing speech animations');
+  const expectedCount = existing.length - removals.length + additions.flat().length;
+  if (expectedCount > 200) throw new Error('Native speech animation limit exceeded');
   const table = Reflect.get(context.AscCommon ?? {}, 'g_oTableId') as { m_aPairs?: Record<string, unknown> } | undefined;
   const previousIds = new Set(Object.keys(table?.m_aPairs ?? {}));
   let failure: unknown;
@@ -53,6 +70,10 @@ export function prepareNativeTeachingMotions(pageNumber: number, actions: Array<
     try {
       const next = previous?.createDuplicate() ?? new format.CTiming();
       next.setParent(slide);
+      if (removals.length) {
+        const copied = next.getAllAnimEffects();
+        next.removeEffects(removals.map(index => copied[index]));
+      }
       for (const group of additions) {
         const effects = group.map(({ shapeId, preset, duration }, index) => {
           const effect = next.createEffect(shapeId, preset.presetClass, preset.presetId, preset.subtype, null);
@@ -63,7 +84,13 @@ export function prepareNativeTeachingMotions(pageNumber: number, actions: Array<
         });
         if (effects.length) next.addEffectsToMainSequence(effects);
       }
-      if (next.getAllAnimEffects().length !== existing.length + additions.flat().length)
+      const remaining = [...next.getAllAnimEffects()];
+      if (remaining.length !== expectedCount || groups.flat().some(cue => {
+        const index = remaining.findIndex(effect => matches(effect, describe(cue)));
+        if (index < 0) return true;
+        remaining.splice(index, 1);
+        return false;
+      }))
         throw new Error('Native speech animation readback differs');
       return next;
     } catch (error) { failure = error; return undefined; }

@@ -155,9 +155,16 @@ export function createTeachingSlideshow(input: {
     controls.addEventListener(type, (event) => event.stopPropagation());
   surface.append(canvas, controls);
   input.doc.body.append(surface);
+  let layoutFrame = 0;
   const Observer = input.doc.defaultView?.ResizeObserver;
   const layout = Observer ? new Observer(() => {
-    surface.style.setProperty('--teaching-controls-height', `${controls.getBoundingClientRect().height}px`);
+    // Writing an ancestor during observer delivery makes the SDK treat layout feedback as an editing error.
+    layoutFrame ||= requestAnimationFrame(() => {
+      layoutFrame = 0;
+      const height = `${controls.getBoundingClientRect().height}px`;
+      if (surface.style.getPropertyValue('--teaching-controls-height') !== height)
+        surface.style.setProperty('--teaching-controls-height', height);
+    });
   }) : undefined;
   layout?.observe(controls);
   let disposed = false,
@@ -311,6 +318,7 @@ export function createTeachingSlideshow(input: {
     if (disposed) return;
     disposed = true;
     layout?.disconnect();
+    cancelAnimationFrame(layoutFrame);
     failPending(new Error('原生动画放映已停止'));
     cancelAnimationFrame(frame);
     for (const event of events) api.asc_unregisterCallback(event, changed);

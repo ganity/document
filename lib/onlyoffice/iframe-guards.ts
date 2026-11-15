@@ -1,4 +1,5 @@
 import { installSlideSourceIdentity } from './guards/slide-source-identity';
+import { installNestedSlideAnimations } from './guards/nested-slide-animations';
 import { installOpenFailureGuard } from './open-failure';
 import { injectLocalChromeCss } from './guards/chrome';
 import { shadowSharedWorker } from './guards/shared-worker';
@@ -51,6 +52,7 @@ export function prepareEditorIframe(): boolean {
 
       installOpenFailureGuard(win);
       installSlideSourceIdentity(win);
+      installNestedSlideAnimations(win);
       injectLocalChromeCss(doc);
 
       const sharedWorkerShadowed = shadowSharedWorker(win);

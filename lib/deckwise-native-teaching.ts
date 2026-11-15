@@ -155,6 +155,10 @@ export function replaceNativeTeachingPage(input: {
       }
     }
   }
+  for (const action of actions) {
+    const media = current.media.find(m => m.id === action.audioAssetId && m.mimeType.startsWith('audio/'));
+    if (media) resolveNativeSpeechAttention(current, input.pageId, action, media.durationMs);
+  }
   const changed = next.pages.find((p) => p.pageId === input.pageId)!;
   if (input.semantics) {
     const ids = new Set(nativeTeachingObjects(current.pages.findIndex(p => p.pageId === input.pageId) + 1).map(o => o.objectId));
@@ -165,7 +169,7 @@ export function replaceNativeTeachingPage(input: {
   }
   changed.actions = actions;
   changed.reviewState = 'review';
-  return commitNativeTeaching(next, true, undefined, () => prepareNativeTeachingMotions(current.pages.findIndex(p => p.pageId === input.pageId) + 1, actions));
+  return commitNativeTeaching(next, true, undefined, () => prepareNativeTeachingMotions(current.pages.findIndex(p => p.pageId === input.pageId) + 1, actions, page.actions));
 }
 
 /** Insert one independent assessment; visible content, answer data and source binding share one Undo action. */
@@ -360,6 +364,32 @@ export async function nativeTeachingAudio(assetId: string): Promise<Blob> {
   return new Blob([bytes], { type: item.mimeType });
 }
 
+function resolveNativeSpeechAttention(current: NativeTeaching, pageId: string, action: Action, durationMs: number) {
+  if (action.type === 'speech' && action.attention !== undefined) {
+    const intent = action.attention as { type?: string; objectIds?: unknown[]; animation?: unknown };
+    const ids = intent?.objectIds;
+    const pageNumber = current.pages.findIndex(p => p.pageId === pageId) + 1;
+    const objects = nativeTeachingObjects(pageNumber);
+    if (!intent || !['highlight', 'spotlight'].includes(String(intent.type)) || !Array.isArray(ids) ||
+        ids.length < 1 || ids.length > 8 || new Set(ids).size !== ids.length ||
+        ids.some(id => typeof id !== 'string' || !objects.some(o => o.objectId === id && o.effectTargetEligible)) ||
+        Object.keys(intent).some(key => !['type', 'objectIds', 'animation'].includes(key)) ||
+        intent.animation !== undefined && !['fadeIn', 'pulse', 'zoomIn', 'slideInLeft', 'slideInRight', 'gentleRotate'].includes(String(intent.animation)) ||
+        durationMs > 3600000) throw new Error('Native speech attention target or timing changed');
+    const duration = Math.min(durationMs, 600);
+    const reveal = ['fadeIn', 'zoomIn', 'slideInLeft', 'slideInRight'].includes(String(intent.animation));
+    const added = [
+      ...(intent.animation ? ids.map((id, index) => ({ id: `motion-${action!.id}-${index}`, atMs: 0, endMs: duration,
+        trigger: { version: 1, kind: 'start' }, effect: { type: 'element_animation', elementId: id, effect: intent.animation } })) : []),
+      { id: `focus-${action.id}`, atMs: reveal ? Math.min(duration, durationMs - 1) : 0, endMs: durationMs,
+        effect: intent.type === 'highlight' ? { type: 'highlight', elementIds: ids } : { type: 'spotlight', elementId: ids[0], elementIds: ids.slice(1) } },
+    ];
+    const existing = Array.isArray(action.visualCues) ? action.visualCues : [];
+    action.visualCues = [...existing.filter(cue => !added.some(next => next.id === cue.id)), ...added];
+    delete action.attention;
+  }
+}
+
 /** Adopt only bytes verified against the exact text revision, in the same native history as the action. */
 export async function adoptNativeTeachingAudio(input: {
   documentId: string; expectedRevision: string; pageId: string; actionId: string;
@@ -396,30 +426,10 @@ export async function adoptNativeTeachingAudio(input: {
   next.media = [...next.media.filter(m => m.id !== asset.id), existing?.data ? { ...asset, data: existing.data } : asset];
   action[action.type === 'video_clip' ? 'videoAssetId' : 'audioAssetId'] = asset.id;
   action.durationMs = input.durationMs;
-  if (action.type === 'speech' && action.attention !== undefined) {
-    const intent = action.attention as { type?: string; objectIds?: unknown[]; animation?: unknown };
-    const ids = intent?.objectIds;
-    const pageNumber = current.pages.findIndex(p => p.pageId === input.pageId) + 1;
-    const objects = nativeTeachingObjects(pageNumber);
-    if (!intent || !['highlight', 'spotlight'].includes(String(intent.type)) || !Array.isArray(ids) ||
-        ids.length < 1 || ids.length > 8 || new Set(ids).size !== ids.length ||
-        ids.some(id => typeof id !== 'string' || !objects.some(o => o.objectId === id && o.effectTargetEligible)) ||
-        Object.keys(intent).some(key => !['type', 'objectIds', 'animation'].includes(key)) ||
-        intent.animation !== undefined && !['fadeIn', 'pulse', 'zoomIn', 'slideInLeft', 'slideInRight', 'gentleRotate'].includes(String(intent.animation)) ||
-        input.durationMs > 3600000) throw new Error('Native speech attention target or timing changed');
-    const duration = Math.min(input.durationMs, 600);
-    const reveal = ['fadeIn', 'zoomIn', 'slideInLeft', 'slideInRight'].includes(String(intent.animation));
-    action.visualCues = [
-      ...(intent.animation ? ids.map((id, index) => ({ id: `motion-${action!.id}-${index}`, atMs: 0, endMs: duration,
-        trigger: { version: 1, kind: 'start' }, effect: { type: 'element_animation', elementId: id, effect: intent.animation } })) : []),
-      { id: `focus-${action.id}`, atMs: reveal ? Math.min(duration, input.durationMs - 1) : 0, endMs: input.durationMs,
-        effect: intent.type === 'highlight' ? { type: 'highlight', elementIds: ids } : { type: 'spotlight', elementId: ids[0], elementIds: ids.slice(1) } },
-    ];
-    delete action.attention;
-  }
+  resolveNativeSpeechAttention(current, input.pageId, action, input.durationMs);
   const part = document.implementation.createDocument(NATIVE_MEDIA_NAMESPACE, 'media');
   part.documentElement.textContent = JSON.stringify({ id: asset.id, sha256: digest, data });
-  const motions = action.type === 'speech' ? () => prepareNativeTeachingMotions(current.pages.findIndex(p => p.pageId === input.pageId) + 1, page.actions) : undefined;
+  const motions = action.type === 'speech' ? () => prepareNativeTeachingMotions(current.pages.findIndex(p => p.pageId === input.pageId) + 1, page.actions, current.pages.find(p => p.pageId === input.pageId)!.actions) : undefined;
   return commitNativeTeaching(next, true, existing ? undefined : new XMLSerializer().serializeToString(part), motions);
 }
 

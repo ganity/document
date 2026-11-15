@@ -1,3 +1,5 @@
+import { installNestedSlideAnimations } from './nested-slide-animations';
+
 /** Import identity must be captured before ReadGroupShapeMain regenerates format IDs. */
 interface Shape {
   getUniNvProps?(): { cNvPr?: { id?: number | string } } | null;
@@ -26,6 +28,7 @@ export function installSlideSourceIdentity(win: Window): boolean {
   const wrap = (Constructor: new (...args: unknown[]) => Loader) =>
     new Proxy(Constructor, {
       construct(target, args, newTarget) {
+        installNestedSlideAnimations(win);
         const loader = Reflect.construct(target, args, newTarget) as Loader;
         const read = loader.ReadNvUniProp;
         loader.ReadNvUniProp = function (shape) {

@@ -7,8 +7,15 @@ notes. Entries describe what users experience, not internal refactors.
 
 ## [Unreleased]
 
+- Allow Quiz pictures to be adopted into PPT-master assessment groups, including
+  wrapped questions and differing template/page IDs. Preserve unrelated objects
+  and reject changes made while images are being prepared.
+
 - Acknowledge native teaching initialization independently of sidebar mounting
   and visibility, so closed panels and hidden DeckWise workers can execute tools.
+
+- Avoid teaching slideshow layout feedback that could trigger an editor error
+  and unexpectedly switch the presentation to view-only mode.
 
 - Play speech-linked effects from saved native PPT animations, including separate
   entrance/exit effects on one object. Report missing native effects instead of
