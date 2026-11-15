@@ -36,7 +36,7 @@ export function secureEditorHtml(html) {
 export async function stampEditorCsp(directory) {
   for (const name of ['editor.html', 'module.html']) {
     const path = join(directory, name);
-    const html = await readFile(path, 'utf8').catch(error => {
+    const html = await readFile(path, 'utf8').catch((error) => {
       if (name === 'module.html' && error.code === 'ENOENT') return null;
       throw error;
     });

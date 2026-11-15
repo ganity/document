@@ -65,16 +65,30 @@ it('keeps unavailable objects selectable but rejects unsafe thumbnail sources an
 it('enters the native group selection when locating a group member', () => {
   const group = {
     spTree: [] as unknown[],
-    getMainGroup() { return this; },
+    getMainGroup() {
+      return this;
+    },
     selectObject: vi.fn(),
   };
   const shape = { group, getUniNvProps: () => ({ cNvPr: { name: 'word' } }) };
   group.spTree.push(shape);
-  const controller = { resetSelection: vi.fn(), selectObject: vi.fn(), selection: { groupSelection: null as unknown }, updateOverlay: vi.fn() };
-  state.api = { WordControl: { m_oLogicDocument: {
-    Slides: [{ cSld: { spTree: [group] } }], GetCurrentController: () => controller,
-  } } };
-  const [choice] = teachingObjectChoices(1, [{ objectId: 'word', sourceObjectName: 'word', status: 'mapped', effectTargetEligible: true }]);
+  const controller = {
+    resetSelection: vi.fn(),
+    selectObject: vi.fn(),
+    selection: { groupSelection: null as unknown },
+    updateOverlay: vi.fn(),
+  };
+  state.api = {
+    WordControl: {
+      m_oLogicDocument: {
+        Slides: [{ cSld: { spTree: [group] } }],
+        GetCurrentController: () => controller,
+      },
+    },
+  };
+  const [choice] = teachingObjectChoices(1, [
+    { objectId: 'word', sourceObjectName: 'word', status: 'mapped', effectTargetEligible: true },
+  ]);
   choice.locate();
   expect(controller.selectObject).toHaveBeenCalledWith(group, 0);
   expect(controller.selection.groupSelection).toBe(group);

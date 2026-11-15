@@ -14,9 +14,15 @@ function setup() {
     math = false;
     offset = 0;
     throwOnMeasure = false;
-    Get_CompiledPr() { return {}; }
-    IsMathRun() { return this.math; }
-    getYOffset() { return this.offset; }
+    Get_CompiledPr() {
+      return {};
+    }
+    IsMathRun() {
+      return this.math;
+    }
+    getYOffset() {
+      return this.offset;
+    }
     Recalculate_LineMetrics(state: ReturnType<typeof emptyState>) {
       const height = measurer.GetHeight();
       if (this.throwOnMeasure) throw new Error('measurement failed');
@@ -32,8 +38,16 @@ function setup() {
   const win = { AscWord: { ParaRun: Run }, AscCommon: { g_oTextMeasurer: measurer }, Asc: { linerule_Auto: 1 } };
   const call = (run: Run, state: ReturnType<typeof emptyState>, rule = 1, line = 0) =>
     (run.Recalculate_LineMetrics as Function)(state, { Spacing: { LineRule: rule } }, line, 0);
-  return { win: win as unknown as Window, Run, measurer, paragraph, call,
-    font: (next: typeof font) => { font = next; } };
+  return {
+    win: win as unknown as Window,
+    Run,
+    measurer,
+    paragraph,
+    call,
+    font: (next: typeof font) => {
+      font = next;
+    },
+  };
 }
 
 function emptyState() {

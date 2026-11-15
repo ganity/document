@@ -61,7 +61,8 @@ export function systemFontCatalog(source, directory) {
   let result = source.replace(selectionPattern, `window["g_fonts_selection_bin"] = "${encode(selection)}"`);
   for (const key of ['__fonts_infos', '__fonts_files']) {
     const { start, end, values } = arrays[key];
-    result = result.slice(0, start) + '\n' + values.map((row) => JSON.stringify(row)).join(',\n') + '\n' + result.slice(end);
+    result =
+      result.slice(0, start) + '\n' + values.map((row) => JSON.stringify(row)).join(',\n') + '\n' + result.slice(end);
   }
   return { source: result, available };
 }
@@ -78,27 +79,48 @@ export function localSystemFonts(projectRoot) {
     if (!isCatalog && !id) return next();
     // A private local adapter: never expose installed fonts to a network bind,
     // cross-origin website, arbitrary path or untrusted Host header.
-    if (!isLoopbackHost(req.headers.host) ||
-        !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.localAddress) ||
-        (req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site'])) ||
-        (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`)) {
-      res.writeHead(403); res.end(); return;
+    if (
+      !isLoopbackHost(req.headers.host) ||
+      !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.localAddress) ||
+      (req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site'])) ||
+      (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`)
+    ) {
+      res.writeHead(403);
+      res.end();
+      return;
     }
-    if (!['GET', 'HEAD'].includes(req.method || '')) { res.writeHead(405); res.end(); return; }
+    if (!['GET', 'HEAD'].includes(req.method || '')) {
+      res.writeHead(405);
+      res.end();
+      return;
+    }
     try {
-      catalog ??= systemFontCatalog(fs.readFileSync(path.join(root, 'sdkjs/common/AllFonts.js'), 'utf8'),
-        path.join(process.env.SystemRoot || 'C:/Windows', 'Fonts'));
+      catalog ??= systemFontCatalog(
+        fs.readFileSync(path.join(root, 'sdkjs/common/AllFonts.js'), 'utf8'),
+        path.join(process.env.SystemRoot || 'C:/Windows', 'Fonts'),
+      );
       const filename = id ? catalog.available.get(id) : null;
-      if (id && !filename) { res.writeHead(404); res.end(); return; }
+      if (id && !filename) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
       const body = isCatalog ? catalog.source : xorPrefix(fs.readFileSync(filename));
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('Content-Type', isCatalog ? 'application/javascript' : 'application/octet-stream');
       res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
       res.end(req.method === 'HEAD' ? undefined : body);
-    } catch (error) { next(error); }
+    } catch (error) {
+      next(error);
+    }
   };
-  return { name: 'desktop-local-system-fonts',
-    configureServer(server) { server.middlewares.use(middleware(path.join(projectRoot, 'public'))); },
-    configurePreviewServer(server) { server.middlewares.use(middleware(path.resolve(projectRoot, server.config.build.outDir))); },
+  return {
+    name: 'desktop-local-system-fonts',
+    configureServer(server) {
+      server.middlewares.use(middleware(path.join(projectRoot, 'public')));
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(middleware(path.resolve(projectRoot, server.config.build.outDir)));
+    },
   };
 }

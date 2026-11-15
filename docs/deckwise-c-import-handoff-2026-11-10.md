@@ -22,19 +22,19 @@ must survive integration. The new object-selection adapter is read-only.
 
 ## Latest local modifications
 
-| Files | Behavior / reason |
-| --- | --- |
-| `bin/font-license-sweep.mjs`, `public/sdkjs/common/AllFonts.js`, font licensing/e2e tests | Repair Calibri -> Carlito regular/italic/bold/bold-italic aliases, including previously swept catalogs; mismatched style indices previously produced wrong glyphs |
-| `bin/local-system-fonts.mjs`, `.d.mts`, `vite.config.ts`, `test/unit/local-system-fonts.test.ts` | Runtime-only installed Windows Calibri, SimSun, SimHei, Microsoft YaHei, KaiTi and FangSong mappings, with aliases and guarded loopback access |
-| `packages/converter/src/pptx-theme-fonts.ts`, `docx-zip.ts`, `lib/converter.ts` | Resolve empty theme East Asian fonts from Hans in temporary conversion input for eligible simplified-Chinese source; preserve original file and slide XML |
-| `lib/onlyoffice/guards/east-asian-punctuation.ts` | Select Chinese smart-quote font slot using main run language before first layout; Latin text retains Latin behavior |
-| `guards/mixed-script-line-metrics.ts` | Prevent Chinese automatic slide spacing from combining incompatible ascender/descender maxima across fonts; keep inline-object height and exclude unsupported text modes |
-| `guards/east-asian-vertical.ts` | Draw supported eaVert Han glyphs upright by inverse rotation around the measured font-cell center; preserve source text/geometry/direction |
-| `guards/image-color-key.ts` | Adapt MAIC exact same-sRGB clrChange-to-transparent rendering through a temporary cached canvas; source image bytes/effects remain unchanged |
-| `guards/image-soft-edge.ts` | Draw one softEdge on an uncropped/untiled ellipse without visible outline; cached inward alpha feather uses the source EMU radius |
-| `guards/x2t-worker.ts`, `lib/onlyoffice/iframe-guards.ts` | Install drawing/font adapters before initial conversion/layout and on iframe initialization; late-only installation can leave incorrect cached widths |
-| `lib/deckwise-object-selection.ts`, `lib/deckwise-editor-bridge.ts` | Read native selected object identity through the bound embed bridge for Host teaching attention mapping |
-| `test/unit/office-*.test.ts`, selection/converter/embed/font tests, `test/e2e/font-substitution.spec.ts`, `docs/fonts.zh.md` | Regression and deployment details |
+| Files                                                                                                                        | Behavior / reason                                                                                                                                                        |
+| ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `bin/font-license-sweep.mjs`, `public/sdkjs/common/AllFonts.js`, font licensing/e2e tests                                    | Repair Calibri -> Carlito regular/italic/bold/bold-italic aliases, including previously swept catalogs; mismatched style indices previously produced wrong glyphs        |
+| `bin/local-system-fonts.mjs`, `.d.mts`, `vite.config.ts`, `test/unit/local-system-fonts.test.ts`                             | Runtime-only installed Windows Calibri, SimSun, SimHei, Microsoft YaHei, KaiTi and FangSong mappings, with aliases and guarded loopback access                           |
+| `packages/converter/src/pptx-theme-fonts.ts`, `docx-zip.ts`, `lib/converter.ts`                                              | Resolve empty theme East Asian fonts from Hans in temporary conversion input for eligible simplified-Chinese source; preserve original file and slide XML                |
+| `lib/onlyoffice/guards/east-asian-punctuation.ts`                                                                            | Select Chinese smart-quote font slot using main run language before first layout; Latin text retains Latin behavior                                                      |
+| `guards/mixed-script-line-metrics.ts`                                                                                        | Prevent Chinese automatic slide spacing from combining incompatible ascender/descender maxima across fonts; keep inline-object height and exclude unsupported text modes |
+| `guards/east-asian-vertical.ts`                                                                                              | Draw supported eaVert Han glyphs upright by inverse rotation around the measured font-cell center; preserve source text/geometry/direction                               |
+| `guards/image-color-key.ts`                                                                                                  | Adapt MAIC exact same-sRGB clrChange-to-transparent rendering through a temporary cached canvas; source image bytes/effects remain unchanged                             |
+| `guards/image-soft-edge.ts`                                                                                                  | Draw one softEdge on an uncropped/untiled ellipse without visible outline; cached inward alpha feather uses the source EMU radius                                        |
+| `guards/x2t-worker.ts`, `lib/onlyoffice/iframe-guards.ts`                                                                    | Install drawing/font adapters before initial conversion/layout and on iframe initialization; late-only installation can leave incorrect cached widths                    |
+| `lib/deckwise-object-selection.ts`, `lib/deckwise-editor-bridge.ts`                                                          | Read native selected object identity through the bound embed bridge for Host teaching attention mapping                                                                  |
+| `test/unit/office-*.test.ts`, selection/converter/embed/font tests, `test/e2e/font-substitution.spec.ts`, `docs/fonts.zh.md` | Regression and deployment details                                                                                                                                        |
 
 The soft-edge algorithm is a finite visual approximation, not PowerPoint's exact
 pixel curve. Multi-effect, crop/tile/outline, unreadable or oversized cases fall

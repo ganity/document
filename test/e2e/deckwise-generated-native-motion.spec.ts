@@ -47,16 +47,14 @@ test('generated speech motions survive native PPTX save and reopen as editable g
       .evaluate(() => {
         const api = (window as any).editor;
         const slide = api.WordControl.m_oLogicDocument.Slides[0];
-        return slide.timing
-          .getAllAnimEffects()
-          .map((effect: any) => ({
-            target: effect.getObjectId(),
-            kind: effect.cTn.presetClass,
-            preset: effect.cTn.presetID,
-            subtype: effect.cTn.presetSubtype,
-            start: effect.cTn.nodeType,
-            duration: effect.asc_getDuration(),
-          }));
+        return slide.timing.getAllAnimEffects().map((effect: any) => ({
+          target: effect.getObjectId(),
+          kind: effect.cTn.presetClass,
+          preset: effect.cTn.presetID,
+          subtype: effect.cTn.presetSubtype,
+          start: effect.cTn.nodeType,
+          duration: effect.asc_getDuration(),
+        }));
       });
   const result = await outer.evaluate(async () => {
     const probeUrl = '/.deckwise/motion-probe.mjs';
@@ -87,17 +85,15 @@ test('generated speech motions survive native PPTX save and reopen as editable g
       throw new Error(
         `${e.message}: ${String(e.cause)}; shapes=${JSON.stringify(shapes.map((s: any) => ({ id: s.Id, name: s.getUniNvProps().cNvPr.name })))}; ` +
           JSON.stringify(
-            api.WordControl.m_oLogicDocument.Slides[0].timing
-              ?.getAllAnimEffects()
-              .map((a: any) => ({
-                class: a.cTn.presetClass,
-                id: a.cTn.presetID,
-                subtype: a.cTn.presetSubtype,
-                node: a.cTn.nodeType,
-                target: a.getObjectId(),
-                duration: a.asc_getDuration(),
-                delay: a.asc_getDelay(),
-              })),
+            api.WordControl.m_oLogicDocument.Slides[0].timing?.getAllAnimEffects().map((a: any) => ({
+              class: a.cTn.presetClass,
+              id: a.cTn.presetID,
+              subtype: a.cTn.presetSubtype,
+              node: a.cTn.nodeType,
+              target: a.getObjectId(),
+              duration: a.asc_getDuration(),
+              delay: a.asc_getDelay(),
+            })),
           ),
       );
     }
@@ -119,7 +115,9 @@ test('generated speech motions survive native PPTX save and reopen as editable g
   expect(xml).toContain('presetID="26"');
   await open(saved);
   const reopened = await read();
-  expect(reopened.map(({ target, ...rest }: any) => rest)).toEqual(before.map(({ target, ...rest }: any) => rest));
+  expect(reopened.map(({ target: _target, ...rest }: any) => rest)).toEqual(
+    before.map(({ target: _target, ...rest }: any) => rest),
+  );
   const playback = await outer.evaluate(async () => {
     const probeUrl = '/.deckwise/motion-probe.mjs';
     const probe = await import(/* @vite-ignore */ probeUrl);
@@ -154,47 +152,84 @@ test('generated speech motions survive native PPTX save and reopen as editable g
   // Native user edits survive teaching binding and replay; the generated cue is not a template lock.
   const editedSteps = await outer.evaluate(async () => {
     const url = '/.deckwise/motion-probe.mjs';
-    const probe = await import(/* @vite-ignore */ url);
+    await import(/* @vite-ignore */ url);
     const api = (document.querySelector('iframe')!.contentWindow as any).editor;
-    const logic = api.WordControl.m_oLogicDocument, slide = logic.Slides[0];
+    const logic = api.WordControl.m_oLogicDocument,
+      slide = logic.Slides[0];
     const controller = logic.GetCurrentController();
-    controller.resetSelection(); controller.selectObject(slide.cSld.spTree[0], 0);
+    controller.resetSelection();
+    controller.selectObject(slide.cSld.spTree[0], 0);
     slide.timing.resetSelection();
     api.asc_AddAnimation(1, 1, 0, null, false, false);
     const effect = slide.timing.getAllAnimEffects().at(-1);
-    slide.timing.resetSelection(); effect.select();
-    const properties = effect.createDuplicate(); properties.merge(effect);
-    properties.asc_putDuration(1200); api.asc_SetAnimationProperties(properties);
+    slide.timing.resetSelection();
+    effect.select();
+    const properties = effect.createDuplicate();
+    properties.merge(effect);
+    properties.asc_putDuration(1200);
+    api.asc_SetAnimationProperties(properties);
     return slide.timing.getAllAnimEffects().length;
   });
   expect(editedSteps).toBe(15);
   const editedSaved = await page.evaluate(async () => {
     const result = await post('document:save', {});
     const bytes = new Uint8Array(await result.file.arrayBuffer());
-    return btoa(Array.from(bytes, b => String.fromCharCode(b)).join(''));
+    return btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(''));
   });
   await open(editedSaved);
   const editedPlayback = await outer.evaluate(async () => {
     const url = '/.deckwise/motion-probe.mjs';
     const probe = await import(/* @vite-ignore */ url);
-    const frame = document.querySelector('iframe')!, doc = frame.contentDocument!;
+    const frame = document.querySelector('iframe')!,
+      doc = frame.contentDocument!;
     const slide = (frame.contentWindow as any).editor.WordControl.m_oLogicDocument.Slides[0];
-    const objects = slide.cSld.spTree.map((shape: any, i: number) => ({ objectId: `object-${i}`, status: 'mapped', effectTargetEligible: true, sourceObjectName: shape.getUniNvProps().cNvPr.name }));
-    const actions = ['fadeIn', 'zoomIn', 'slideInLeft', 'slideInRight', 'pulse', 'gentleRotate', 'fadeOut'].map((effect, i) => ({
-      id: `speech-${i}`, type: 'speech', visualCues: objects.map((o: any, j: number) => ({ id: `cue-${i}-${j}`, atMs: 0, endMs: 600, effect: { type: 'element_animation', elementId: o.objectId, effect } })),
+    const objects = slide.cSld.spTree.map((shape: any, i: number) => ({
+      objectId: `object-${i}`,
+      status: 'mapped',
+      effectTargetEligible: true,
+      sourceObjectName: shape.getUniNvProps().cNvPr.name,
     }));
+    const actions = ['fadeIn', 'zoomIn', 'slideInLeft', 'slideInRight', 'pulse', 'gentleRotate', 'fadeOut'].map(
+      (effect, i) => ({
+        id: `speech-${i}`,
+        type: 'speech',
+        visualCues: objects.map((o: any, j: number) => ({
+          id: `cue-${i}-${j}`,
+          atMs: 0,
+          endMs: 600,
+          effect: { type: 'element_animation', elementId: o.objectId, effect },
+        })),
+      }),
+    );
     const bindings = probe.nativeSpeechMotionSteps(1, actions, objects, probe);
     const before = slide.timing.getAllAnimEffects();
     const errors: string[] = [];
     let ready!: () => void;
-    const started = new Promise<void>(resolve => { ready = resolve; });
-    const show = probe.createTeachingSlideshow({ doc, page: 1, timelineStepCount: bindings.length, generatedMotions: true,
-      onReady: ready, onExit() {}, onError: (error: Error) => errors.push(error.message) });
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const show = probe.createTeachingSlideshow({
+      doc,
+      page: 1,
+      timelineStepCount: bindings.length,
+      generatedMotions: true,
+      onReady: ready,
+      onExit() {},
+      onError: (error: Error) => errors.push(error.message),
+    });
     try {
       await started;
       for (const binding of bindings) await show.next(binding.stepIndex);
-      return { bindings, errors, ended: before.every((effect: any) => effect.isAtEnd()), lastDuration: before.at(-1).asc_getDuration(), unchanged: slide.timing.getAllAnimEffects().every((effect: any, i: number) => before[i] === effect) };
-    } finally { show.dispose(); }
+      return {
+        bindings,
+        errors,
+        ended: before.every((effect: any) => effect.isAtEnd()),
+        lastDuration: before.at(-1).asc_getDuration(),
+        unchanged: slide.timing.getAllAnimEffects().every((effect: any, i: number) => before[i] === effect),
+      };
+    } finally {
+      show.dispose();
+    }
   });
   expect(editedPlayback.bindings).toHaveLength(8);
   expect(editedPlayback.errors).toEqual([]);

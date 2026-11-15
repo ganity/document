@@ -7,12 +7,14 @@ function setup() {
     calls.push([codePoint, hint, language, cs, rtl]);
     return hint === 2 ? 2 : 8;
   });
-  const win = { AscWord: {
-    fonthint_EastAsia: 2,
-    GetFontSlot: original,
-    GetFontSlotByTextPr: (codePoint: number, textPr: Record<string, any>) =>
-      original(codePoint, textPr.RFonts.Hint, textPr.Lang.EastAsia, textPr.CS, textPr.RTL),
-  } } as unknown as Window;
+  const win = {
+    AscWord: {
+      fonthint_EastAsia: 2,
+      GetFontSlot: original,
+      GetFontSlotByTextPr: (codePoint: number, textPr: Record<string, any>) =>
+        original(codePoint, textPr.RFonts.Hint, textPr.Lang.EastAsia, textPr.CS, textPr.RTL),
+    },
+  } as unknown as Window;
   return { win, calls, original };
 }
 

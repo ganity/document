@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { applyImageColorKey, installImageColorKeyGuard } from '../../lib/onlyoffice/guards/image-color-key';
 
 function setup() {
-  class RGB { RGBA = { R: 255, G: 255, B: 255 }; }
+  class RGB {
+    RGBA = { R: 255, G: 255, B: 255 };
+  }
   class Effect {
     clrFrom = { color: new RGB(), Mods: null };
     clrTo = { color: new RGB(), Mods: { Mods: [{ name: 'alpha', val: 0 }] } };
@@ -14,7 +16,9 @@ function setup() {
   const canvas = { getContext: () => context, width: 0, height: 0 };
   const createElement = vi.fn(() => canvas);
   const paint = vi.fn();
-  class Graphics { drawImage2 = paint; }
+  class Graphics {
+    drawImage2 = paint;
+  }
   class Shape {
     blipFill = { RasterImageId: 'source.jpg', Effects: [new Effect()] as unknown[] };
     fail = false;
@@ -23,9 +27,12 @@ function setup() {
       if (this.fail) throw new Error('draw failed');
     }
   }
-  const win = { document: { createElement }, AscFormat: { CImageShape: Shape, CClrChange: Effect, CRGBColor: RGB },
+  const win = {
+    document: { createElement },
+    AscFormat: { CImageShape: Shape, CClrChange: Effect, CRGBColor: RGB },
     AscCommon: { getFullImageSrc2: (id: string) => id },
-    Asc: { editor: { ImageLoader: { map_image_index: { 'source.jpg': { Image: image } } } } } };
+    Asc: { editor: { ImageLoader: { map_image_index: { 'source.jpg': { Image: image } } } } },
+  };
   return { win: win as unknown as Window, Shape, Graphics, image, canvas, context, createElement, paint, pixels };
 }
 
@@ -39,9 +46,11 @@ describe('OOXML transparent color-key rendering', () => {
   it('uses a cached rendering copy and preserves crop/position and source effects', () => {
     const s = setup();
     installImageColorKeyGuard(s.win);
-    const shape = new s.Shape(), graphics = new s.Graphics();
+    const shape = new s.Shape(),
+      graphics = new s.Graphics();
     const effects = structuredClone(shape.blipFill);
-    shape.draw(graphics); shape.draw(graphics);
+    shape.draw(graphics);
+    shape.draw(graphics);
     expect(s.paint).toHaveBeenLastCalledWith(s.canvas, 1, 2, 3, 4, 255, { l: 0, t: 0, r: 100, b: 96 });
     expect(s.createElement).toHaveBeenCalledTimes(1);
     expect(s.pixels[3]).toBe(0);
@@ -50,29 +59,39 @@ describe('OOXML transparent color-key rendering', () => {
     expect(graphics.drawImage2).toBe(s.paint);
   });
 
-  it.each(['no-effect', 'other-effect', 'multiple', 'opaque', 'theme', 'loading', 'too-large', 'unreadable'])('keeps the original rendering for %s', (kind) => {
-    const s = setup(); installImageColorKeyGuard(s.win);
-    const shape = new s.Shape();
-    const effect = shape.blipFill.Effects[0] as any;
-    if (kind === 'no-effect') shape.blipFill.Effects = [];
-    if (kind === 'other-effect') shape.blipFill.Effects = [{}];
-    if (kind === 'multiple') shape.blipFill.Effects.push({});
-    if (kind === 'opaque') effect.clrTo.Mods.Mods[0].val = 100000;
-    if (kind === 'theme') effect.clrFrom.color = { RGBA: { R: 255, G: 255, B: 255 } };
-    if (kind === 'loading') s.image.complete = false;
-    if (kind === 'too-large') s.image.naturalWidth = 20_000_000;
-    if (kind === 'unreadable') s.context.getImageData = () => { throw new Error('tainted'); };
-    shape.draw(new s.Graphics());
-    expect(s.paint.mock.calls[0][0]).toBe(s.image);
-  });
+  it.each(['no-effect', 'other-effect', 'multiple', 'opaque', 'theme', 'loading', 'too-large', 'unreadable'])(
+    'keeps the original rendering for %s',
+    (kind) => {
+      const s = setup();
+      installImageColorKeyGuard(s.win);
+      const shape = new s.Shape();
+      const effect = shape.blipFill.Effects[0] as any;
+      if (kind === 'no-effect') shape.blipFill.Effects = [];
+      if (kind === 'other-effect') shape.blipFill.Effects = [{}];
+      if (kind === 'multiple') shape.blipFill.Effects.push({});
+      if (kind === 'opaque') effect.clrTo.Mods.Mods[0].val = 100000;
+      if (kind === 'theme') effect.clrFrom.color = { RGBA: { R: 255, G: 255, B: 255 } };
+      if (kind === 'loading') s.image.complete = false;
+      if (kind === 'too-large') s.image.naturalWidth = 20_000_000;
+      if (kind === 'unreadable')
+        s.context.getImageData = () => {
+          throw new Error('tainted');
+        };
+      shape.draw(new s.Graphics());
+      expect(s.paint.mock.calls[0][0]).toBe(s.image);
+    },
+  );
 
   it('keeps another use of the same source opaque and restores drawing after errors', () => {
-    const s = setup(); installImageColorKeyGuard(s.win);
-    const shape = new s.Shape(), graphics = new s.Graphics();
+    const s = setup();
+    installImageColorKeyGuard(s.win);
+    const shape = new s.Shape(),
+      graphics = new s.Graphics();
     shape.fail = true;
     expect(() => shape.draw(graphics)).toThrow('draw failed');
     expect(graphics.drawImage2).toBe(s.paint);
-    const plain = new s.Shape(); plain.blipFill.Effects = [];
+    const plain = new s.Shape();
+    plain.blipFill.Effects = [];
     plain.draw(graphics);
     expect(s.paint.mock.calls.at(-1)![0]).toBe(s.image);
     const patched = s.Shape.prototype.draw;

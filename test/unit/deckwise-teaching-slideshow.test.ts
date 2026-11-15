@@ -48,11 +48,16 @@ afterEach(() => {
 it('defers control layout writes outside ResizeObserver delivery and cancels them on exit', () => {
   let resized: () => void = () => {};
   const disconnect = vi.fn();
-  vi.stubGlobal('ResizeObserver', class {
-    constructor(callback: () => void) { resized = callback; }
-    observe() {}
-    disconnect = disconnect;
-  });
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      constructor(callback: () => void) {
+        resized = callback;
+      }
+      observe() {}
+      disconnect = disconnect;
+    },
+  );
   show = createTeachingSlideshow({ doc: document, page: 1, onReady: vi.fn(), onExit: vi.fn(), onError: vi.fn() });
   const height = vi.spyOn(show.controls, 'getBoundingClientRect').mockReturnValue({ height: 128 } as DOMRect);
   const style = vi.spyOn(show.surface.style, 'setProperty');
@@ -119,7 +124,7 @@ it('rejects unsaved edits, automatic page advance and native embedded media befo
   expect(manager.Mode).toBe(false);
 });
 it('reports stale source and native errors without starting teaching', () => {
-  const error = vi.fn((_: Error) => show?.dispose()),
+  const error = vi.fn((_error: Error) => show?.dispose()),
     exit = vi.fn(() => show?.dispose()),
     ready = vi.fn();
   show = createTeachingSlideshow({ doc: document, page: 1, onReady: ready, onExit: exit, onError: error });
@@ -218,10 +223,14 @@ it('keeps finite automatic group animations beside native teaching without block
     s.state.fill('end');
     vi.advanceTimersByTime(64);
     expect(ready).toHaveBeenCalledOnce();
-  } finally { native.mockRestore(); }
+  } finally {
+    native.mockRestore();
+  }
 });
 it('plays delayed automatic PPT-master effects beside narration without changing saved timing', () => {
-  const s = steps(), ready = vi.fn(), error = vi.fn();
+  const s = steps(),
+    ready = vi.fn(),
+    error = vi.fn();
   s.effects[0].cTn.nodeType = 0;
   s.effects[1].cTn.nodeType = 0;
   s.effects[1].cTn.presetID = 37;
@@ -235,11 +244,14 @@ it('plays delayed automatic PPT-master effects beside narration without changing
   expect(state.api.DemonstrationPause).not.toHaveBeenCalled();
   expect(s.slide.timing).toBe(saved);
   expect(error).not.toHaveBeenCalled();
-  show.pause(); show.resume();
+  show.pause();
+  show.resume();
   expect(manager.StartAnimation).toHaveBeenCalledWith(0);
 });
 it('automatically finishes unlinked native steps alongside narration without clicks or advancing the page', () => {
-  const s = steps(), ready = vi.fn(), error = vi.fn();
+  const s = steps(),
+    ready = vi.fn(),
+    error = vi.fn();
   show = createTeachingSlideshow({ doc: document, page: 1, onReady: ready, onExit: vi.fn(), onError: error });
   vi.advanceTimersByTime(32);
   expect(s.state).toEqual(['active', 'idle']);
@@ -263,19 +275,35 @@ it('automatically finishes unlinked native steps alongside narration without cli
 });
 
 it('autoplays only unlinked effects when speech-linked animations share the page', async () => {
-  const s = steps(), ready = vi.fn(), error = vi.fn();
+  const s = steps(),
+    ready = vi.fn(),
+    error = vi.fn();
   const linked = s.effects[1];
-  const player = { onSpClick: vi.fn(() => { s.state[1] = 'active'; return true; }) };
+  const player = {
+    onSpClick: vi.fn(() => {
+      s.state[1] = 'active';
+      return true;
+    }),
+  };
   s.slide.getAnimationPlayer = () => player;
   manager.IsMainSeqFinished = () => s.state[0] === 'end';
   const schedule = {
-    slide: s.slide, timing: s.slide.timing,
+    slide: s.slide,
+    timing: s.slide.timing,
     hasUnbound: true,
     scheduled: [{ effect: linked, token: 'linked' }],
-    install() {}, restore: vi.fn(),
+    install() {},
+    restore: vi.fn(),
   };
-  show = createTeachingSlideshow({ doc: document, page: 1, timelineStepCount: 1,
-    schedule: schedule as any, onReady: ready, onExit: vi.fn(), onError: error });
+  show = createTeachingSlideshow({
+    doc: document,
+    page: 1,
+    timelineStepCount: 1,
+    schedule: schedule as any,
+    onReady: ready,
+    onExit: vi.fn(),
+    onError: error,
+  });
   vi.advanceTimersByTime(32);
   expect(s.state).toEqual(['active', 'idle']);
   vi.advanceTimersByTime(1000);

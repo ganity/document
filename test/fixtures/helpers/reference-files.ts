@@ -5,7 +5,7 @@ function crc32(bytes: Uint8Array) {
     return value >>> 0;
   });
   let crc = 0xffffffff;
-  for (const byte of bytes) crc = (crc >>> 8) ^ table[(crc ^ byte) & 255];
+  for (let i = 0; i < bytes.length; i++) crc = (crc >>> 8) ^ table[(crc ^ bytes[i]) & 255];
   return (crc ^ 0xffffffff) >>> 0;
 }
 export function zip(entries: Record<string, string>, deflated = false) {
@@ -15,12 +15,13 @@ export function zip(entries: Record<string, string>, deflated = false) {
   for (const [name, value] of Object.entries(entries)) {
     const n = new TextEncoder().encode(name),
       raw = new TextEncoder().encode(value),
-      body = deflated ? deflateRawSync(raw) : raw;
+      body = deflated ? deflateRawSync(raw) : raw,
+      checksum = crc32(raw);
     const header = new Uint8Array(30 + n.length),
       h = new DataView(header.buffer);
     h.setUint32(0, 0x04034b50, true);
     h.setUint16(8, deflated ? 8 : 0, true);
-    h.setUint32(14, crc32(raw), true);
+    h.setUint32(14, checksum, true);
     h.setUint32(18, body.length, true);
     h.setUint32(22, raw.length, true);
     h.setUint16(26, n.length, true);
@@ -29,7 +30,7 @@ export function zip(entries: Record<string, string>, deflated = false) {
       d = new DataView(c.buffer);
     d.setUint32(0, 0x02014b50, true);
     d.setUint16(10, deflated ? 8 : 0, true);
-    d.setUint32(16, crc32(raw), true);
+    d.setUint32(16, checksum, true);
     d.setUint32(20, body.length, true);
     d.setUint32(24, raw.length, true);
     d.setUint16(28, n.length, true);

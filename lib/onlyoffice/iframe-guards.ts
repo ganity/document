@@ -69,8 +69,8 @@ export function prepareEditorIframe(): boolean {
       installHintFallbackGuard(win);
       installBadImageUrlGuard(win);
       const x2tWorkerProxied = installX2tWorkerProxy(win);
-      const punctuationGuarded = !win.location.pathname.includes('/presentationeditor/') ||
-        installEastAsianPunctuationGuard(win);
+      const punctuationGuarded =
+        !win.location.pathname.includes('/presentationeditor/') || installEastAsianPunctuationGuard(win);
       if (win.location.pathname.includes('/presentationeditor/')) {
         installMixedScriptLineMetricsGuard(win);
         installImageColorKeyGuard(win);

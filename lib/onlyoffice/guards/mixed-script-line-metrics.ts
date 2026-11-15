@@ -1,3 +1,6 @@
+/**
+ * 22. Preserve source line metrics for mixed Latin and East Asian text.
+ */
 type LineState = {
   LineTextAscent: number;
   LineTextAscent2: number;
@@ -53,23 +56,43 @@ export function installMixedScriptLineMetricsGuard(win: Window): boolean {
   const runPrototype = api?.ParaRun?.prototype;
   const original = runPrototype?.Recalculate_LineMetrics;
   const measurer = scope.AscCommon?.g_oTextMeasurer;
-  if (!api || !runPrototype || typeof original !== 'function' || !measurer ||
-      typeof measurer.GetHeight !== 'function' || typeof measurer.GetAscender !== 'function' ||
-      typeof measurer.GetDescender !== 'function' || scope.Asc?.linerule_Auto === undefined) {
+  if (
+    !api ||
+    !runPrototype ||
+    typeof original !== 'function' ||
+    !measurer ||
+    typeof measurer.GetHeight !== 'function' ||
+    typeof measurer.GetAscender !== 'function' ||
+    typeof measurer.GetDescender !== 'function' ||
+    scope.Asc?.linerule_Auto === undefined
+  ) {
     return false;
   }
   if (api.__mixedScriptLineMetricsGuard) return true;
 
   const byState = new WeakMap<object, LineMetrics>();
   runPrototype.Recalculate_LineMetrics = function (this: Run, ...args: unknown[]) {
-    const [state, paragraphProperties, line, range] = args as [LineState, { Spacing?: { LineRule?: number } }, unknown, unknown];
-    if (this.Paragraph?.bFromDocument !== false || paragraphProperties?.Spacing?.LineRule !== scope.Asc?.linerule_Auto) {
+    const [state, paragraphProperties, line, range] = args as [
+      LineState,
+      { Spacing?: { LineRule?: number } },
+      unknown,
+      unknown,
+    ];
+    if (
+      this.Paragraph?.bFromDocument !== false ||
+      paragraphProperties?.Spacing?.LineRule !== scope.Asc?.linerule_Auto
+    ) {
       return original.apply(this, args);
     }
 
     let metrics = byState.get(state);
-    if (!metrics || metrics.paragraph !== this.Paragraph || metrics.line !== line || metrics.range !== range ||
-        state.LineTextAscent === 0) {
+    if (
+      !metrics ||
+      metrics.paragraph !== this.Paragraph ||
+      metrics.line !== line ||
+      metrics.range !== range ||
+      state.LineTextAscent === 0
+    ) {
       metrics = {
         paragraph: this.Paragraph,
         line,
@@ -101,8 +124,10 @@ export function installMixedScriptLineMetricsGuard(win: Window): boolean {
       const baseline = height - descent;
       // Choose one complete font cell. Combining the largest ascender, descender
       // and leading from different fonts invents a cell larger than either font.
-      if (height > metrics!.maxHeight + 0.001 ||
-          (Math.abs(height - metrics!.maxHeight) < 0.001 && baseline > metrics!.baseline)) {
+      if (
+        height > metrics!.maxHeight + 0.001 ||
+        (Math.abs(height - metrics!.maxHeight) < 0.001 && baseline > metrics!.baseline)
+      ) {
         metrics!.maxHeight = height;
         metrics!.ascent = ascent;
         metrics!.descent = descent;

@@ -334,7 +334,9 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
   await notes.locator('summary').click();
   await page.setViewportSize({ width: 800, height: 900 });
   await expect.poll(async () => (await panel.boundingBox())!.width).toBeLessThan(350);
-  const shortButtons = panel.locator('.teaching-attention > .teaching-effect-actions button, .teaching-animation-authoring > .teaching-effect-actions button');
+  const shortButtons = panel.locator(
+    '.teaching-attention > .teaching-effect-actions button, .teaching-animation-authoring > .teaching-effect-actions button',
+  );
   for (const button of await shortButtons.all()) {
     await expect(button.locator('svg')).toHaveCount(1);
     const bounds = await button.boundingBox();
@@ -497,7 +499,7 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
     await expect(firstPage).toBeVisible();
     await expect(firstPage.getByRole('button', { name: '上一页', exact: true })).toBeDisabled();
     await expect(firstPage.getByRole('button', { name: '下一页', exact: true })).toBeEnabled();
-    const controlStyle = await firstPage.getByRole('button', { name: '下一页', exact: true }).evaluate(node => {
+    const controlStyle = await firstPage.getByRole('button', { name: '下一页', exact: true }).evaluate((node) => {
       const css = getComputedStyle(node);
       return { color: css.color, background: css.backgroundColor, height: node.getBoundingClientRect().height };
     });

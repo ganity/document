@@ -1,3 +1,6 @@
+/**
+ * 25. Copy teaching data when a native slide is duplicated.
+ */
 /** Capture native slide duplication before the new slide enters the presentation. */
 type Slide = { createDuplicate?: (...args: unknown[]) => Slide };
 const tracked = new WeakSet<object>();

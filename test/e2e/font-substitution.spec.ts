@@ -49,7 +49,12 @@ const TEXT_LINE = { x: 170, y: 230, width: 980, height: 120 };
  * dropped "Wo" is a 1.4% diff on its own, which is the same order as the
  * defect being looked for).
  */
-async function renderIn(page: import('@playwright/test').Page, family: string, text: string, style = ''): Promise<Buffer> {
+async function renderIn(
+  page: import('@playwright/test').Page,
+  family: string,
+  text: string,
+  style = '',
+): Promise<Buffer> {
   await page.evaluate(
     ({ name, body, style }) => {
       const findWin = (win: Window): Window | null => {

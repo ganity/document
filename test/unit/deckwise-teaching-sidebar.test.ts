@@ -767,7 +767,7 @@ it('bounds draft undo history to twenty edits', async () => {
   expect(doc.querySelectorAll('article')).toHaveLength(3);
   expect(doc.querySelector<HTMLButtonElement>('[data-teaching-history=undo]')!.disabled).toBe(true);
   expect(doc.querySelector<HTMLButtonElement>('[data-teaching-history=redo]')!.disabled).toBe(false);
-});
+}, 15000); // Forty-two complete editor redraws exercise the history bound.
 
 it('retains draft undo after a failed authoritative save', async () => {
   await flush();
@@ -968,13 +968,13 @@ it('skips empty teaching pages during a whole lesson without starting an empty t
   await flush();
   click('放映整课教学');
   await vi.advanceTimersByTimeAsync(32);
-  expect(played.map(input => input.pageId)).toEqual(['p2']);
+  expect(played.map((input) => input.pageId)).toEqual(['p2']);
   expect(native.StartDemonstration).toHaveBeenCalledTimes(1);
   played[0].onComplete();
   await vi.advanceTimersByTimeAsync(32);
   expect(doc.querySelector('[data-status]')!.textContent).toBe('整课教学放映完成');
   expect(state.context.page).toBe(2);
-  expect(calls.some(call => call.operation === 'write')).toBe(false);
+  expect(calls.some((call) => call.operation === 'write')).toBe(false);
 });
 
 it('requires a group entrance before spotlighting its mapped child', async () => {

@@ -85,7 +85,12 @@ function interaction(doc: Document): { revision: number } {
         event,
         (input) => {
           // Host teaching controls do not mutate the slide or its selection.
-          if (!(input.target as Element | null)?.closest?.('.deckwise-teaching-sidebar, [data-teaching-slideshow], [data-teaching-lesson]')) observed.revision++;
+          if (
+            !(input.target as Element | null)?.closest?.(
+              '.deckwise-teaching-sidebar, [data-teaching-slideshow], [data-teaching-lesson]',
+            )
+          )
+            observed.revision++;
         },
         true,
       );

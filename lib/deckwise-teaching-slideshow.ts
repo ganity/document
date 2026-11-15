@@ -27,53 +27,66 @@ export function inspectTeachingAnimations(page: number, grouped = false, mode: '
   if (slide.timing) {
     effects = slide.timing.getAllAnimEffects?.();
     const sequences = slide.timing.getEffectsSequences?.();
-    if (!Array.isArray(effects) || effects.length > 200 || effects.some((effect) =>
-      !effect.cTn || typeof effect.isIdle !== 'function' || typeof effect.isAtEnd !== 'function'))
+    if (
+      !Array.isArray(effects) ||
+      effects.length > 200 ||
+      effects.some(
+        (effect) => !effect.cTn || typeof effect.isIdle !== 'function' || typeof effect.isAtEnd !== 'function',
+      )
+    )
       throw new Error('Native animation state is unavailable');
     if (
-      mode === 'bound' && (
-      !sequences ||
-      slide.timing.bldLst != null ||
-      (effects.length
-        ? sequences.length !== 1 ||
-          sequences[0][0] !== null ||
-          sequences[0].length !== effects.length + 1 ||
-          effects.some((effect: any, i: number) => sequences[0][i + 1] !== effect)
-        : sequences.length !== 0) ||
-      effects.some(
-        (effect: any) =>
-          ![
-            [1, 1, 0],
-            [1, 10, 0],
-            [2, 10, 0],
-            [0, 26, 0],
-            [1, 53, 16],
-            [1, 23, 16],
-            [0, 1, 2],
-            [0, 30, 0],
-            [1, 2, 8],
-            [1, 2, 2],
-            [0, 32, 0],
-            ...(native ? [[0, 6, 0], [1, 37, 0], [1, 22, 4], [1, 23, 16]] : []),
-          ].some(
-            ([kind, id, subtype]) =>
-              effect.cTn?.presetClass === kind && effect.cTn.presetID === id && effect.cTn.presetSubtype === subtype,
-          ) ||
-          (effect.cTn.nodeType !== 2 && !(grouped && effect.cTn.nodeType === 7) &&
-            !(native && [0, 7].includes(effect.cTn.nodeType))) ||
-          typeof effect.isIdle !== 'function' ||
-          typeof effect.isAtEnd !== 'function' ||
-          typeof effect.getObjectId !== 'function' ||
-          teachingShapes<any>(slide.cSld.spTree).filter((shape) => shape.Id === effect.getObjectId()).length !== 1 ||
-          !Number.isInteger(effect.asc_getDuration?.()) ||
-          effect.asc_getDuration() < 1 ||
-          effect.asc_getDuration() > 5000 ||
-          (native
-            ? !Number.isInteger(effect.asc_getDelay?.()) || effect.asc_getDelay() < 0 || effect.asc_getDelay() > 5000
-            : effect.asc_getDelay?.() !== 0) ||
-          (effect.asc_getRepeatCount?.() ?? 1000) !== 1000 ||
-          effect.asc_getRewind?.(),
-      ))
+      mode === 'bound' &&
+      (!sequences ||
+        slide.timing.bldLst != null ||
+        (effects.length
+          ? sequences.length !== 1 ||
+            sequences[0][0] !== null ||
+            sequences[0].length !== effects.length + 1 ||
+            effects.some((effect: any, i: number) => sequences[0][i + 1] !== effect)
+          : sequences.length !== 0) ||
+        effects.some(
+          (effect: any) =>
+            ![
+              [1, 1, 0],
+              [1, 10, 0],
+              [2, 10, 0],
+              [0, 26, 0],
+              [1, 53, 16],
+              [1, 23, 16],
+              [0, 1, 2],
+              [0, 30, 0],
+              [1, 2, 8],
+              [1, 2, 2],
+              [0, 32, 0],
+              ...(native
+                ? [
+                    [0, 6, 0],
+                    [1, 37, 0],
+                    [1, 22, 4],
+                    [1, 23, 16],
+                  ]
+                : []),
+            ].some(
+              ([kind, id, subtype]) =>
+                effect.cTn?.presetClass === kind && effect.cTn.presetID === id && effect.cTn.presetSubtype === subtype,
+            ) ||
+            (effect.cTn.nodeType !== 2 &&
+              !(grouped && effect.cTn.nodeType === 7) &&
+              !(native && [0, 7].includes(effect.cTn.nodeType))) ||
+            typeof effect.isIdle !== 'function' ||
+            typeof effect.isAtEnd !== 'function' ||
+            typeof effect.getObjectId !== 'function' ||
+            teachingShapes<any>(slide.cSld.spTree).filter((shape) => shape.Id === effect.getObjectId()).length !== 1 ||
+            !Number.isInteger(effect.asc_getDuration?.()) ||
+            effect.asc_getDuration() < 1 ||
+            effect.asc_getDuration() > 5000 ||
+            (native
+              ? !Number.isInteger(effect.asc_getDelay?.()) || effect.asc_getDelay() < 0 || effect.asc_getDelay() > 5000
+              : effect.asc_getDelay?.() !== 0) ||
+            (effect.asc_getRepeatCount?.() ?? 1000) !== 1000 ||
+            effect.asc_getRewind?.(),
+        ))
     )
       throw new TeachingAnimationSyncError('本页包含尚未支持同步教学提示的动画，请使用原生放映');
   }
@@ -116,11 +129,15 @@ export function createTeachingSlideshow(input: {
   const bound = input.timelineStepCount !== undefined;
   const schedule = input.schedule;
   const { api, manager, slide, effects, steps } = inspectTeachingAnimations(
-    input.page, input.generatedMotions, bound && !schedule ? 'bound' : 'native',
+    input.page,
+    input.generatedMotions,
+    bound && !schedule ? 'bound' : 'native',
   );
   if (schedule && schedule.slide !== slide) throw new Error('Scheduled animation slide changed');
   const unboundEffects = schedule
-    ? schedule.timing.getAllAnimEffects().filter((effect) => !schedule.scheduled.some((entry) => entry.effect === effect))
+    ? schedule.timing
+        .getAllAnimEffects()
+        .filter((effect) => !schedule.scheduled.some((entry) => entry.effect === effect))
     : bound
       ? []
       : effects;
@@ -157,15 +174,17 @@ export function createTeachingSlideshow(input: {
   input.doc.body.append(surface);
   let layoutFrame = 0;
   const Observer = input.doc.defaultView?.ResizeObserver;
-  const layout = Observer ? new Observer(() => {
-    // Writing an ancestor during observer delivery makes the SDK treat layout feedback as an editing error.
-    layoutFrame ||= requestAnimationFrame(() => {
-      layoutFrame = 0;
-      const height = `${controls.getBoundingClientRect().height}px`;
-      if (surface.style.getPropertyValue('--teaching-controls-height') !== height)
-        surface.style.setProperty('--teaching-controls-height', height);
-    });
-  }) : undefined;
+  const layout = Observer
+    ? new Observer(() => {
+        // Writing an ancestor during observer delivery makes the SDK treat layout feedback as an editing error.
+        layoutFrame ||= requestAnimationFrame(() => {
+          layoutFrame = 0;
+          const height = `${controls.getBoundingClientRect().height}px`;
+          if (surface.style.getPropertyValue('--teaching-controls-height') !== height)
+            surface.style.setProperty('--teaching-controls-height', height);
+        });
+      })
+    : undefined;
   layout?.observe(controls);
   let disposed = false,
     ready = false,
@@ -232,7 +251,13 @@ export function createTeachingSlideshow(input: {
     const current = slide.timing?.getAllAnimEffects() ?? [];
     if (current.length !== effects.length || current.some((effect: any, i: number) => effect !== effects[i]))
       return Promise.reject(new Error('原生动画序列已变化，请保存并重新打开 PPT'));
-    if (disposed || (!bound && effects.every((effect) => effect.isAtEnd())) || paused || pending || manager.Transition.IsPlaying())
+    if (
+      disposed ||
+      (!bound && effects.every((effect) => effect.isAtEnd())) ||
+      paused ||
+      pending ||
+      manager.Transition.IsPlaying()
+    )
       return Promise.reject(new Error('请等待当前动画完成，或先继续播放'));
     const index = steps.findIndex((group) => group.some((effect) => !effect.isAtEnd()));
     if (bound && (expectedIndex !== index || index !== ownedCompleted))
@@ -400,17 +425,18 @@ export function createTeachingSlideshow(input: {
         !paused &&
         !pending &&
         !manager.Transition.IsPlaying() &&
-        unboundEffects.some((effect, index) => effect.cTn.nodeType === 2 && effect.isIdle() && !effect.isAtEnd() &&
-          unboundEffects.slice(0, index).every((previous) => previous.isAtEnd())) &&
+        unboundEffects.some(
+          (effect, index) =>
+            effect.cTn.nodeType === 2 &&
+            effect.isIdle() &&
+            !effect.isAtEnd() &&
+            unboundEffects.slice(0, index).every((previous) => previous.isAtEnd()),
+        ) &&
         unboundEffects.every((effect) => effect.isIdle() || effect.isAtEnd())
       ) {
         if (manager.OnNextSlideAnimPlayer() !== true) throw new Error('Native page-entry animation did not start');
       }
-      if (
-        !ready &&
-        !paused &&
-        !manager.Transition.IsPlaying()
-      ) {
+      if (!ready && !paused && !manager.Transition.IsPlaying()) {
         ready = true;
         if (bound && !schedule?.hasUnbound) nativeControls.remove();
         input.onReady();

@@ -132,8 +132,11 @@ export function attentionTarget(tree: Shape[], objects: PreviewObject[], id: str
   if (matches.length !== 1) throw new Error('提示对象缺少当前映射，请保存并重新打开 PPT');
   const proof = matches[0];
   const nativeIdentity = deckwisePageLineage.hasSourceIdentity();
-  if (!nativeIdentity && proof.sourceObjectName &&
-    objects.filter(o => o.status === 'mapped' && o.sourceObjectName === proof.sourceObjectName).length !== 1)
+  if (
+    !nativeIdentity &&
+    proof.sourceObjectName &&
+    objects.filter((o) => o.status === 'mapped' && o.sourceObjectName === proof.sourceObjectName).length !== 1
+  )
     throw new Error('提示对象映射不唯一，请重新读取本页');
   // The native converter renumbers OOXML IDs; generated scene names survive conversion.
   const shapes = teachingShapes(tree).filter((s) => {
@@ -224,7 +227,7 @@ export async function createTeachingAttentionPreview(input: {
   onError(error: Error): void;
   slideshow?: HTMLElement;
 }) {
-  if ((hasUnsavedChanges() && !hasNativeTeaching())) throw new Error('请先保存并重新打开 PPT，再预览教学提示');
+  if (hasUnsavedChanges() && !hasNativeTeaching()) throw new Error('请先保存并重新打开 PPT，再预览教学提示');
   const shared = await loadTeachingPreviewRuntime();
   const api = getEditorApi() as any;
   const logic = api?.WordControl?.m_oLogicDocument;
@@ -238,7 +241,7 @@ export async function createTeachingAttentionPreview(input: {
     );
   if (deckwisePageLineage.context()?.sourceSha256 !== input.sourceSha256)
     throw new Error('页面来源已变化，请保存并重新打开当前 PPT 后预览教学提示');
-  if ((hasUnsavedChanges() && !hasNativeTeaching())) throw new Error('请先保存并重新打开 PPT，再预览教学提示');
+  if (hasUnsavedChanges() && !hasNativeTeaching()) throw new Error('请先保存并重新打开 PPT，再预览教学提示');
   const layer = input.doc.createElement('div');
   layer.dataset.teachingPreview = '';
   layer.setAttribute('aria-hidden', 'true');

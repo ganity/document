@@ -1,4 +1,10 @@
-type Color = { color?: { RGBA?: { R: number; G: number; B: number }; constructor?: unknown }; Mods?: { Mods?: Array<{ name: string; val: number }> } | null };
+/**
+ * 20. Render source image color-key transparency without changing the document.
+ */
+type Color = {
+  color?: { RGBA?: { R: number; G: number; B: number }; constructor?: unknown };
+  Mods?: { Mods?: Array<{ name: string; val: number }> } | null;
+};
 type ColorKeyEffect = { clrFrom?: Color; clrTo?: Color; useA?: boolean | null };
 type ImageGraphics = { drawImage2?: (image: CanvasImageSource, ...args: unknown[]) => unknown };
 type ImageShape = { blipFill?: { RasterImageId?: string; Effects?: unknown[] } };
@@ -32,8 +38,8 @@ export function installImageColorKeyGuard(win: Window): boolean {
 
   prototype.draw = function (graphics, ...args) {
     const effects = this.blipFill?.Effects;
-    const effect = effects?.length === 1 && effects[0] instanceof format.CClrChange!
-      ? effects[0] as ColorKeyEffect : null;
+    const effect =
+      effects?.length === 1 && effects[0] instanceof format.CClrChange! ? (effects[0] as ColorKeyEffect) : null;
     const from = effect?.clrFrom;
     const to = effect?.clrTo;
     const alpha = to?.Mods?.Mods;
@@ -43,21 +49,36 @@ export function installImageColorKeyGuard(win: Window): boolean {
     const id = this.blipFill?.RasterImageId;
     const fullId = id && scope.AscCommon?.getFullImageSrc2?.(id);
     const source = fullId ? scope.Asc?.editor?.ImageLoader?.map_image_index?.[fullId]?.Image : undefined;
-    if (!effect || effect.useA === true || !(from?.color instanceof format.CRGBColor!) ||
-        !(to?.color instanceof format.CRGBColor!) || from.Mods?.Mods?.length ||
-        alpha?.length !== 1 || alpha[0].name !== 'alpha' || alpha[0].val !== 0 ||
-        !rgb || !target || rgb.R !== target.R || rgb.G !== target.G || rgb.B !== target.B ||
-        !source || !source.complete || typeof drawImage !== 'function') {
+    if (
+      !effect ||
+      effect.useA === true ||
+      !(from?.color instanceof format.CRGBColor!) ||
+      !(to?.color instanceof format.CRGBColor!) ||
+      from.Mods?.Mods?.length ||
+      alpha?.length !== 1 ||
+      alpha[0].name !== 'alpha' ||
+      alpha[0].val !== 0 ||
+      !rgb ||
+      !target ||
+      rgb.R !== target.R ||
+      rgb.G !== target.G ||
+      rgb.B !== target.B ||
+      !source ||
+      !source.complete ||
+      typeof drawImage !== 'function'
+    ) {
       return original.call(this, graphics, ...args);
     }
     const key = `${rgb.R},${rgb.G},${rgb.B}`;
     let entries = cache.get(source);
     let canvas = entries?.get(key);
     if (!canvas) {
-      const width = source.naturalWidth, height = source.naturalHeight;
+      const width = source.naturalWidth,
+        height = source.naturalHeight;
       if (width <= 0 || height <= 0 || width * height > 16_000_000) return original.call(this, graphics, ...args);
       canvas = win.document.createElement('canvas');
-      canvas.width = width; canvas.height = height;
+      canvas.width = width;
+      canvas.height = height;
       const context = canvas.getContext('2d', { willReadFrequently: true });
       if (!context) return original.call(this, graphics, ...args);
       try {
@@ -70,7 +91,8 @@ export function installImageColorKeyGuard(win: Window): boolean {
       }
       entries ??= new Map();
       if (entries.size >= 4) entries.clear();
-      entries.set(key, canvas); cache.set(source, entries);
+      entries.set(key, canvas);
+      cache.set(source, entries);
     }
     const hadOwnMethod = Object.prototype.hasOwnProperty.call(graphics, 'drawImage2');
     const processed = canvas;

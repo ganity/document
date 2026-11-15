@@ -67,14 +67,35 @@ for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
     let pptx: Uint8Array;
     if (authoringPath) {
       const { syncSpeechAnimations } = await import(pathToFileURL(authoringPath).href);
-      const persisted = await syncSpeechAnimations({ source: makeStoredZip(entries), pages: [{
-      objects: [{ id: 'title', objectName: 'Title 1' }, { id: 'group', objectName: 'Second group' }],
-      actions: [{ type: 'speech', visualCues: [
-        { atMs: 0, endMs: 600, effect: { type: 'element_animation', elementId: 'title', effect: 'fadeIn' } },
-        { atMs: 0, endMs: 500, effect: { type: 'element_animation', elementId: 'group', effect: 'fadeIn' } },
-        { atMs: 1000, endMs: 1600, effect: { type: 'element_animation', elementId: 'title', effect: mode === 'emphasis' ? 'pulse' : 'fadeOut' } },
-      ] }],
-      }] });
+      const persisted = await syncSpeechAnimations({
+        source: makeStoredZip(entries),
+        pages: [
+          {
+            objects: [
+              { id: 'title', objectName: 'Title 1' },
+              { id: 'group', objectName: 'Second group' },
+            ],
+            actions: [
+              {
+                type: 'speech',
+                visualCues: [
+                  { atMs: 0, endMs: 600, effect: { type: 'element_animation', elementId: 'title', effect: 'fadeIn' } },
+                  { atMs: 0, endMs: 500, effect: { type: 'element_animation', elementId: 'group', effect: 'fadeIn' } },
+                  {
+                    atMs: 1000,
+                    endMs: 1600,
+                    effect: {
+                      type: 'element_animation',
+                      elementId: 'title',
+                      effect: mode === 'emphasis' ? 'pulse' : 'fadeOut',
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
       expect(persisted.changedPages).toEqual([true]);
       pptx = persisted.pptx;
     } else {
@@ -82,10 +103,13 @@ for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
       const fixtures = JSON.parse(await readFile(resolve('test/e2e/fixtures/speech-native-persisted.json'), 'utf8'));
       const timing = fixtures[mode === 'emphasis' ? 'pulse' : 'fadeOut'] as string;
       const marker = 'nodeType="mainSeq"><p:childTnLst>';
-      const effects = timing.slice(timing.indexOf(marker) + marker.length,
-        timing.lastIndexOf('</p:childTnLst></p:cTn><p:prevCondLst>')).replace(/\bid="(\d+)"/g, (_, id) => `id="${Number(id) + 100}"`);
-      source.data = source.data.replace(/\n              <\/p:childTnLst>\n            <\/p:cTn>/,
-        `${effects}\n              </p:childTnLst>\n            </p:cTn>`);
+      const effects = timing
+        .slice(timing.indexOf(marker) + marker.length, timing.lastIndexOf('</p:childTnLst></p:cTn><p:prevCondLst>'))
+        .replace(/\bid="(\d+)"/g, (_, id) => `id="${Number(id) + 100}"`);
+      source.data = source.data.replace(
+        /\n              <\/p:childTnLst>\n            <\/p:cTn>/,
+        `${effects}\n              </p:childTnLst>\n            </p:cTn>`,
+      );
       pptx = makeStoredZip(entries);
     }
     await page.goto('/embed-demo.html');
@@ -94,15 +118,12 @@ for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
       (document.querySelector('#editorFrame') as HTMLIFrameElement).src = '/editor?embed=1&deckwise=1&locale=zh-CN';
     });
     await expect(page.locator('#status')).toHaveText('ready', { timeout: 60000 });
-    await page.evaluate(
-      async (b64) => {
-        await post('document:open-buffer', {
-          fileName: 'schedule.pptx',
-          buffer: Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer,
-        });
-      },
-      toBase64(pptx),
-    );
+    await page.evaluate(async (b64) => {
+      await post('document:open-buffer', {
+        fileName: 'schedule.pptx',
+        buffer: Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer,
+      });
+    }, toBase64(pptx));
     await page.waitForFunction(() => !!window.__ooFrames.readyEditor(), { timeout: 60000 });
     const outer = page.frames().find((frame) => frame.url().includes('/editor?'))!;
     const result = await outer.evaluate(async (mode) => {
@@ -156,11 +177,19 @@ for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
       const located = selected.length === 1 && selected[0] === slide.cSld.spTree[0];
       const control = api.WordControl as typeof api.WordControl & { m_oOverlay: { HtmlElement: HTMLCanvasElement } };
       const overlay = control.m_oOverlay.HtmlElement;
-      if (!overlay.getContext('2d')!.getImageData(0, 0, overlay.width, overlay.height).data.some((value, i) => i % 4 === 3 && value > 0))
+      if (
+        !overlay
+          .getContext('2d')!
+          .getImageData(0, 0, overlay.width, overlay.height)
+          .data.some((value, i) => i % 4 === 3 && value > 0)
+      )
         throw new Error('Locate did not draw a selection outline');
       objectChoices[1].locate();
       const controller = Reflect.get(logic, 'GetCurrentController').call(logic);
-      const group = slide.cSld.spTree[1] as typeof slide.cSld.spTree[1] & { selectedObjects: unknown[]; spTree: unknown[] };
+      const group = slide.cSld.spTree[1] as (typeof slide.cSld.spTree)[1] & {
+        selectedObjects: unknown[];
+        spTree: unknown[];
+      };
       if (controller.selection.groupSelection !== group || group.selectedObjects[0] !== group.spTree[0])
         throw new Error('Locate did not select the exact object inside its group');
       if (mode === 'legacy') {
@@ -188,8 +217,12 @@ for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
             text: doc.querySelector('[data-teaching-slideshow]')?.textContent,
           }));
           const deadline = performance.now() + 15000;
-          while (!Reflect.get(saved as object, 'getAllAnimEffects')
-            .call(saved).every((effect: { isAtEnd(): boolean }) => effect.isAtEnd()) && performance.now() < deadline)
+          while (
+            !Reflect.get(saved as object, 'getAllAnimEffects')
+              .call(saved)
+              .every((effect: { isAtEnd(): boolean }) => effect.isAtEnd()) &&
+            performance.now() < deadline
+          )
             await new Promise((resolve) => setTimeout(resolve, 20));
           if (
             !Reflect.get(saved as object, 'getAllAnimEffects')
@@ -226,7 +259,11 @@ for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
               atMs: 1000,
               endMs: 1600,
               ...(mode === 'legacy' ? {} : { trigger: { version: 1, kind: 'end' } }),
-              effect: { type: 'element_animation', elementId: objects[0].objectId, effect: mode === 'emphasis' ? 'pulse' : 'fadeOut' },
+              effect: {
+                type: 'element_animation',
+                elementId: objects[0].objectId,
+                effect: mode === 'emphasis' ? 'pulse' : 'fadeOut',
+              },
             },
           ],
         },
@@ -282,11 +319,13 @@ for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
         const target = schedule.scheduled[0].effect.getObjectId();
         if (player.animationDrawer.isDrawingVisible(target))
           throw new Error('Speech entrance target is visible before its speech trigger');
-        const pictures = () => Array.from(doc.querySelectorAll<HTMLCanvasElement>('[data-deckwise-teaching-canvas] canvas'))
-          .map(canvas => canvas.toDataURL()).join('|');
+        const pictures = () =>
+          Array.from(doc.querySelectorAll<HTMLCanvasElement>('[data-deckwise-teaching-canvas] canvas'))
+            .map((canvas) => canvas.toDataURL())
+            .join('|');
         const before = pictures();
         const playing = Promise.all([show.next(0), show.next(1)]);
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise((resolve) => setTimeout(resolve, 200));
         const during = pictures();
         await playing;
         const after = pictures();
@@ -296,8 +335,7 @@ for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
           throw new Error('Speech entrance target did not become visible');
         await show.next(2);
         const visibility = player.animationDrawer.getSandwich(target)?.getAttributesMap(target)['style.visibility'];
-        if (mode !== 'emphasis' && visibility !== 'hidden')
-          throw new Error('Speech exit did not hide its target');
+        if (mode !== 'emphasis' && visibility !== 'hidden') throw new Error('Speech exit did not hide its target');
         if (mode === 'emphasis' && !player.animationDrawer.isDrawingVisible(target))
           throw new Error('Speech emphasis hid the already revealed target');
         ended = schedule.scheduled.every((entry: { effect: { isAtEnd(): boolean } }) => entry.effect.isAtEnd());

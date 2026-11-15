@@ -105,7 +105,6 @@ pass. The corresponding Desktop fixed export archives carrier Quiz images and
 restores them into player content. Live providers and external Office save
 compatibility are not qualified by these local tests.
 
-
 ### Final assessment parity corrections
 
 Native read views expose read-only state before provider submissions. First-edit
@@ -120,7 +119,6 @@ preserve paragraph and run formatting. The browser regression verifies visible
 text and image count through Undo/Redo and save/reopen, as well as practice text
 and its original font size. Desktop generation also packages full Quiz data for
 fixed export before any manual assessment edit.
-
 
 ## Replacing persisted speech motions, 2026-11-11
 

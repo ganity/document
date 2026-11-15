@@ -15,36 +15,59 @@ test('real Part A teaching and adopted audio survive native edit, undo and PPTX 
   const inventory = JSON.parse(await readFile(fixture + '/report.json', 'utf8'));
   const original = await readFile(fixture + '/native.pptx');
   const binding = { projectId: 'real-fixture', documentId: 'family', sessionId: 'isolated' };
-  if (process.env.DECKWISE_NATIVE_MODULE) await page.addInitScript(() => {
-    if (window.parent === window) return;
-    const listeners = new Set<(command: unknown) => void>();
-    window.addEventListener('message', event => {
-      if (event.source === window.parent && event.origin === location.origin) listeners.forEach(listener => listener(event.data));
+  if (process.env.DECKWISE_NATIVE_MODULE)
+    await page.addInitScript(() => {
+      if (window.parent === window) return;
+      const listeners = new Set<(command: unknown) => void>();
+      window.addEventListener('message', (event) => {
+        if (event.source === window.parent && event.origin === location.origin)
+          listeners.forEach((listener) => listener(event.data));
+      });
+      window.deckwiseEditorHost = {
+        onCommand(listener) {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+        sendEvent(event) {
+          if (event.type === 'message') window.parent.postMessage(event.message, location.origin);
+          else if (event.type === 'saved')
+            window.parent.postMessage(
+              {
+                type: 'document:saved',
+                id: event.id,
+                payload: { file: new Blob([event.bytes!]), fileName: event.fileName, pageLineage: event.pageLineage },
+              },
+              location.origin,
+            );
+          else if (event.type === 'save-requested')
+            window.parent.postMessage({ type: 'document:save-requested', payload: {} }, location.origin);
+        },
+      };
     });
-    window.deckwiseEditorHost = {
-      onCommand(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-      sendEvent(event) {
-        if (event.type === 'message') window.parent.postMessage(event.message, location.origin);
-        else if (event.type === 'saved') window.parent.postMessage({ type: 'document:saved', id: event.id,
-          payload: { file: new Blob([event.bytes!]), fileName: event.fileName, pageLineage: event.pageLineage } }, location.origin);
-        else if (event.type === 'save-requested') window.parent.postMessage({ type: 'document:save-requested', payload: {} }, location.origin);
-      },
-    };
-  });
   await page.goto('/embed-demo.html');
   // The demo prints full native payloads; its growing text layout is outside the editor's navigation budget.
-  await page.locator('#log').evaluate(node => { node.style.display = 'none'; });
+  await page.locator('#log').evaluate((node) => {
+    node.style.display = 'none';
+  });
   await page.evaluate(() => {
     document.querySelector('#status')!.textContent = 'loading';
     (window as any).nativeHostCalls = [];
-    window.addEventListener('message', event => {
+    window.addEventListener('message', (event) => {
       if (event.data?.type !== 'document:teaching-request') return;
       const operation = event.data.payload.operation;
       (window as any).nativeHostCalls.push(operation);
-      if (!['tts:models', 'tts:list'].includes(operation)) throw new Error('Unexpected legacy teaching request: ' + operation);
-      (document.querySelector('#editorFrame') as HTMLIFrameElement).contentWindow!.postMessage({
-        type: 'document:teaching-response', id: event.data.id, payload: { result: [] },
-      }, location.origin);
+      if (!['tts:models', 'tts:list'].includes(operation))
+        throw new Error('Unexpected legacy teaching request: ' + operation);
+      (document.querySelector('#editorFrame') as HTMLIFrameElement).contentWindow!.postMessage(
+        {
+          type: 'document:teaching-response',
+          id: event.data.id,
+          payload: { result: [] },
+        },
+        location.origin,
+      );
     });
     (document.querySelector('#editorFrame') as HTMLIFrameElement).src = '/editor?embed=1&deckwise=1&locale=zh-CN';
   });
@@ -118,18 +141,35 @@ test('real Part A teaching and adopted audio survive native edit, undo and PPTX 
     ),
   ).toBe(report.before);
   await native.evaluate(() => (Reflect.get(window, 'editor') as unknown as { Redo(): void }).Redo());
-  await page.evaluate(async binding => { (document.querySelector('#editorFrame') as HTMLIFrameElement).contentWindow!.postMessage({ type: 'document:teaching-enable', payload: { binding } }, location.origin); }, binding);
+  await page.evaluate(async (binding) => {
+    (document.querySelector('#editorFrame') as HTMLIFrameElement).contentWindow!.postMessage(
+      { type: 'document:teaching-enable', payload: { binding } },
+      location.origin,
+    );
+  }, binding);
   const office = page.frameLocator('iframe#editorFrame').frameLocator('iframe[name="frameEditor"]');
   const panel = office.getByRole('complementary', { name: '教学时间轴' });
   await expect(panel).toBeVisible({ timeout: 15000 });
   await expect(office.locator('.teaching-flow article').first()).toBeVisible();
-  const pages = await page.evaluate(async binding => (await post('document:native-teaching', { binding, operation: 'read' })).teaching.pages.map((page: any) => ({ firstActionId: page.actions[0]?.id, questions: page.actions.filter((action: any) => action.type === 'interaction_checkpoint') })), binding);
+  const pages = await page.evaluate(
+    async (binding) =>
+      (await post('document:native-teaching', { binding, operation: 'read' })).teaching.pages.map((page: any) => ({
+        firstActionId: page.actions[0]?.id,
+        questions: page.actions.filter((action: any) => action.type === 'interaction_checkpoint'),
+      })),
+    binding,
+  );
   const navigationTimings: Array<{ page: number; elapsedMs: number }> = [];
   for (const index of [2, 1, 3, 4, 5, 0]) {
     const start = Date.now();
-    await native.evaluate(index => (Reflect.get(window, 'editor') as unknown as { goToPage(index: number): void }).goToPage(index), index);
+    await native.evaluate(
+      (index) => (Reflect.get(window, 'editor') as unknown as { goToPage(index: number): void }).goToPage(index),
+      index,
+    );
     if (pages[index].firstActionId) {
-      await expect(panel.locator(`.teaching-flow > article[data-action-id="${pages[index].firstActionId}"]`)).toBeVisible();
+      await expect(
+        panel.locator(`.teaching-flow > article[data-action-id="${pages[index].firstActionId}"]`),
+      ).toBeVisible();
     } else {
       await expect(panel.getByText('本页还没有讲解，可添加讲解或在主 Chat 中生成。', { exact: true })).toBeVisible();
     }
@@ -137,20 +177,33 @@ test('real Part A teaching and adopted audio survive native edit, undo and PPTX 
     navigationTimings.push({ page: index + 1, elapsedMs });
     expect(elapsedMs, `Page ${index + 1} teaching navigation must not freeze the editor`).toBeLessThan(1500);
   }
-  await info.attach('teaching-navigation-timings', { body: JSON.stringify(navigationTimings), contentType: 'application/json' });
+  await info.attach('teaching-navigation-timings', {
+    body: JSON.stringify(navigationTimings),
+    contentType: 'application/json',
+  });
   // The copied Quiz has a saved answer key but no optional explanation text.
   for (const name of ['画布预览', '幻灯片放映', '放映整课教学']) {
-    await native.evaluate(() => (Reflect.get(window, 'editor') as unknown as { goToPage(index: number): void }).goToPage(4));
+    await native.evaluate(() =>
+      (Reflect.get(window, 'editor') as unknown as { goToPage(index: number): void }).goToPage(4),
+    );
     await expect(panel.locator(`article[data-action-id="${pages[4].firstActionId}"]`)).toBeVisible();
     await panel.getByRole('button', { name, exact: true }).click();
     if (name === '放映整课教学') {
       // Empty page 3 advances immediately to page 4.
       let currentIndex = 0;
       for (const index of [1, 3, 4]) {
-        await expect(panel.locator(`article[data-action-id="${pages[currentIndex].firstActionId}"][data-playing]`)).toBeVisible({ timeout: 20000 });
+        await expect(
+          panel.locator(`article[data-action-id="${pages[currentIndex].firstActionId}"][data-playing]`),
+        ).toBeVisible({ timeout: 20000 });
         await expect(office.locator('[data-teaching-slideshow]')).toBeVisible({ timeout: 20000 });
         await office.locator('[data-teaching-slideshow]').getByRole('button', { name: '下一页', exact: true }).click();
-        await expect.poll(() => native.evaluate(() => (Reflect.get(window, 'editor') as unknown as { getCurrentPage(): number }).getCurrentPage())).toBe(index);
+        await expect
+          .poll(() =>
+            native.evaluate(() =>
+              (Reflect.get(window, 'editor') as unknown as { getCurrentPage(): number }).getCurrentPage(),
+            ),
+          )
+          .toBe(index);
         currentIndex = index;
       }
     }
@@ -180,7 +233,9 @@ test('real Part A teaching and adopted audio survive native edit, undo and PPTX 
     const show = office.locator('[data-teaching-slideshow]');
     if (await show.count()) await show.getByRole('button', { name: '退出教学放映', exact: true }).click();
   }
-  await native.evaluate(() => (Reflect.get(window, 'editor') as unknown as { goToPage(index: number): void }).goToPage(0));
+  await native.evaluate(() =>
+    (Reflect.get(window, 'editor') as unknown as { goToPage(index: number): void }).goToPage(0),
+  );
   await expect(panel.locator(`article[data-action-id="${pages[0].firstActionId}"]`)).toBeVisible();
   // Exercise the copied lesson's original nested targets and native animations before replacing any cues.
   for (const name of ['画布预览', '幻灯片放映', '放映整课教学']) {
@@ -197,26 +252,64 @@ test('real Part A teaching and adopted audio survive native edit, undo and PPTX 
   await expect(narration).toBeEnabled();
   const beforeText = await narration.inputValue();
   await narration.fill(beforeText + ' 验证原生编辑');
-  await expect.poll(async () => page.evaluate(async binding => (await post('document:native-teaching', { binding, operation: 'read' })).teaching.pages[0].actions[0].text, binding)).toBe(beforeText + ' 验证原生编辑');
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        async (binding) =>
+          (await post('document:native-teaching', { binding, operation: 'read' })).teaching.pages[0].actions[0].text,
+        binding,
+      ),
+    )
+    .toBe(beforeText + ' 验证原生编辑');
   await narration.blur();
   await panel.getByRole('button', { name: '撤销', exact: true }).click();
-  await expect.poll(async () => page.evaluate(async binding => (await post('document:native-teaching', { binding, operation: 'read' })).teaching.pages[0].actions[0].text, binding)).toBe(beforeText);
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        async (binding) =>
+          (await post('document:native-teaching', { binding, operation: 'read' })).teaching.pages[0].actions[0].text,
+        binding,
+      ),
+    )
+    .toBe(beforeText);
   await expect(panel.getByRole('button', { name: '试听语音', exact: true })).toBeVisible();
   await panel.getByRole('button', { name: '试听语音', exact: true }).click();
-  await expect.poll(() => panel.locator('audio').evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0);
+  await expect
+    .poll(() => panel.locator('audio').evaluate((audio: HTMLAudioElement) => audio.currentTime))
+    .toBeGreaterThan(0);
   await panel.locator('audio').evaluate((audio: HTMLAudioElement) => audio.pause());
-  const targetId = await page.evaluate(async binding => {
-    const result = await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'open', page: 1 });
+  const targetId = await page.evaluate(async (binding) => {
+    const result = await post('document:native-teaching', {
+      binding,
+      operation: 'route',
+      routeOperation: 'open',
+      page: 1,
+    });
     const view = result.routed.value;
     const target = view.teachingObjects.find((object: any) => object.effectTargetEligible);
     if (!target) throw new Error('Real slide has no native attention target');
     const actions = structuredClone(view.project.pages[0].actions);
     actions[0].visualCues = [
-      { id: 'real-highlight', atMs: 0, endMs: 5000, effect: { type: 'highlight', elementIds: [target.objectId], style: 'outline', color: '#ff9900' } },
-      { id: 'real-spotlight', atMs: 0, endMs: 5000, effect: { type: 'spotlight', elementId: target.objectId, dimOpacity: 0.6 } },
+      {
+        id: 'real-highlight',
+        atMs: 0,
+        endMs: 5000,
+        effect: { type: 'highlight', elementIds: [target.objectId], style: 'outline', color: '#ff9900' },
+      },
+      {
+        id: 'real-spotlight',
+        atMs: 0,
+        endMs: 5000,
+        effect: { type: 'spotlight', elementId: target.objectId, dimOpacity: 0.6 },
+      },
     ];
-    await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'write', page: 1,
-      args: { viewId: view.viewId, expectedTeachingRevision: view.project.teachingRevision, actions } });
+    await post('document:native-teaching', {
+      binding,
+      operation: 'route',
+      routeOperation: 'write',
+      page: 1,
+      args: { viewId: view.viewId, expectedTeachingRevision: view.project.teachingRevision, actions },
+    });
     return target.objectId;
   }, binding);
   await expect.poll(() => panel.getByRole('button', { name: '试听语音', exact: true }).isEnabled()).toBe(true);
@@ -225,13 +318,16 @@ test('real Part A teaching and adopted audio survive native edit, undo and PPTX 
   await expect(office.locator('[data-attention-kind="spotlight"]')).toBeVisible();
   await panel.locator('audio').evaluate((audio: HTMLAudioElement) => audio.pause());
   const hostCalls = await page.evaluate(() => (window as any).nativeHostCalls as string[]);
-  expect(hostCalls.every(operation => ['tts:models', 'tts:list'].includes(operation))).toBe(true);
+  expect(hostCalls.every((operation) => ['tts:models', 'tts:list'].includes(operation))).toBe(true);
   const exported = await page.evaluate(async () =>
     Array.from(new Uint8Array(await (await post('document:save')).file.arrayBuffer())),
   );
   const output = new Uint8Array(exported);
   await writeFile(info.outputPath('real-native-edited.pptx'), output);
-  await info.attach('real-native-edited', { path: info.outputPath('real-native-edited.pptx'), contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
+  await info.attach('real-native-edited', {
+    path: info.outputPath('real-native-edited.pptx'),
+    contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  });
   const xml = (
     await Promise.all(
       zipEntryNames(output)
@@ -260,7 +356,15 @@ test('real Part A teaching and adopted audio survive native edit, undo and PPTX 
       operation: 'audio',
       assetId: action.audioAssetId,
     });
-    return { revision: teaching.revision, audioBytes: (await audio.arrayBuffer()).byteLength, cues: action.visualCues, identity: teaching.identity, assessments: teaching.pages.slice(4).map((page: any) => page.actions.filter((action: any) => action.type === "interaction_checkpoint")) };
+    return {
+      revision: teaching.revision,
+      audioBytes: (await audio.arrayBuffer()).byteLength,
+      cues: action.visualCues,
+      identity: teaching.identity,
+      assessments: teaching.pages
+        .slice(4)
+        .map((page: any) => page.actions.filter((action: any) => action.type === 'interaction_checkpoint')),
+    };
   }, binding);
   expect(reopened.audioBytes).toBe(report.audioBytes);
   expect(reopened.cues[0].effect.elementIds).toEqual([targetId]);

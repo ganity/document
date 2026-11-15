@@ -11,6 +11,8 @@ export default defineConfig({
     alias: [{ find: '@', replacement: __dirname }, ...workspaceSourceAliases(__dirname)],
   },
   test: {
+    // Each file owns a jsdom editor; bound memory and CPU during full-suite runs.
+    maxWorkers: 2,
     environment: 'jsdom',
     globals: true,
     setupFiles: ['test/setup/vitest.ts'],

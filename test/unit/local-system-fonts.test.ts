@@ -20,7 +20,9 @@ describe('private local font catalog', () => {
       const result = systemFontCatalog(source, folder);
       expect(result.available.size).toBe(0);
       expect(readCatalog(result.source).__fonts_infos).toEqual(readCatalog(source).__fonts_infos);
-    } finally { rmSync(folder, { recursive: true }); }
+    } finally {
+      rmSync(folder, { recursive: true });
+    }
   });
 
   it('rejects a file whose embedded family is not the requested installed face', () => {
@@ -28,15 +30,22 @@ describe('private local font catalog', () => {
     try {
       copyFileSync(resolve(__dirname, '../../public/fonts/112'), join(folder, 'calibrib.ttf'));
       expect(systemFontCatalog(source, folder).available.size).toBe(0);
-    } finally { rmSync(folder, { recursive: true }); }
+    } finally {
+      rmSync(folder, { recursive: true });
+    }
   });
 
   it.skipIf(process.platform !== 'win32')('keeps shaping, painting and aliases bound to installed faces', () => {
     const result = systemFontCatalog(source, join(process.env.SystemRoot || 'C:/Windows', 'Fonts'));
     const catalog = readCatalog(result.source);
     const records = decode(catalog.g_fonts_selection_bin).records;
-    for (const [name, filename] of [['Calibri', 'calibri.ttf'], ['SimSun', 'simsun.ttc'], ['SimHei', 'simhei.ttf'],
-      ['KaiTi', 'simkai.ttf'], ['FangSong', 'simfang.ttf']]) {
+    for (const [name, filename] of [
+      ['Calibri', 'calibri.ttf'],
+      ['SimSun', 'simsun.ttc'],
+      ['SimHei', 'simhei.ttf'],
+      ['KaiTi', 'simkai.ttf'],
+      ['FangSong', 'simfang.ttf'],
+    ]) {
       const row = catalog.__fonts_infos.find((entry: any[]) => entry[0] === name);
       if (!result.available.has(`desktop-system-${filename}`)) continue;
       expect(catalog.__fonts_files[row[1]]).toMatch(/^desktop-system-/);
@@ -44,10 +53,16 @@ describe('private local font catalog', () => {
       expect(selected.length).toBeGreaterThan(0);
       expect(selected.every((r: any) => r.path.startsWith('/desktop-system-fonts/'))).toBe(true);
     }
-    expect(catalog.__fonts_infos.find((r: any[]) => r[0] === '宋体').slice(1)).toEqual(catalog.__fonts_infos.find((r: any[]) => r[0] === 'SimSun').slice(1));
-    for (const [family, ...aliases] of [['KaiTi', '楷体', '楷体_GB2312'], ['FangSong', '仿宋', '仿宋_GB2312']]) {
+    expect(catalog.__fonts_infos.find((r: any[]) => r[0] === '宋体').slice(1)).toEqual(
+      catalog.__fonts_infos.find((r: any[]) => r[0] === 'SimSun').slice(1),
+    );
+    for (const [family, ...aliases] of [
+      ['KaiTi', '楷体', '楷体_GB2312'],
+      ['FangSong', '仿宋', '仿宋_GB2312'],
+    ]) {
       const row = catalog.__fonts_infos.find((r: any[]) => r[0] === family);
-      for (const alias of aliases) expect(catalog.__fonts_infos.find((r: any[]) => r[0] === alias).slice(1)).toEqual(row.slice(1));
+      for (const alias of aliases)
+        expect(catalog.__fonts_infos.find((r: any[]) => r[0] === alias).slice(1)).toEqual(row.slice(1));
     }
   });
 
@@ -57,11 +72,31 @@ describe('private local font catalog', () => {
     try {
       let handler: any;
       const hook = localSystemFonts('not-a-real-directory').configureServer as (server: any) => void;
-      hook({ middlewares: { use: (fn: any) => { handler = fn; } } });
-      for (const headers of [{ host: 'evil.test' }, { host: '127.0.0.1:4382', 'sec-fetch-site': 'cross-site' }, { host: 'localhost:4382', origin: 'https://evil.test' }]) {
+      hook({
+        middlewares: {
+          use: (fn: any) => {
+            handler = fn;
+          },
+        },
+      });
+      for (const headers of [
+        { host: 'evil.test' },
+        { host: '127.0.0.1:4382', 'sec-fetch-site': 'cross-site' },
+        { host: 'localhost:4382', origin: 'https://evil.test' },
+      ]) {
         let status = 0;
-        handler({ url: '/sdkjs/common/AllFonts.js', headers, socket: { localAddress: '127.0.0.1' }, method: 'GET' },
-          { writeHead: (code: number) => { status = code; }, end() {} }, () => { throw new Error('must not continue'); });
+        handler(
+          { url: '/sdkjs/common/AllFonts.js', headers, socket: { localAddress: '127.0.0.1' }, method: 'GET' },
+          {
+            writeHead: (code: number) => {
+              status = code;
+            },
+            end() {},
+          },
+          () => {
+            throw new Error('must not continue');
+          },
+        );
         expect(status).toBe(403);
       }
     } finally {
@@ -76,13 +111,38 @@ describe('private local font catalog', () => {
     try {
       let handler: any;
       const hook = localSystemFonts(resolve(__dirname, '../..')).configureServer as (server: any) => void;
-      hook({ middlewares: { use: (fn: any) => { handler = fn; } } });
+      hook({
+        middlewares: {
+          use: (fn: any) => {
+            handler = fn;
+          },
+        },
+      });
       let status = 0;
       let body: Buffer | undefined;
       const headers: Record<string, string> = {};
-      handler({ url: '/fonts/desktop-system-simsun.ttc', headers: { host: '127.0.0.1:4371', origin: 'http://127.0.0.1:4371', 'sec-fetch-site': 'same-origin' }, socket: { localAddress: '127.0.0.1' }, method: 'GET' },
-        { writeHead: (code: number) => { status = code; }, setHeader: (key: string, value: string) => { headers[key] = value; }, end: (data: Buffer) => { body = data; } },
-        () => { throw new Error('known system font request must be handled'); });
+      handler(
+        {
+          url: '/fonts/desktop-system-simsun.ttc',
+          headers: { host: '127.0.0.1:4371', origin: 'http://127.0.0.1:4371', 'sec-fetch-site': 'same-origin' },
+          socket: { localAddress: '127.0.0.1' },
+          method: 'GET',
+        },
+        {
+          writeHead: (code: number) => {
+            status = code;
+          },
+          setHeader: (key: string, value: string) => {
+            headers[key] = value;
+          },
+          end: (data: Buffer) => {
+            body = data;
+          },
+        },
+        () => {
+          throw new Error('known system font request must be handled');
+        },
+      );
       expect(status).toBe(0);
       expect(headers['Cross-Origin-Resource-Policy']).toBe('same-origin');
       expect(body && body.length).toBeGreaterThan(1024 * 1024);

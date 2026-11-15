@@ -15,8 +15,12 @@ export function resolvePptxThemeEastAsianFonts(xml: string): string | null {
       const children = Array.from(collection.children);
       const ea = children.find((element) => element.namespaceURI === DRAWING_NS && element.localName === 'ea');
       if (!ea || ea.getAttribute('typeface')?.trim()) continue;
-      const hans = children.find((element) => element.namespaceURI === DRAWING_NS &&
-        element.localName === 'font' && element.getAttribute('script') === 'Hans');
+      const hans = children.find(
+        (element) =>
+          element.namespaceURI === DRAWING_NS &&
+          element.localName === 'font' &&
+          element.getAttribute('script') === 'Hans',
+      );
       const face = hans?.getAttribute('typeface')?.trim();
       if (!face) continue;
       ea.setAttribute('typeface', face);

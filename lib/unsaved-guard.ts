@@ -31,7 +31,9 @@ const listeners = new Set<UnsavedChangesListener>();
 const editListeners = new Set<() => void>();
 export function onDocumentEdit(listener: () => void): () => void {
   editListeners.add(listener);
-  return () => { editListeners.delete(listener); };
+  return () => {
+    editListeners.delete(listener);
+  };
 }
 
 function setDirty(next: boolean): void {

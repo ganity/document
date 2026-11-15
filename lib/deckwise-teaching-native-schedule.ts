@@ -83,9 +83,14 @@ export function prepareSpeechNativeSchedule(
         } else {
           const preset = runtime.nativeMotionPreset(cue.effect.effect);
           if (!preset) throw new Error('Unsupported teaching animation');
-          const mirror = candidates.find((effect) => !claimed.has(effect) &&
-            effect.cTn.presetClass === preset.presetClass && effect.cTn.presetID === preset.presetId &&
-            (effect.cTn.presetSubtype ?? 0) === preset.subtype && effect.asc_getDuration() === cue.endMs - cue.atMs);
+          const mirror = candidates.find(
+            (effect) =>
+              !claimed.has(effect) &&
+              effect.cTn.presetClass === preset.presetClass &&
+              effect.cTn.presetID === preset.presetId &&
+              (effect.cTn.presetSubtype ?? 0) === preset.subtype &&
+              effect.asc_getDuration() === cue.endMs - cue.atMs,
+          );
           if (!mirror) throw new Error('讲解关联的动画尚未写入 PPT，请先完成课件生成并保存原生动画。');
           claimed.add(mirror);
           effect = mirror.createDuplicate();

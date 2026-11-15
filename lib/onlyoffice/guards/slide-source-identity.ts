@@ -1,3 +1,6 @@
+/**
+ * 24. Capture source shape identity before the SDK regenerates identifiers.
+ */
 import { installNestedSlideAnimations } from './nested-slide-animations';
 
 /** Import identity must be captured before ReadGroupShapeMain regenerates format IDs. */

@@ -8,7 +8,10 @@ import { secureEditorHtml } from './editor-csp.mjs';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const outDir = resolve(root, process.argv[2] ?? 'dist-module');
 await build({
-  configFile: false, root, base: './', publicDir: resolve(root, 'public'),
+  configFile: false,
+  root,
+  base: './',
+  publicDir: resolve(root, 'public'),
   resolve: { alias: [{ find: '@', replacement: root }, ...workspaceSourceAliases(root)] },
   build: { outDir, rollupOptions: { input: resolve(root, 'module.html') } },
 });

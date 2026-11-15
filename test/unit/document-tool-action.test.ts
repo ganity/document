@@ -216,11 +216,13 @@ describe('reviewed document API operations', () => {
     }
   });
   it('keeps read-only teaching slideshow controls outside document interaction revisions', () => {
-    const state = mount(), scope = captureDocumentToolTarget();
+    const state = mount(),
+      scope = captureDocumentToolTarget();
     const surface = state.frame.contentDocument!.createElement('section');
     surface.dataset.teachingSlideshow = '';
     const button = state.frame.contentDocument!.createElement('button');
-    surface.append(button); state.frame.contentDocument!.body.append(surface);
+    surface.append(button);
+    state.frame.contentDocument!.body.append(surface);
     button.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     expect(scope.isCurrent()).toBe(true);
     state.frame.contentDocument!.dispatchEvent(new Event('pointerdown'));

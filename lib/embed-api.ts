@@ -1,5 +1,12 @@
 import { routeNativeTeaching } from './deckwise-native-teaching-router';
-import { readNativeTeaching, replaceNativeTeachingPage, adoptNativeTeachingAudio, nativeTeachingAudio, prepareNativeTeachingSave, initializeNativeTeaching } from './deckwise-native-teaching';
+import {
+  readNativeTeaching,
+  replaceNativeTeachingPage,
+  adoptNativeTeachingAudio,
+  nativeTeachingAudio,
+  prepareNativeTeachingSave,
+  initializeNativeTeaching,
+} from './deckwise-native-teaching';
 import { mountPanelContext } from './agent-plugin/ui/panel-context';
 import { mountDeckwiseTeachingSidebar } from './deckwise-teaching-sidebar';
 import { clearActiveSource } from './active-document-source';
@@ -12,7 +19,14 @@ import { openDocumentFromUrl } from './document';
 import { destroyEditorInstance, getReadonlyMode, requestSaveDocument, setReadonlyMode } from './onlyoffice-editor';
 import { hasPendingEmbeddedSaveRequest } from './onlyoffice/save-stream';
 import { captureSavePoint, commitSavePoint, invalidateSavedPoint, isSavePointCurrent } from './onlyoffice/save-point';
-import { hasUnsavedChanges, markDocumentDirty, markDocumentSaved, onUnsavedChangesChange, getLastEditAt, onDocumentEdit } from './unsaved-guard';
+import {
+  hasUnsavedChanges,
+  markDocumentDirty,
+  markDocumentSaved,
+  onUnsavedChangesChange,
+  getLastEditAt,
+  onDocumentEdit,
+} from './unsaved-guard';
 import { DECKWISE_SAVE_REQUEST_EVENT, isDeckWiseMode, setEditorHostMode } from './embed-mode';
 import { cleanupViewportFollow } from './onlyoffice/viewport';
 import { deckwiseEditorBridge } from './deckwise-editor-bridge';
@@ -56,7 +70,12 @@ let initialized = false;
 let parentOrigin = '*';
 let acceptedParentOrigin: string | null = null;
 let isEmbedMode = false;
-let pendingHostSave: { id: string; point: ReturnType<typeof captureSavePoint>; exported: boolean; lineage?: Parameters<typeof deckwisePageLineage.commitSave>[0] } | null = null;
+let pendingHostSave: {
+  id: string;
+  point: ReturnType<typeof captureSavePoint>;
+  exported: boolean;
+  lineage?: Parameters<typeof deckwisePageLineage.commitSave>[0];
+} | null = null;
 let saveOutcomeUncertain = false;
 let moduleSend: ((type: string, payload: EmbedResponsePayload, id?: string) => void) | undefined;
 let moduleEpoch = 0;
@@ -217,8 +236,12 @@ async function handleMessage(event: MessageEvent): Promise<void> {
 }
 
 function validMessage(message: unknown): message is EmbedMessage {
-  return !!message && typeof message === 'object' &&
-    typeof Reflect.get(message, 'type') === 'string' && Reflect.get(message, 'type').startsWith('document:');
+  return (
+    !!message &&
+    typeof message === 'object' &&
+    typeof Reflect.get(message, 'type') === 'string' &&
+    Reflect.get(message, 'type').startsWith('document:')
+  );
 }
 
 async function handleCommand(message: EmbedMessage): Promise<void> {
@@ -236,14 +259,36 @@ async function handleCommand(message: EmbedMessage): Promise<void> {
       case 'document:native-teaching': {
         if (!isDeckWiseMode()) throw new Error('Teaching requires DeckWise mode');
         const nativeContext = deckwiseEditorBridge.getContext(payload.binding);
-        if (payload.operation === 'route' && ['write', 'assessment-insert'].includes(payload.routeOperation) && payload.args?.expectedEditGeneration !== undefined &&
-            (!Number.isSafeInteger(payload.args.expectedEditGeneration) || payload.args.expectedEditGeneration !== nativeContext.editGeneration))
+        if (
+          payload.operation === 'route' &&
+          ['write', 'assessment-insert'].includes(payload.routeOperation) &&
+          payload.args?.expectedEditGeneration !== undefined &&
+          (!Number.isSafeInteger(payload.args.expectedEditGeneration) ||
+            payload.args.expectedEditGeneration !== nativeContext.editGeneration)
+        )
           throw new Error('Native editor generation changed before narration write');
-        if (payload.operation === 'route') reply('document:native-teaching-result', { routed: await routeNativeTeaching(payload.routeOperation, payload.args ?? {}, payload.page) }, message.id);
-        else if (payload.operation === 'read') reply('document:native-teaching-result', { teaching: readNativeTeaching() }, message.id);
-        else if (payload.operation === 'replace-page') reply('document:native-teaching-result', { teaching: replaceNativeTeachingPage(payload.command) }, message.id);
-        else if (payload.operation === 'adopt-audio') reply('document:native-teaching-result', { teaching: await adoptNativeTeachingAudio(payload.command) }, message.id);
-        else if (payload.operation === 'audio') reply('document:native-teaching-result', { audio: await nativeTeachingAudio(payload.assetId) }, message.id);
+        if (payload.operation === 'route')
+          reply(
+            'document:native-teaching-result',
+            { routed: await routeNativeTeaching(payload.routeOperation, payload.args ?? {}, payload.page) },
+            message.id,
+          );
+        else if (payload.operation === 'read')
+          reply('document:native-teaching-result', { teaching: readNativeTeaching() }, message.id);
+        else if (payload.operation === 'replace-page')
+          reply(
+            'document:native-teaching-result',
+            { teaching: replaceNativeTeachingPage(payload.command) },
+            message.id,
+          );
+        else if (payload.operation === 'adopt-audio')
+          reply(
+            'document:native-teaching-result',
+            { teaching: await adoptNativeTeachingAudio(payload.command) },
+            message.id,
+          );
+        else if (payload.operation === 'audio')
+          reply('document:native-teaching-result', { audio: await nativeTeachingAudio(payload.assetId) }, message.id);
         else throw new Error('Unsupported native teaching operation');
         break;
       }
@@ -330,11 +375,7 @@ async function handleCommand(message: EmbedMessage): Promise<void> {
         } else if (message.type === 'document:review-image') {
           if (Object.keys(payload).some((key) => !['binding', 'asset'].includes(key)))
             throw new Error('Invalid image review payload');
-          reply(
-            'document:context',
-            deckwiseEditorBridge.reviewImage(payload.binding, payload.asset),
-            message.id,
-          );
+          reply('document:context', deckwiseEditorBridge.reviewImage(payload.binding, payload.asset), message.id);
         } else if (message.type === 'document:execute-image') {
           if (Object.keys(payload).some((key) => !['command', 'bytes'].includes(key)))
             throw new Error('Invalid image execution payload');
@@ -383,9 +424,11 @@ async function handleCommand(message: EmbedMessage): Promise<void> {
 
       case 'document:configure-ui': {
         if (!moduleSend) throw new Error('UI configuration requires the desktop module');
-        if (Object.keys(payload).some(key => !['theme', 'teachingOpen'].includes(key)) ||
-            (payload.theme !== undefined && !['light', 'dark'].includes(payload.theme)) ||
-            (payload.teachingOpen !== undefined && typeof payload.teachingOpen !== 'boolean'))
+        if (
+          Object.keys(payload).some((key) => !['theme', 'teachingOpen'].includes(key)) ||
+          (payload.theme !== undefined && !['light', 'dark'].includes(payload.theme)) ||
+          (payload.teachingOpen !== undefined && typeof payload.teachingOpen !== 'boolean')
+        )
           throw new Error('Invalid editor UI configuration');
         moduleUi = { ...moduleUi, ...payload };
         if (moduleUi.theme) document.documentElement.setAttribute('data-ran-theme', moduleUi.theme);
@@ -446,7 +489,10 @@ async function handleCommand(message: EmbedMessage): Promise<void> {
           throw error;
         }
         if (!current()) return;
-        if (pending) { pending.exported = true; pendingHostSave!.lineage = pageLineage; }
+        if (pending) {
+          pending.exported = true;
+          pendingHostSave!.lineage = pageLineage;
+        }
         // The host now holds the edited bytes. A timeout fallback may have
         // handed it the original file instead, which saves nothing -- the
         // request cannot tell the two apart, so that mode never clears the flag.
@@ -516,8 +562,12 @@ export function initEmbedApi(): void {
   if (acceptedParentOrigin) parentOrigin = normalizeTargetOrigin(acceptedParentOrigin);
   if (!isEmbedMode) return;
   installHostEvents();
-  window.addEventListener('message', (event) => { void handleMessage(event); });
-  window.addEventListener('load', () => { postToParent('document:ready'); });
+  window.addEventListener('message', (event) => {
+    void handleMessage(event);
+  });
+  window.addEventListener('load', () => {
+    postToParent('document:ready');
+  });
 }
 
 /** One document host per page; the desktop transport never accepts window messages. */
@@ -533,7 +583,7 @@ export function mountEditorModule(options: {
   setEditorHostMode(options.deckwise ? 'deckwise' : 'embedded');
   const cleanupEvents = installHostEvents();
   let disposed = false;
-  const unsubscribe = options.subscribe(command => {
+  const unsubscribe = options.subscribe((command) => {
     if (validMessage(command)) void handleCommand(command);
   });
   postToParent('document:ready');
@@ -594,15 +644,19 @@ function installHostEvents(): () => void {
     });
     cleanup.push(() => panelContext.dispose());
   }
-  cleanup.push(onDocumentEdit(() => {
-    clearTimeout(autosaveTimer);
-    if (isDeckWiseMode()) autosaveTimer = setTimeout(autosave, 1500);
-  }));
-  cleanup.push(onUnsavedChangesChange((dirty) => {
-    postToParent('document:dirty-changed', { dirty });
-    clearTimeout(autosaveTimer);
-    if (dirty && isDeckWiseMode()) autosaveTimer = setTimeout(autosave, 1500);
-  }));
+  cleanup.push(
+    onDocumentEdit(() => {
+      clearTimeout(autosaveTimer);
+      if (isDeckWiseMode()) autosaveTimer = setTimeout(autosave, 1500);
+    }),
+  );
+  cleanup.push(
+    onUnsavedChangesChange((dirty) => {
+      postToParent('document:dirty-changed', { dirty });
+      clearTimeout(autosaveTimer);
+      if (dirty && isDeckWiseMode()) autosaveTimer = setTimeout(autosave, 1500);
+    }),
+  );
   if (isDeckWiseMode()) {
     document.body.classList.add('deckwise-mode');
     const onSave = () => postToParent('document:save-requested');
@@ -611,7 +665,7 @@ function installHostEvents(): () => void {
   }
   return () => {
     clearTimeout(autosaveTimer);
-    cleanup.forEach(dispose => dispose());
+    cleanup.forEach((dispose) => dispose());
     document.body.classList.remove('embed-mode', 'deckwise-mode');
   };
 }

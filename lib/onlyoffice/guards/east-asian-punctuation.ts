@@ -1,9 +1,15 @@
+/**
+ * 18. Keep Chinese smart quotes in the East Asian font slot.
+ */
 type FontApi = {
   fonthint_EastAsia?: number;
   fontslot_EastAsia?: number;
   fontslot_HAnsi?: number;
   GetFontSlot?: (codePoint: number, hint: number, language: number, cs: boolean, rtl: boolean) => number;
-  GetFontSlotByTextPr?: (codePoint: number, textPr: { RFonts?: { Hint?: number }; Lang?: { Val?: number; EastAsia?: number }; CS?: boolean; RTL?: boolean }) => number;
+  GetFontSlotByTextPr?: (
+    codePoint: number,
+    textPr: { RFonts?: { Hint?: number }; Lang?: { Val?: number; EastAsia?: number }; CS?: boolean; RTL?: boolean },
+  ) => number;
   __eastAsianQuoteHint?: boolean;
 };
 
@@ -22,8 +28,14 @@ export function installEastAsianPunctuationGuard(win: Window): boolean {
   api.GetFontSlotByTextPr = function (codePoint, textPr) {
     const language = textPr?.Lang?.Val ?? textPr?.Lang?.EastAsia ?? 0;
     if ((language & 0x3ff) === 0x04 && QUOTES.has(codePoint)) {
-      return getFontSlot.call(api, codePoint, api.fonthint_EastAsia ?? 2, language,
-        Boolean(textPr.CS), Boolean(textPr.RTL));
+      return getFontSlot.call(
+        api,
+        codePoint,
+        api.fonthint_EastAsia ?? 2,
+        language,
+        Boolean(textPr.CS),
+        Boolean(textPr.RTL),
+      );
     }
     return original.call(originalThis, codePoint, textPr);
   };

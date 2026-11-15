@@ -1,6 +1,15 @@
+/**
+ * 23. Preserve animation targets inside groups during SDK import.
+ */
 type Shape = { Id: string; group?: Shape; parent?: { cSld?: { spTree?: Shape[] } }; spTree?: Shape[] };
-type Target = { spid: string | null; subSpId: string | null; parent?: { onRemoveChild(target: Target): void };
-  setSpid(id: string): void; setSubSpId(id: string): void; assignConnection(shapes: Record<string, Shape>): void };
+type Target = {
+  spid: string | null;
+  subSpId: string | null;
+  parent?: { onRemoveChild(target: Target): void };
+  setSpid(id: string): void;
+  setSubSpId(id: string): void;
+  assignConnection(shapes: Record<string, Shape>): void;
+};
 const installed = new WeakSet<object>();
 
 /** SDK v9 drops group-child timing on import because its target check only accepts top-level shapes. */

@@ -39,8 +39,13 @@ export class DeckWisePageLineage {
         animations: WeakMap<Slide, { effects: any[]; signature: string }>;
       }
     | undefined;
-  private exported: { outputSha256: string; shapes: WeakMap<Shape, { sourcePageToken: string; sourceName?: string; sourceShapeId?: string }>;
-    animations: WeakMap<Slide, { effects: any[]; signature: string }> } | undefined;
+  private exported:
+    | {
+        outputSha256: string;
+        shapes: WeakMap<Shape, { sourcePageToken: string; sourceName?: string; sourceShapeId?: string }>;
+        animations: WeakMap<Slide, { effects: any[]; signature: string }>;
+      }
+    | undefined;
   private epoch = 0;
 
   reset(): void {
@@ -103,7 +108,18 @@ export class DeckWisePageLineage {
       tokens.set(slide, token);
       return token;
     });
-    this.opened = { ...pending, api, logic, tokens, openedPageTokens, identityCaptured: logic.Slides.every(slide => (slide.cSld?.spTree ?? []).every(shape => importedSlideShapeId(shape) !== undefined)), shapes: new WeakMap(), animations: new WeakMap() };
+    this.opened = {
+      ...pending,
+      api,
+      logic,
+      tokens,
+      openedPageTokens,
+      identityCaptured: logic.Slides.every((slide) =>
+        (slide.cSld?.spTree ?? []).every((shape) => importedSlideShapeId(shape) !== undefined),
+      ),
+      shapes: new WeakMap(),
+      animations: new WeakMap(),
+    };
     this.recordObjects();
   }
 
@@ -147,8 +163,17 @@ export class DeckWisePageLineage {
 
   private animation(slide: Slide) {
     const effects = slide.timing?.getAllAnimEffects?.() ?? [];
-    const signature = JSON.stringify(effects.map(effect => [effect.getObjectId?.(), effect.cTn?.presetClass,
-      effect.cTn?.presetID, effect.cTn?.presetSubtype, effect.cTn?.nodeType, effect.asc_getDuration?.(), effect.asc_getDelay?.()]));
+    const signature = JSON.stringify(
+      effects.map((effect) => [
+        effect.getObjectId?.(),
+        effect.cTn?.presetClass,
+        effect.cTn?.presetID,
+        effect.cTn?.presetSubtype,
+        effect.cTn?.nodeType,
+        effect.asc_getDuration?.(),
+        effect.asc_getDelay?.(),
+      ]),
+    );
     return { effects: [...effects], signature };
   }
 
@@ -160,7 +185,12 @@ export class DeckWisePageLineage {
       const sourcePageToken = opened.tokens.get(slide)!;
       for (const shape of slide.cSld?.spTree ?? []) {
         const name = shape.getUniNvProps?.()?.cNvPr?.name;
-        if (name || importedSlideShapeId(shape)) opened.shapes.set(shape, { sourcePageToken, sourceName: name || undefined, sourceShapeId: importedSlideShapeId(shape) });
+        if (name || importedSlideShapeId(shape))
+          opened.shapes.set(shape, {
+            sourcePageToken,
+            sourceName: name || undefined,
+            sourceShapeId: importedSlideShapeId(shape),
+          });
       }
       opened.animations.set(slide, this.animation(slide));
     }
@@ -169,8 +199,13 @@ export class DeckWisePageLineage {
   commitSave(receipt: { sourceSha256: string; outputSha256: string; pageTokens: string[] }) {
     const opened = this.opened;
     const current = this.context();
-    if (!opened || !current || current.sourceSha256 !== receipt.sourceSha256 ||
-      this.exported?.outputSha256 !== receipt.outputSha256) return false;
+    if (
+      !opened ||
+      !current ||
+      current.sourceSha256 !== receipt.sourceSha256 ||
+      this.exported?.outputSha256 !== receipt.outputSha256
+    )
+      return false;
     opened.sourceSha256 = receipt.outputSha256;
     opened.openedPageTokens = [...receipt.pageTokens];
     // Edits made while Host writes the file remain dirty and belong to the next save.
@@ -185,23 +220,38 @@ export class DeckWisePageLineage {
     const context = this.context();
     if (!opened || !context) return undefined;
     const slides = [...opened.logic.Slides];
-    const objects = slides.map(slide => (slide.cSld?.spTree ?? []).map(shape => ({
-      ...(opened.shapes.get(shape) ?? {}), name: shape.getUniNvProps?.()?.cNvPr?.name ?? '', shapeId: String(shape.getUniNvProps?.()?.cNvPr?.id ?? ''),
-    })));
-    const nativeIdentity = opened.identityCaptured && objects.every(items => items.every(item => /^\d{1,10}$/.test(item.shapeId)));
+    const objects = slides.map((slide) =>
+      (slide.cSld?.spTree ?? []).map((shape) => ({
+        ...opened.shapes.get(shape),
+        name: shape.getUniNvProps?.()?.cNvPr?.name ?? '',
+        shapeId: String(shape.getUniNvProps?.()?.cNvPr?.id ?? ''),
+      })),
+    );
+    const nativeIdentity =
+      opened.identityCaptured && objects.every((items) => items.every((item) => /^\d{1,10}$/.test(item.shapeId)));
     const savedShapes = new WeakMap<Shape, { sourcePageToken: string; sourceName?: string; sourceShapeId?: string }>();
     const savedAnimations = new WeakMap<Slide, { effects: any[]; signature: string }>();
     slides.forEach((slide, index) => {
       for (const shape of slide.cSld?.spTree ?? []) {
         const name = shape.getUniNvProps?.()?.cNvPr?.name;
-        if (name || nativeIdentity) savedShapes.set(shape, { sourcePageToken: context.pageTokens[index], sourceName: name || undefined, sourceShapeId: String(shape.getUniNvProps?.()?.cNvPr?.id ?? '') });
+        if (name || nativeIdentity)
+          savedShapes.set(shape, {
+            sourcePageToken: context.pageTokens[index],
+            sourceName: name || undefined,
+            sourceShapeId: String(shape.getUniNvProps?.()?.cNvPr?.id ?? ''),
+          });
       }
       savedAnimations.set(slide, this.animation(slide));
     });
-    const animationUnchanged = slides.map(slide => {
-      const previous = opened.animations.get(slide), current = this.animation(slide);
-      return !!previous && previous.signature === current.signature && previous.effects.length === current.effects.length &&
-        previous.effects.every((effect, index) => effect === current.effects[index]);
+    const animationUnchanged = slides.map((slide) => {
+      const previous = opened.animations.get(slide),
+        current = this.animation(slide);
+      return (
+        !!previous &&
+        previous.signature === current.signature &&
+        previous.effects.length === current.effects.length &&
+        previous.effects.every((effect, index) => effect === current.effects[index])
+      );
     });
     return async (file: File, saveRequestId: string, isCurrent: () => boolean) => {
       const outputSha256 = await sha256(file);
@@ -215,11 +265,16 @@ export class DeckWisePageLineage {
         return undefined;
       this.exported = { outputSha256, shapes: savedShapes, animations: savedAnimations };
       return {
-        protocol: nativeIdentity ? 'deckwise-office-page-lineage/2' as const : 'deckwise-office-page-lineage/1' as const,
+        protocol: nativeIdentity
+          ? ('deckwise-office-page-lineage/2' as const)
+          : ('deckwise-office-page-lineage/1' as const),
         ...opened.owner,
         saveRequestId,
         ...context,
-        objects: nativeIdentity ? objects : objects.map(items => items.map(({ shapeId, sourceShapeId, ...item }) => item)), animationUnchanged,
+        objects: nativeIdentity
+          ? objects
+          : objects.map((items) => items.map(({ shapeId: _shapeId, sourceShapeId: _sourceShapeId, ...item }) => item)),
+        animationUnchanged,
         outputSha256,
       };
     };

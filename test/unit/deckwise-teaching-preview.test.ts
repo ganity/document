@@ -83,13 +83,19 @@ it('resolves renamed and same-name shapes by captured package identity and never
   const peer = { ...shape(988), getUniNvProps: () => ({ cNvPr: { id: 988, name: 'renamed' } }) };
   const copy = { ...original };
   const capability = vi.spyOn(deckwisePageLineage, 'hasSourceIdentity').mockReturnValue(true);
-  const identity = vi.spyOn(deckwisePageLineage, 'sourceShapeId').mockImplementation(s =>
-    s === original ? '42' : s === peer ? '43' : undefined);
+  const identity = vi
+    .spyOn(deckwisePageLineage, 'sourceShapeId')
+    .mockImplementation((s) => (s === original ? '42' : s === peer ? '43' : undefined));
   try {
     const proofs = [object, { ...object, objectId: 'peer', sourceShapeId: '43' }];
     expect(selectedAttentionTargets([original, peer, copy], [peer, original], proofs)).toEqual(['peer', 'logical']);
-    expect(attentionGeometry([copy, peer, original], proofs, ['logical'], 100, 50, (X, Y) => ({ X, Y })).targets[0].shape).toBe(original);
+    expect(
+      attentionGeometry([copy, peer, original], proofs, ['logical'], 100, 50, (X, Y) => ({ X, Y })).targets[0].shape,
+    ).toBe(original);
     expect(() => selectedAttentionTargets([copy, peer], [copy], proofs)).toThrow();
     expect(() => attentionGeometry([copy, peer], proofs, ['logical'], 100, 50, (X, Y) => ({ X, Y }))).toThrow();
-  } finally { capability.mockRestore(); identity.mockRestore(); }
+  } finally {
+    capability.mockRestore();
+    identity.mockRestore();
+  }
 });

@@ -108,12 +108,22 @@ describe('embed-api', () => {
     it('uses a direct capability, validates UI updates and detaches on disposal', async () => {
       const { mountEditorModule } = await import('../../lib/embed-api');
       const { isEditorModule, isEmbedMode, isDeckWiseMode } = await import('../../lib/embed-mode');
-      const send = vi.fn(), unsubscribe = vi.fn();
+      const send = vi.fn(),
+        unsubscribe = vi.fn();
       let command!: (value: unknown) => void;
-      const editor = mountEditorModule({ deckwise: true, send, subscribe(listener) { command = listener; return unsubscribe; } });
+      const editor = mountEditorModule({
+        deckwise: true,
+        send,
+        subscribe(listener) {
+          command = listener;
+          return unsubscribe;
+        },
+      });
       expect(send).toHaveBeenCalledWith('document:ready', {}, undefined);
       expect([isEditorModule(), isEmbedMode(), isDeckWiseMode()]).toEqual([true, true, true]);
-      expect(() => mountEditorModule({ deckwise: true, send, subscribe: () => unsubscribe })).toThrow('already mounted');
+      expect(() => mountEditorModule({ deckwise: true, send, subscribe: () => unsubscribe })).toThrow(
+        'already mounted',
+      );
       await dispatchMessage({ type: 'document:configure-ui', payload: { theme: 'dark' } });
       expect(send).not.toHaveBeenCalledWith('document:ui-configured', expect.anything(), expect.anything());
       command({ type: 'document:configure-ui', payload: { theme: 'dark', teachingOpen: false }, id: 'theme' });
@@ -121,7 +131,8 @@ describe('embed-api', () => {
       expect(send).toHaveBeenCalledWith('document:ui-configured', { theme: 'dark', teachingOpen: false }, 'theme');
       command({ type: 'document:configure-ui', payload: { theme: 'evil', path: '/etc/passwd' }, id: 'invalid' });
       expect(send).toHaveBeenCalledWith('document:error', { message: 'Invalid editor UI configuration' }, 'invalid');
-      editor.dispose(); editor.dispose();
+      editor.dispose();
+      editor.dispose();
       expect(unsubscribe).toHaveBeenCalledTimes(1);
       expect(mockDestroyEditorInstance).toHaveBeenCalledTimes(1);
       expect(isEditorModule()).toBe(false);
@@ -132,15 +143,32 @@ describe('embed-api', () => {
     it('cannot send a late open result into a replacement module', async () => {
       const { mountEditorModule } = await import('../../lib/embed-api');
       let release!: () => void;
-      mockLoadEditorApi.mockReturnValueOnce(new Promise<void>(resolve => { release = resolve; }));
+      mockLoadEditorApi.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      );
       let command!: (value: unknown) => void;
-      const firstSend = vi.fn(), secondSend = vi.fn();
-      const first = mountEditorModule({ deckwise: false, send: firstSend, subscribe(listener) { command = listener; return () => {}; } });
-      command({ type: 'document:open-buffer', id: 'old-open', payload: { fileName: 'test.docx', buffer: new Uint8Array([1]).buffer } });
+      const firstSend = vi.fn(),
+        secondSend = vi.fn();
+      const first = mountEditorModule({
+        deckwise: false,
+        send: firstSend,
+        subscribe(listener) {
+          command = listener;
+          return () => {};
+        },
+      });
+      command({
+        type: 'document:open-buffer',
+        id: 'old-open',
+        payload: { fileName: 'test.docx', buffer: new Uint8Array([1]).buffer },
+      });
       first.dispose();
       const second = mountEditorModule({ deckwise: false, send: secondSend, subscribe: () => () => {} });
-      release(); await new Promise(resolve => setTimeout(resolve, 0));
-      expect(secondSend.mock.calls.map(call => call[0])).toEqual(['document:ready']);
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(secondSend.mock.calls.map((call) => call[0])).toEqual(['document:ready']);
       expect(mockHandleDocumentOperation).not.toHaveBeenCalled();
       second.dispose();
     });
@@ -419,7 +447,15 @@ describe('embed-api', () => {
       const { deckwiseEditorBridge } = await import('../../lib/deckwise-editor-bridge');
       const router = await import('../../lib/deckwise-native-teaching-router');
       const context = vi.spyOn(deckwiseEditorBridge, 'getContext').mockReturnValue({
-        ...owner, editGeneration: 4, kind: 'slide', page: 1, selectedText: '', selectionCharacters: 0, selectedObjects: [], readOnly: false, capabilities: [],
+        ...owner,
+        editGeneration: 4,
+        kind: 'slide',
+        page: 1,
+        selectedText: '',
+        selectionCharacters: 0,
+        selectedObjects: [],
+        readOnly: false,
+        capabilities: [],
       });
       const route = vi.spyOn(router, 'routeNativeTeaching').mockResolvedValue({ value: { saved: true } });
       try {
@@ -427,19 +463,40 @@ describe('embed-api', () => {
         initEmbedApi();
         for (const expectedEditGeneration of [3, null, '4', 4.5]) {
           const id = 'native-stale-' + String(expectedEditGeneration);
-          await dispatchMessage({ id, type: 'document:native-teaching', payload: {
-            binding: owner, operation: 'route', routeOperation: 'write', page: 1, args: { expectedEditGeneration },
-          } });
-          expectMessagePosted(postMessageSpy, 'document:error', id, { message: 'Native editor generation changed before narration write' });
+          await dispatchMessage({
+            id,
+            type: 'document:native-teaching',
+            payload: {
+              binding: owner,
+              operation: 'route',
+              routeOperation: 'write',
+              page: 1,
+              args: { expectedEditGeneration },
+            },
+          });
+          expectMessagePosted(postMessageSpy, 'document:error', id, {
+            message: 'Native editor generation changed before narration write',
+          });
         }
         expect(route).not.toHaveBeenCalled();
         for (const args of [{ expectedEditGeneration: 4 }, {}]) {
-          await dispatchMessage({ id: 'native-current-' + route.mock.calls.length, type: 'document:native-teaching', payload: {
-            binding: owner, operation: 'route', routeOperation: 'write', page: 1, args,
-          } });
+          await dispatchMessage({
+            id: 'native-current-' + route.mock.calls.length,
+            type: 'document:native-teaching',
+            payload: {
+              binding: owner,
+              operation: 'route',
+              routeOperation: 'write',
+              page: 1,
+              args,
+            },
+          });
         }
         expect(route).toHaveBeenCalledTimes(2);
-      } finally { context.mockRestore(); route.mockRestore(); }
+      } finally {
+        context.mockRestore();
+        route.mockRestore();
+      }
     });
     it('rejects command messages outside DeckWise mode', async () => {
       window.history.pushState({}, '', '/?embed=1');
@@ -933,7 +990,8 @@ describe('embed-api', () => {
         const { initEmbedApi } = await import('../../lib/embed-api');
         const guard = await import('../../lib/unsaved-guard');
         initEmbedApi();
-        const count = () => postedMessages(postMessageSpy).filter(message => message.type === 'document:save-requested').length;
+        const count = () =>
+          postedMessages(postMessageSpy).filter((message) => message.type === 'document:save-requested').length;
         const before = count();
         guard.markDocumentDirty();
         await vi.advanceTimersByTimeAsync(1000);
@@ -947,7 +1005,9 @@ describe('embed-api', () => {
         guard.markDocumentDirty();
         await vi.advanceTimersByTimeAsync(1500);
         expect(count()).toBe(before + 2);
-      } finally { vi.useRealTimers(); }
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('keeps exported bytes dirty until the matching host confirms persistence', async () => {

@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from 'vitest';
+import { expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({ api: null as any, dirty: false }));
 vi.mock('../../lib/agent-plugin/editor-bridge', () => ({
   getEditorApi: () => state.api,

@@ -75,10 +75,16 @@ export function nativeSpeechMotionSteps(
 ) {
   const native = inspectTeachingAnimations(page, true, 'native');
   // Imported timing is owned by the native schedule, not the legacy click-step projection.
-  if (native.effects.some((effect) => effect.cTn.nodeType !== 2 && effect.cTn.nodeType !== 7 || effect.asc_getDelay() !== 0)) return undefined;
+  if (
+    native.effects.some(
+      (effect) => (effect.cTn.nodeType !== 2 && effect.cTn.nodeType !== 7) || effect.asc_getDelay() !== 0,
+    )
+  )
+    return undefined;
   let planned: ReturnType<typeof generatedMotionBindings>;
-  try { planned = generatedMotionBindings(page, actions, objects, runtime); }
-  catch (error) {
+  try {
+    planned = generatedMotionBindings(page, actions, objects, runtime);
+  } catch (error) {
     if (error instanceof TeachingAnimationSyncError) return undefined;
     throw error;
   }

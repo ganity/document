@@ -1,4 +1,4 @@
-import { hasNativeTeaching, nativeTeachingTarget } from './deckwise-native-teaching';
+import { hasNativeTeaching } from './deckwise-native-teaching';
 import { getEditorApi } from './agent-plugin/editor-bridge';
 import { attentionTarget, type PreviewObject } from './deckwise-teaching-preview';
 import { hasUnsavedChanges } from './unsaved-guard';
@@ -52,7 +52,8 @@ export function listTeachingNativeAnimations(page: number, objects: PreviewObjec
   const api = getEditorApi();
   const logic = Reflect.get(Reflect.get(api ?? {}, 'WordControl') ?? {}, 'm_oLogicDocument');
   const slide = logic?.Slides?.[page - 1];
-  if (!slide || (hasUnsavedChanges() && !hasNativeTeaching())) throw new Error('Save the current slide before linking animations');
+  if (!slide || (hasUnsavedChanges() && !hasNativeTeaching()))
+    throw new Error('Save the current slide before linking animations');
   const effects: NativeEffect[] = slide.timing?.getAllAnimEffects?.() ?? [];
   return effects.map((effect, index) => {
     const preset = presets.find(

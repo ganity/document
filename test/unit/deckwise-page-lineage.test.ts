@@ -46,7 +46,8 @@ describe('session-bound native page lineage', () => {
       saveRequestId: 'save-1',
       ...context,
       outputSha256: hash('edited-output'),
-      objects: [[], [], []], animationUnchanged: [true, true, true],
+      objects: [[], [], []],
+      animationUnchanged: [true, true, true],
     });
     expect(lineage.context()).toEqual(context);
   });

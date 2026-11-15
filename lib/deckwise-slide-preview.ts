@@ -165,7 +165,12 @@ export function renderDeckWiseCurrentSlidePreview(
 }
 
 /** Render the live slide without changing selection, history, or the current page. */
-export function renderNativeSlide(slide: PreviewSlide, logic: PreviewPresentation, common: PreviewRenderer, omitNativeText = false): string {
+export function renderNativeSlide(
+  slide: PreviewSlide,
+  logic: PreviewPresentation,
+  common: PreviewRenderer,
+  omitNativeText = false,
+): string {
   const renderer = common;
   const widthMM = logic.GetWidthMM?.();
   const heightMM = logic.GetHeightMM?.();

@@ -6,42 +6,67 @@ test('generated lesson closes the native edit, media, save, reopen and playback 
   test.setTimeout(240000);
   const fixture = process.env.DECKWISE_NATIVE_GENERATED_FIXTURE;
   test.skip(!fixture, 'Requires a lesson produced by the real Desktop generation/Host test');
-  if (process.env.DECKWISE_TEACHING_PREVIEW_FILE) await page.route('**/.deckwise/teaching-preview.mjs*', route =>
-    route.fulfill({ path: process.env.DECKWISE_TEACHING_PREVIEW_FILE!, contentType: 'text/javascript' }));
+  if (process.env.DECKWISE_TEACHING_PREVIEW_FILE)
+    await page.route('**/.deckwise/teaching-preview.mjs*', (route) =>
+      route.fulfill({ path: process.env.DECKWISE_TEACHING_PREVIEW_FILE!, contentType: 'text/javascript' }),
+    );
   const original = await readFile(fixture + '/native.pptx');
   const initial = JSON.parse(await readFile(fixture + '/teaching.json', 'utf8'));
   const video = toBase64(await readFile(fixture + '/video.mp4'));
   const binding = { projectId: 'real-fixture', documentId: 'family', sessionId: 'isolated' };
-  if (process.env.DECKWISE_NATIVE_MODULE) await page.addInitScript(() => {
-    if (window.parent === window) return;
-    const listeners = new Set<(command: unknown) => void>();
-    window.addEventListener('message', event => {
-      if (event.source === window.parent && event.origin === location.origin) listeners.forEach(listener => listener(event.data));
+  if (process.env.DECKWISE_NATIVE_MODULE)
+    await page.addInitScript(() => {
+      if (window.parent === window) return;
+      const listeners = new Set<(command: unknown) => void>();
+      window.addEventListener('message', (event) => {
+        if (event.source === window.parent && event.origin === location.origin)
+          listeners.forEach((listener) => listener(event.data));
+      });
+      window.deckwiseEditorHost = {
+        onCommand(listener) {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+        sendEvent(event) {
+          if (event.type === 'message') window.parent.postMessage(event.message, location.origin);
+          else if (event.type === 'saved')
+            window.parent.postMessage(
+              {
+                type: 'document:saved',
+                id: event.id,
+                payload: { file: new Blob([event.bytes!]), fileName: event.fileName, pageLineage: event.pageLineage },
+              },
+              location.origin,
+            );
+          else if (event.type === 'save-requested')
+            window.parent.postMessage({ type: 'document:save-requested', payload: {} }, location.origin);
+        },
+      };
     });
-    window.deckwiseEditorHost = {
-      onCommand(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-      sendEvent(event) {
-        if (event.type === 'message') window.parent.postMessage(event.message, location.origin);
-        else if (event.type === 'saved') window.parent.postMessage({ type: 'document:saved', id: event.id,
-          payload: { file: new Blob([event.bytes!]), fileName: event.fileName, pageLineage: event.pageLineage } }, location.origin);
-        else if (event.type === 'save-requested') window.parent.postMessage({ type: 'document:save-requested', payload: {} }, location.origin);
-      },
-    };
-  });
   await page.goto('/embed-demo.html');
   // The demo prints full native payloads; its growing text layout is outside the editor's navigation budget.
-  await page.locator('#log').evaluate(node => { node.style.display = 'none'; });
+  await page.locator('#log').evaluate((node) => {
+    node.style.display = 'none';
+  });
   await page.evaluate(() => {
     document.querySelector('#status')!.textContent = 'loading';
     (window as any).nativeHostCalls = [];
-    window.addEventListener('message', event => {
+    window.addEventListener('message', (event) => {
       if (event.data?.type !== 'document:teaching-request') return;
       const operation = event.data.payload.operation;
       (window as any).nativeHostCalls.push(operation);
-      if (!['tts:models', 'tts:list', 'media:list'].includes(operation)) throw new Error('Unexpected legacy teaching request: ' + operation);
-      (document.querySelector('#editorFrame') as HTMLIFrameElement).contentWindow!.postMessage({
-        type: 'document:teaching-response', id: event.data.id, payload: { result: [] },
-      }, location.origin);
+      if (!['tts:models', 'tts:list', 'media:list'].includes(operation))
+        throw new Error('Unexpected legacy teaching request: ' + operation);
+      (document.querySelector('#editorFrame') as HTMLIFrameElement).contentWindow!.postMessage(
+        {
+          type: 'document:teaching-response',
+          id: event.data.id,
+          payload: { result: [] },
+        },
+        location.origin,
+      );
     });
     (document.querySelector('#editorFrame') as HTMLIFrameElement).src = '/editor?embed=1&deckwise=1&locale=zh-CN';
   });
@@ -58,136 +83,278 @@ test('generated lesson closes the native edit, media, save, reopen and playback 
     { data: toBase64(original), binding },
   );
   await page.waitForFunction(() => !!window.__ooFrames.readyEditor(), { timeout: 60000 });
-  const native = page.frames().find(f => f.name() === 'frameEditor')!;
-  const before = await page.evaluate(async binding => (await post('document:native-teaching', { binding, operation: 'read' })).teaching, binding);
+  const native = page.frames().find((f) => f.name() === 'frameEditor')!;
+  const before = await page.evaluate(
+    async (binding) => (await post('document:native-teaching', { binding, operation: 'read' })).teaching,
+    binding,
+  );
   expect(before.documentId).toBe(initial.documentId);
   expect(before.pages).toEqual(initial.pages);
   // The plan is source evidence; structured speech enters through the same native write route as generation.
   expect(before.pages[0].actions.some((a: any) => a.type === 'speech')).toBe(false);
   const narrationText = before.generation.pages[0].narration;
-  await page.evaluate(async ({ binding, text }) => {
-    const current = (await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'open', page: 1 })).routed.value;
-    await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'write', page: 1, args: {
-      viewId: current.viewId, expectedTeachingRevision: current.project.teachingRevision,
-      actions: [{ id: 'body-speech', type: 'speech', text, source: 'generated' }, ...current.project.pages[0].actions],
-    } });
-  }, { binding, text: narrationText });
-  const generatedView = await page.evaluate(async binding => (await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'open', page: 1 })).routed.value, binding);
+  await page.evaluate(
+    async ({ binding, text }) => {
+      const current = (
+        await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'open', page: 1 })
+      ).routed.value;
+      await post('document:native-teaching', {
+        binding,
+        operation: 'route',
+        routeOperation: 'write',
+        page: 1,
+        args: {
+          viewId: current.viewId,
+          expectedTeachingRevision: current.project.teachingRevision,
+          actions: [
+            { id: 'body-speech', type: 'speech', text, source: 'generated' },
+            ...current.project.pages[0].actions,
+          ],
+        },
+      });
+    },
+    { binding, text: narrationText },
+  );
+  const generatedView = await page.evaluate(
+    async (binding) =>
+      (await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'open', page: 1 })).routed
+        .value,
+    binding,
+  );
   expect(generatedView.teaching.objective).toBe('Say Hello');
   expect(generatedView.teachingRequirements).toHaveLength(3);
   expect(before.pages[1].actions[1].response.answerIndices).toEqual([1]);
   // A teacher edits generated narration using the same native history as slide edits.
-  await page.evaluate(async binding => {
+  await page.evaluate(async (binding) => {
     const { teaching } = await post('document:native-teaching', { binding, operation: 'read' });
     const actions = structuredClone(teaching.pages[0].actions);
     actions[0].text += ' Edited in Office.';
-    await post('document:native-teaching', { binding, operation: 'replace-page', command: {
-      documentId: teaching.documentId, expectedRevision: teaching.revision, pageId: teaching.pages[0].pageId, actions,
-    } });
+    await post('document:native-teaching', {
+      binding,
+      operation: 'replace-page',
+      command: {
+        documentId: teaching.documentId,
+        expectedRevision: teaching.revision,
+        pageId: teaching.pages[0].pageId,
+        actions,
+      },
+    });
   }, binding);
   await native.evaluate(() => (Reflect.get(window, 'editor') as unknown as { Undo(): void }).Undo());
-  expect(await page.evaluate(async binding => (await post('document:native-teaching', { binding, operation: 'read' })).teaching.pages[0].actions[0].text, binding)).toBe(narrationText);
+  expect(
+    await page.evaluate(
+      async (binding) =>
+        (await post('document:native-teaching', { binding, operation: 'read' })).teaching.pages[0].actions[0].text,
+      binding,
+    ),
+  ).toBe(narrationText);
   await native.evaluate(() => (Reflect.get(window, 'editor') as unknown as { Redo(): void }).Redo());
-  const mediaResult = await page.evaluate(async ({ binding, video }) => {
-    // Local deterministic PCM stands in for the authorized provider response; the real adoption path verifies bytes.
-    const sampleRate = 8000, count = sampleRate, wave = new ArrayBuffer(44 + count * 2), view = new DataView(wave);
-    const ascii = (at: number, value: string) => [...value].forEach((c, i) => view.setUint8(at + i, c.charCodeAt(0)));
-    ascii(0, 'RIFF'); view.setUint32(4, wave.byteLength - 8, true); ascii(8, 'WAVE'); ascii(12, 'fmt '); view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true); view.setUint16(34, 16, true); ascii(36, 'data'); view.setUint32(40, count * 2, true);
-    for (let i = 0; i < count; i++) view.setInt16(44 + i * 2, Math.sin(i * Math.PI * 2 * 440 / sampleRate) * 1000, true);
-    const videoBytes = Uint8Array.from(atob(video), c => c.charCodeAt(0)).buffer;
-    const read = async () => (await post('document:native-teaching', { binding, operation: 'read' })).teaching;
-    let teaching = await read(), adopted = 0;
-    const initialView = (await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'open', page: 1 })).routed.value;
-    const generatedTarget = initialView.teachingObjects.find((o: any) => o.effectTargetEligible).objectId;
-    const generatedActions = structuredClone(teaching.pages[0].actions);
-    generatedActions[0].attention = { type: 'highlight', objectIds: [generatedTarget], animation: 'pulse' };
-    await post('document:native-teaching', { binding, operation: 'replace-page', command: {
-      documentId: teaching.documentId, expectedRevision: teaching.revision, pageId: teaching.pages[0].pageId, actions: generatedActions,
-    } });
-    teaching = await read();
-    for (let i = 0; i < teaching.pages.length; i++) {
-      for (const action of teaching.pages[i].actions) {
-        if (!['speech', 'music_slot', 'video_slot'].includes(action.type)) continue;
-        teaching = await read();
-        const bytes = action.type === 'video_slot' ? videoBytes : wave;
-        const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
-        await post('document:native-teaching', { binding, operation: 'adopt-audio', command: {
-          documentId: teaching.documentId, expectedRevision: teaching.revision, pageId: teaching.pages[i].pageId,
-          actionId: action.id, assetId: 'generated-media-' + adopted++, sha256, mimeType: action.type === 'video_slot' ? 'video/mp4' : 'audio/wav',
-          bytes, durationMs: 1000, ...(action.type === 'speech' ? {} : { kind: action.type === 'video_slot' ? 'video' : 'music' }),
-        } });
+  const mediaResult = await page.evaluate(
+    async ({ binding, video }) => {
+      // Local deterministic PCM stands in for the authorized provider response; the real adoption path verifies bytes.
+      const sampleRate = 8000,
+        count = sampleRate,
+        wave = new ArrayBuffer(44 + count * 2),
+        view = new DataView(wave);
+      const ascii = (at: number, value: string) => [...value].forEach((c, i) => view.setUint8(at + i, c.charCodeAt(0)));
+      ascii(0, 'RIFF');
+      view.setUint32(4, wave.byteLength - 8, true);
+      ascii(8, 'WAVE');
+      ascii(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      ascii(36, 'data');
+      view.setUint32(40, count * 2, true);
+      for (let i = 0; i < count; i++)
+        view.setInt16(44 + i * 2, Math.sin((i * Math.PI * 2 * 440) / sampleRate) * 1000, true);
+      const videoBytes = Uint8Array.from(atob(video), (c) => c.charCodeAt(0)).buffer;
+      const read = async () => (await post('document:native-teaching', { binding, operation: 'read' })).teaching;
+      let teaching = await read(),
+        adopted = 0;
+      const initialView = (
+        await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'open', page: 1 })
+      ).routed.value;
+      const generatedTarget = initialView.teachingObjects.find((o: any) => o.effectTargetEligible).objectId;
+      const generatedActions = structuredClone(teaching.pages[0].actions);
+      generatedActions[0].attention = { type: 'highlight', objectIds: [generatedTarget], animation: 'pulse' };
+      await post('document:native-teaching', {
+        binding,
+        operation: 'replace-page',
+        command: {
+          documentId: teaching.documentId,
+          expectedRevision: teaching.revision,
+          pageId: teaching.pages[0].pageId,
+          actions: generatedActions,
+        },
+      });
+      teaching = await read();
+      for (let i = 0; i < teaching.pages.length; i++) {
+        for (const action of teaching.pages[i].actions) {
+          if (!['speech', 'music_slot', 'video_slot'].includes(action.type)) continue;
+          teaching = await read();
+          const bytes = action.type === 'video_slot' ? videoBytes : wave;
+          const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (b) =>
+            b.toString(16).padStart(2, '0'),
+          ).join('');
+          await post('document:native-teaching', {
+            binding,
+            operation: 'adopt-audio',
+            command: {
+              documentId: teaching.documentId,
+              expectedRevision: teaching.revision,
+              pageId: teaching.pages[i].pageId,
+              actionId: action.id,
+              assetId: 'generated-media-' + adopted++,
+              sha256,
+              mimeType: action.type === 'video_slot' ? 'video/mp4' : 'audio/wav',
+              bytes,
+              durationMs: 1000,
+              ...(action.type === 'speech' ? {} : { kind: action.type === 'video_slot' ? 'video' : 'music' }),
+            },
+          });
+        }
       }
-    }
-    const result = await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'open', page: 1 });
-    const current = result.routed.value, objectId = current.teachingObjects.find((o: any) => o.effectTargetEligible).objectId;
-    const actions = structuredClone(current.project.pages[0].actions);
-    if (actions[0].attention !== undefined || actions[0].visualCues?.length !== 2) throw new Error('Generated attention was not resolved by real media adoption');
-    actions[0].visualCues = [
-      ...actions[0].visualCues,
-      { id: 'generated-spotlight', atMs: 0, endMs: 1000, effect: { type: 'spotlight', elementId: objectId, dimOpacity: 0.6 } },
-    ];
-    await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'write', page: 1,
-      args: { viewId: current.viewId, expectedTeachingRevision: current.project.teachingRevision, actions } });
-    return { teaching: await read(), objectId, adopted };
-  }, { binding, video });
+      const result = await post('document:native-teaching', {
+        binding,
+        operation: 'route',
+        routeOperation: 'open',
+        page: 1,
+      });
+      const current = result.routed.value,
+        objectId = current.teachingObjects.find((o: any) => o.effectTargetEligible).objectId;
+      const actions = structuredClone(current.project.pages[0].actions);
+      if (actions[0].attention !== undefined || actions[0].visualCues?.length !== 2)
+        throw new Error('Generated attention was not resolved by real media adoption');
+      actions[0].visualCues = [
+        ...actions[0].visualCues,
+        {
+          id: 'generated-spotlight',
+          atMs: 0,
+          endMs: 1000,
+          effect: { type: 'spotlight', elementId: objectId, dimOpacity: 0.6 },
+        },
+      ];
+      await post('document:native-teaching', {
+        binding,
+        operation: 'route',
+        routeOperation: 'write',
+        page: 1,
+        args: { viewId: current.viewId, expectedTeachingRevision: current.project.teachingRevision, actions },
+      });
+      return { teaching: await read(), objectId, adopted };
+    },
+    { binding, video },
+  );
   expect(mediaResult.adopted).toBe(5);
 
-  const readNativeMotions = () => page.frames().find(f => f.name() === 'frameEditor')!.evaluate(() => {
-    const api = Reflect.get(window, 'editor') as unknown as { WordControl: { m_oLogicDocument: { Slides: Array<{ timing?: { getAllAnimEffects(): any[] } }> } } };
-    return api.WordControl.m_oLogicDocument.Slides[0].timing?.getAllAnimEffects().map((effect: any) => ({
-      preset: effect.cTn.presetID, duration: effect.asc_getDuration(), target: effect.getObjectId(),
-    })) ?? [];
-  });
+  const readNativeMotions = () =>
+    page
+      .frames()
+      .find((f) => f.name() === 'frameEditor')!
+      .evaluate(() => {
+        const api = Reflect.get(window, 'editor') as unknown as {
+          WordControl: { m_oLogicDocument: { Slides: Array<{ timing?: { getAllAnimEffects(): any[] } }> } };
+        };
+        return (
+          api.WordControl.m_oLogicDocument.Slides[0].timing?.getAllAnimEffects().map((effect: any) => ({
+            preset: effect.cTn.presetID,
+            duration: effect.asc_getDuration(),
+            target: effect.getObjectId(),
+          })) ?? []
+        );
+      });
   expect(await readNativeMotions()).toContainEqual(expect.objectContaining({ preset: 26, duration: 600 }));
-  await page.evaluate(async ({ binding, objectId }) => {
-    const current = (await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'open', page: 1 })).routed.value;
-    const actions = structuredClone(current.project.pages[0].actions);
-    actions[0].visualCues.push({ id: 'manual-motion', atMs: 100, endMs: 500, trigger: { version: 1, kind: 'end' },
-      effect: { type: 'element_animation', elementId: objectId, effect: 'gentleRotate' } });
-    await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'write', page: 1,
-      args: { viewId: current.viewId, expectedTeachingRevision: current.project.teachingRevision, actions } });
-  }, { binding, objectId: mediaResult.objectId });
+  await page.evaluate(
+    async ({ binding, objectId }) => {
+      const current = (
+        await post('document:native-teaching', { binding, operation: 'route', routeOperation: 'open', page: 1 })
+      ).routed.value;
+      const actions = structuredClone(current.project.pages[0].actions);
+      actions[0].visualCues.push({
+        id: 'manual-motion',
+        atMs: 100,
+        endMs: 500,
+        trigger: { version: 1, kind: 'end' },
+        effect: { type: 'element_animation', elementId: objectId, effect: 'gentleRotate' },
+      });
+      await post('document:native-teaching', {
+        binding,
+        operation: 'route',
+        routeOperation: 'write',
+        page: 1,
+        args: { viewId: current.viewId, expectedTeachingRevision: current.project.teachingRevision, actions },
+      });
+    },
+    { binding, objectId: mediaResult.objectId },
+  );
   expect(await readNativeMotions()).toContainEqual(expect.objectContaining({ preset: 32, duration: 400 }));
   await native.evaluate(() => (Reflect.get(window, 'editor') as unknown as { Undo(): void }).Undo());
   expect(await readNativeMotions()).not.toContainEqual(expect.objectContaining({ preset: 32 }));
   await native.evaluate(() => (Reflect.get(window, 'editor') as unknown as { Redo(): void }).Redo());
   expect(await readNativeMotions()).toContainEqual(expect.objectContaining({ preset: 32, duration: 400 }));
-  mediaResult.teaching = await page.evaluate(async binding => (await post('document:native-teaching', { binding, operation: 'read' })).teaching, binding);
+  mediaResult.teaching = await page.evaluate(
+    async (binding) => (await post('document:native-teaching', { binding, operation: 'read' })).teaching,
+    binding,
+  );
 
-
-  await page.evaluate(async binding => { (document.querySelector('#editorFrame') as HTMLIFrameElement).contentWindow!.postMessage({ type: 'document:teaching-enable', payload: { binding } }, location.origin); }, binding);
+  await page.evaluate(async (binding) => {
+    (document.querySelector('#editorFrame') as HTMLIFrameElement).contentWindow!.postMessage(
+      { type: 'document:teaching-enable', payload: { binding } },
+      location.origin,
+    );
+  }, binding);
   const office = page.frameLocator('iframe#editorFrame').frameLocator('iframe[name="frameEditor"]');
   const panel = office.getByRole('complementary', { name: '教学时间轴' });
   await expect(panel).toBeVisible({ timeout: 15000 });
   await panel.getByRole('button', { name: '试听语音', exact: true }).first().click();
   await expect(office.locator('[data-attention-kind="highlight"]')).toBeVisible();
   await expect(office.locator('[data-attention-kind="spotlight"]')).toBeVisible();
-  await expect.poll(() => panel.locator('audio').evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(0);
+  await expect
+    .poll(() => panel.locator('audio').evaluate((audio: HTMLAudioElement) => audio.currentTime))
+    .toBeGreaterThan(0);
   await panel.locator('audio').evaluate((audio: HTMLAudioElement) => audio.pause());
   await panel.getByRole('button', { name: '画布预览', exact: true }).click();
   await expect(office.locator('[data-teaching-slideshow]')).toBeVisible();
   await expect(office.locator('[data-teaching-slideshow] [data-attention-kind="highlight"]')).toBeVisible();
   await office.getByRole('button', { name: '退出教学放映', exact: true }).click();
   await expect(panel.getByRole('alert')).toHaveCount(0);
-  const exported = await page.evaluate(async () => Array.from(new Uint8Array(await (await post('document:save')).file.arrayBuffer())));
+  const exported = await page.evaluate(async () =>
+    Array.from(new Uint8Array(await (await post('document:save')).file.arrayBuffer())),
+  );
   const output = info.outputPath('generated-native-edited.pptx');
   await writeFile(output, new Uint8Array(exported));
   if (fixture) await writeFile(fixture + '/edited.pptx', new Uint8Array(exported));
-  await info.attach('generated-native-edited', { path: output, contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
-  await page.evaluate(async ({ bytes, binding }) => {
-    await post('document:open-buffer', { fileName: 'reopened-generated.pptx', buffer: new Uint8Array(bytes).buffer, editorBinding: binding, trackPageLineage: true });
-  }, { bytes: exported, binding });
+  await info.attach('generated-native-edited', {
+    path: output,
+    contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  });
+  await page.evaluate(
+    async ({ bytes, binding }) => {
+      await post('document:open-buffer', {
+        fileName: 'reopened-generated.pptx',
+        buffer: new Uint8Array(bytes).buffer,
+        editorBinding: binding,
+        trackPageLineage: true,
+      });
+    },
+    { bytes: exported, binding },
+  );
   await page.waitForFunction(() => !!window.__ooFrames.readyEditor(), { timeout: 60000 });
-  const reopened = await page.evaluate(async binding => {
+  const reopened = await page.evaluate(async (binding) => {
     const { teaching } = await post('document:native-teaching', { binding, operation: 'read' });
     let audioCount = 0;
     for (const asset of teaching.media.filter((a: any) => a.mimeType.startsWith('audio/'))) {
       const { audio } = await post('document:native-teaching', { binding, operation: 'audio', assetId: asset.id });
-      const context = new AudioContext(), decoded = await context.decodeAudioData(await audio.arrayBuffer());
+      const context = new AudioContext(),
+        decoded = await context.decodeAudioData(await audio.arrayBuffer());
       if (decoded.duration <= 0) throw new Error('Generated embedded speech cannot decode');
-      await context.close(); audioCount++;
+      await context.close();
+      audioCount++;
     }
     return { teaching, audioCount };
   }, binding);
@@ -196,9 +363,16 @@ test('generated lesson closes the native edit, media, save, reopen and playback 
   expect(await readNativeMotions()).toContainEqual(expect.objectContaining({ preset: 26, duration: 600 }));
   expect(reopened.teaching.pages).toEqual(mediaResult.teaching.pages);
   expect(reopened.teaching.identity.pages[0].objects.some((o: any) => o.logicalId === mediaResult.objectId)).toBe(true);
-  await page.evaluate(async binding => { (document.querySelector('#editorFrame') as HTMLIFrameElement).contentWindow!.postMessage({ type: 'document:teaching-enable', payload: { binding } }, location.origin); }, binding);
-  const reopenedNative = page.frames().find(f => f.name() === 'frameEditor')!;
-  await reopenedNative.evaluate(() => (Reflect.get(window, 'editor') as unknown as { goToPage(index: number): void }).goToPage(1));
+  await page.evaluate(async (binding) => {
+    (document.querySelector('#editorFrame') as HTMLIFrameElement).contentWindow!.postMessage(
+      { type: 'document:teaching-enable', payload: { binding } },
+      location.origin,
+    );
+  }, binding);
+  const reopenedNative = page.frames().find((f) => f.name() === 'frameEditor')!;
+  await reopenedNative.evaluate(() =>
+    (Reflect.get(window, 'editor') as unknown as { goToPage(index: number): void }).goToPage(1),
+  );
   await expect(panel.locator(`article[data-action-id="${initial.pages[1].actions[0].id}"]`)).toBeVisible();
   await panel.getByRole('button', { name: '画布预览', exact: true }).click();
   const question = office.locator('[data-teaching-question]');
