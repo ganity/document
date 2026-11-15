@@ -307,6 +307,13 @@ describe('.github/workflows/prod-smoke.yml', () => {
 describe('.github/workflows/preview-smoke.yml', () => {
   const src = readFileSync(resolve(ROOT, '.github/workflows/preview-smoke.yml'), 'utf8');
 
+  it('requires the upstream deployment integration while keeping local hosting E2E enabled on forks', () => {
+    expect(src).toContain("if: github.event.pull_request.draft == false && github.repository == 'ranuts/document'");
+    const ci = readFileSync(resolve(ROOT, '.github/workflows/ci.yml'), 'utf8');
+    expect(ci).toContain('name: E2E (Cloudflare Pages semantics)');
+    expect(ci).not.toContain("github.repository == 'ranuts/document'");
+  });
+
   // Prettier normalises the YAML scalar's quotes, so accept either.
   const waitMinutes = Number(/WAIT_MINUTES: ['"](\d+)['"]/.exec(src)?.[1] ?? 0);
   const jobTimeout = Number(/timeout-minutes: (\d+)/.exec(src)?.[1] ?? 0);
