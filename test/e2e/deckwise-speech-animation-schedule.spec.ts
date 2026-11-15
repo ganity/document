@@ -8,9 +8,9 @@ import { test, expect } from './lib/l0';
 for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
   test(`speech schedule (${mode}) retains group animations, autoplays unlinked effects and restores timing`, async ({
     page,
-  }) => {
+  }, info) => {
     test.setTimeout(120000);
-    const directory = resolve(process.env.E2E_PORT ? `dist-e2e-${process.env.E2E_PORT}` : 'dist', '.deckwise');
+    const directory = info.outputPath('animation-probe');
     await build({
       configFile: false,
       logLevel: 'silent',
@@ -24,6 +24,9 @@ for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
         },
       },
     });
+    await page.route('**/.deckwise/animation-probe.mjs', (route) =>
+      route.fulfill({ path: resolve(directory, 'animation-probe.mjs'), contentType: 'text/javascript' }),
+    );
     const bytes = buildPptx('Speech animation');
     const entries = await Promise.all(
       zipEntryNames(bytes).map(async (name) => ({ name, data: (await zipEntryText(bytes, name))! })),

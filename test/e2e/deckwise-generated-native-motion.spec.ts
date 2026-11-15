@@ -1,5 +1,4 @@
-import { copyFile, mkdir, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { readFile, writeFile } from 'node:fs/promises';
 import { buildPptx, toBase64, makeStoredZip, zipEntryNames, zipEntryText } from './lib/ooxml';
 import { expect, test } from './lib/l0';
 
@@ -9,9 +8,10 @@ test('generated speech motions survive native PPTX save and reopen as editable g
   test.setTimeout(240_000);
   const probe = process.env.DECKWISE_MOTION_PROBE;
   test.skip(!probe, 'Requires the isolated motion probe built from the paired Desktop source');
-  const directory = resolve(`dist-e2e-${process.env.E2E_PORT}`, '.deckwise');
-  await mkdir(directory, { recursive: true });
-  await copyFile(probe!, resolve(directory, 'motion-probe.mjs'));
+  const probeSource = await readFile(probe!, 'utf8');
+  await page.route('**/.deckwise/motion-probe.mjs', (route) =>
+    route.fulfill({ body: probeSource, contentType: 'text/javascript' }),
+  );
   const original = buildPptx('Hello friends');
   const entries = await Promise.all(
     zipEntryNames(original).map(async (name) => ({ name, data: (await zipEntryText(original, name))! })),
