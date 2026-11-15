@@ -105,7 +105,7 @@ export type Runtime = {
 };
 let runtime: Promise<Runtime> | undefined;
 export const loadTeachingPreviewRuntime = (): Promise<Runtime> => {
-  const url = new URL('/.deckwise/teaching-preview.mjs?v=5', location.href).href;
+  const url = new URL('/deckwise-runtime/teaching-preview.mjs?v=5', location.href).href;
   return (runtime ??= import(/* @vite-ignore */ url).catch((error) => {
     runtime = undefined;
     throw error;

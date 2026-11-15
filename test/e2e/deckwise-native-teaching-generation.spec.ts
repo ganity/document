@@ -7,7 +7,7 @@ test('generated lesson closes the native edit, media, save, reopen and playback 
   const fixture = process.env.DECKWISE_NATIVE_GENERATED_FIXTURE;
   test.skip(!fixture, 'Requires a lesson produced by the real Desktop generation/Host test');
   if (process.env.DECKWISE_TEACHING_PREVIEW_FILE)
-    await page.route('**/.deckwise/teaching-preview.mjs*', (route) =>
+    await page.route('**/deckwise-runtime/teaching-preview.mjs*', (route) =>
       route.fulfill({ path: process.env.DECKWISE_TEACHING_PREVIEW_FILE!, contentType: 'text/javascript' }),
     );
   const original = await readFile(fixture + '/native.pptx');

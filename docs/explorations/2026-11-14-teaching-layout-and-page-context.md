@@ -53,7 +53,7 @@ refresh destroys the failing state.
   playback, SDK liveness, editability, exact narration action IDs on navigation,
   and sidebar reopening. Set `DECKWISE_TEACHING_PLAYBACK_PPTX` to a local saved
   native lesson with adopted video and speech on page three, and serve the
-  module build with its `.deckwise/teaching-preview.mjs` runtime.
+  module build with its `deckwise-runtime/teaching-preview.mjs` runtime.
 - TypeScript and focused source/E2E lint passed. Lint of the whole slideshow
   unit-test file still reports its pre-existing unused `_` callback parameter.
 
