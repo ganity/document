@@ -1,3 +1,5 @@
+import { installSlideSourceIdentity } from './guards/slide-source-identity';
+import { installNestedSlideAnimations } from './guards/nested-slide-animations';
 import { installOpenFailureGuard } from './open-failure';
 import { injectLocalChromeCss } from './guards/chrome';
 import { shadowSharedWorker } from './guards/shared-worker';
@@ -11,10 +13,16 @@ import { installCommentSelectionGuard } from './guards/comment-selection';
 import { installCanvasLossGuard } from './guards/canvas-loss';
 import { releaseWasmBinary } from './guards/wasm-binary-release';
 import { installSingleUnloadPrompt } from './guards/unload-prompt';
+import { installUnloadPagehide } from './guards/unload-pagehide';
 import { installHintFallbackGuard } from './guards/hint-fallback';
 import { installAboutSourceNotice } from './guards/about-source';
 import { installBadImageUrlGuard } from './guards/bad-image-url';
 import { installX2tWorkerProxy } from './guards/x2t-worker';
+import { installEastAsianPunctuationGuard } from './guards/east-asian-punctuation';
+import { installMixedScriptLineMetricsGuard } from './guards/mixed-script-line-metrics';
+import { installImageColorKeyGuard } from './guards/image-color-key';
+import { installEastAsianVerticalGuard } from './guards/east-asian-vertical';
+import { installImageSoftEdgeGuard } from './guards/image-soft-edge';
 
 /**
  * Same-origin preparation of the editor iframe, applied from onAppReady and
@@ -43,12 +51,13 @@ export function prepareEditorIframe(): boolean {
       if (!doc) continue;
 
       installOpenFailureGuard(win);
+      installSlideSourceIdentity(win);
+      installNestedSlideAnimations(win);
       injectLocalChromeCss(doc);
 
       const sharedWorkerShadowed = shadowSharedWorker(win);
       const fetchFontsGuarded = installFetchFontsGuard(win);
       const imagePipelineInstalled = installServerlessImagePipeline(win);
-      const saveSemanticsInstalled = installServerlessSaveSemantics(win);
       const longActionGuarded = installLongActionLeakGuard(win);
 
       installSeriesSettingsGuard(win);
@@ -56,9 +65,20 @@ export function prepareEditorIframe(): boolean {
       installCommentSelectionGuard(win);
       installCanvasLossGuard(win, doc);
       installSingleUnloadPrompt(win);
+      installUnloadPagehide(win);
       installHintFallbackGuard(win);
       installBadImageUrlGuard(win);
       const x2tWorkerProxied = installX2tWorkerProxy(win);
+      const punctuationGuarded =
+        !win.location.pathname.includes('/presentationeditor/') || installEastAsianPunctuationGuard(win);
+      if (win.location.pathname.includes('/presentationeditor/')) {
+        installMixedScriptLineMetricsGuard(win);
+        installImageColorKeyGuard(win);
+        installEastAsianVerticalGuard(win);
+        installImageSoftEdgeGuard(win);
+      }
+      // Save tracking wraps the final converter, including the worker proxy.
+      const saveSemanticsInstalled = installServerlessSaveSemantics(win);
       installAboutSourceNotice(doc);
       const wasmBinaryHandled = releaseWasmBinary(win);
 
@@ -69,6 +89,7 @@ export function prepareEditorIframe(): boolean {
         saveSemanticsInstalled &&
         longActionGuarded &&
         x2tWorkerProxied &&
+        punctuationGuarded &&
         wasmBinaryHandled
       ) {
         fullyApplied = true;

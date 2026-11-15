@@ -5,9 +5,8 @@
  * modified while `History.Index` differs from `History.SavedIndex`, and
  * `onDocumentStateChange` fires only when that answer flips. With serverless
  * saves (guard 5) nothing ever moves `SavedIndex`, so after the first edit the
- * answer stays "modified" for good and later edits fire nothing. That is fine
- * for the standalone page, but an embedding host that saves on its own cadence
- * needs to hear about the edits after its last save.
+ * answer stays "modified" for good and later edits fire nothing. Both standalone
+ * disk saves and embedding hosts need to hear about edits after their last save.
  *
  * So after an embed save, do what the SDK itself does after a server save:
  * `History.Reset_SavedIndex(true)` followed by `CheckChangedDocument()` (the
@@ -20,6 +19,7 @@
  */
 
 type SdkHistory = {
+  ForceSave?: boolean;
   Index?: number;
   Points?: unknown[];
   Reset_SavedIndex?: (isUserSave?: boolean) => void;
@@ -33,7 +33,9 @@ type SdkFrameWindow = Window & {
 export type SavePoint = {
   frame: SdkFrameWindow;
   index: number;
+  history: SdkHistory;
   head: unknown;
+  items: unknown[] | null;
 };
 
 function findSdkFrame(): SdkFrameWindow | null {
@@ -55,7 +57,33 @@ export function captureSavePoint(): SavePoint | null {
   if (!frame || !history || typeof history.Index !== 'number' || !Array.isArray(history.Points)) {
     return null;
   }
-  return { frame, index: history.Index, head: history.Points[history.Index] };
+  const head = history.Points[history.Index];
+  const items = (head as { Items?: unknown[] } | undefined)?.Items;
+  return { frame, history, index: history.Index, head, items: Array.isArray(items) ? [...items] : null };
+}
+
+/** Checks an export boundary without moving the SDK saved mark. */
+export function isSavePointCurrent(point: SavePoint | null): boolean {
+  if (!point) return false;
+  try {
+    const history = point.frame.AscCommon?.History;
+    if (!history || !point.frame.Asc?.editor) return false;
+    if (history !== point.history || history.Index !== point.index || history.Points?.[point.index] !== point.head) {
+      return false;
+    }
+    const items = (point.head as { Items?: unknown[] } | undefined)?.Items;
+    if (
+      point.items &&
+      (!Array.isArray(items) ||
+        items.length !== point.items.length ||
+        items.some((item, i) => item !== point.items![i]))
+    )
+      return false;
+
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -71,9 +99,7 @@ export function commitSavePoint(point: SavePoint | null): boolean {
     if (typeof history.Reset_SavedIndex !== 'function' || typeof api.CheckChangedDocument !== 'function') {
       return false;
     }
-    if (history.Index !== point.index || history.Points?.[point.index] !== point.head) {
-      return false;
-    }
+    if (!isSavePointCurrent(point)) return false;
 
     history.Reset_SavedIndex(true);
     api.CheckChangedDocument();
@@ -81,5 +107,17 @@ export function commitSavePoint(point: SavePoint | null): boolean {
   } catch {
     // The frame was torn down (another document took over) -- nothing to mark.
     return false;
+  }
+}
+
+/** The disk now contains an older export; the SDK's previous saved mark is obsolete. */
+export function invalidateSavedPoint(point: SavePoint | null): void {
+  if (!point) return;
+  try {
+    if (point.frame.AscCommon?.History !== point.history) return;
+    point.history.ForceSave = true;
+    point.frame.Asc?.editor?.CheckChangedDocument?.();
+  } catch {
+    // A replaced frame cannot update the current editor's saved mark.
   }
 }

@@ -1,3 +1,4 @@
+import { t } from '@ranuts/shared/i18n';
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -137,6 +138,25 @@ describe('autosave session', () => {
     expect(getAutosaveDocId()).toBe(doc!.id);
   });
 
+  it('rejects an over-budget export without reading its file and preserves earlier recovery', async () => {
+    requestSaveDocument.mockResolvedValue(fileOf([7, 8, 9]));
+    await beginAutosaveSession({ docId: 'keep', title: 'Keep.docx', origin: 'local' });
+    await takeSnapshot();
+    stopAutosaveSession();
+    vi.stubGlobal('navigator', { ...navigator, storage: { estimate: async () => ({ quota: 200 }) } });
+    const file = new File([new Uint8Array(120)], 'Large.docx');
+    const read = vi.spyOn(file, 'arrayBuffer');
+    requestSaveDocument.mockResolvedValue(file);
+    await beginAutosaveSession({ docId: 'large', title: 'Large.docx', origin: 'local' });
+
+    expect(await takeSnapshot()).toBeNull();
+
+    expect(read).not.toHaveBeenCalled();
+    expect(isAutosaveSessionActive()).toBe(false);
+    expect(Array.from((await getLatestSnapshot('keep'))!.bytes)).toEqual([7, 8, 9]);
+    expect((await listDocs()).items.map((doc) => doc.id)).toEqual(['keep']);
+  });
+
   it('keeps appending to the same row across snapshots', async () => {
     requestSaveDocument.mockResolvedValue(fileOf([1]));
     await beginAutosaveSession({ docId: 'report', title: 'Report.docx', origin: 'local' });
@@ -147,6 +167,49 @@ describe('autosave session', () => {
     expect(second?.id).toBe(first?.id);
     expect(second?.revCount).toBe(2);
     expect((await listDocs()).total).toBe(1);
+  });
+
+  it('keeps distinct recovery points and skips exports of an unchanged SDK history', async () => {
+    const frame = document.createElement('iframe');
+    document.body.append(frame);
+    const history = { Index: 0, Points: [{ Items: [{}] }] };
+    Object.assign(frame.contentWindow!, { AscCommon: { History: history }, Asc: { editor: {} } });
+    try {
+      requestSaveDocument.mockResolvedValue(fileOf([1]));
+      await beginAutosaveSession({ docId: 'report', title: 'Report.docx', origin: 'local' });
+      await takeSnapshot();
+      expect(await takeSnapshot()).toBeNull();
+      expect((await listDocs()).items[0].revCount).toBe(1);
+      // Undo and a new edit can reuse the same index with a different point.
+      history.Points[0] = { Items: [{}] };
+      requestSaveDocument.mockResolvedValue(fileOf([2]));
+      await takeSnapshot();
+      expect((await listDocs()).items[0].revCount).toBe(2);
+      expect((await getLatestSnapshot('report'))?.bytes[0]).toBe(2);
+      expect(requestSaveDocument).toHaveBeenCalledTimes(2);
+    } finally {
+      frame.remove();
+    }
+  });
+
+  it.each(['append', 'replace'])('recovers %s changes inside the same undo point', async (mode) => {
+    const frame = document.createElement('iframe');
+    document.body.append(frame);
+    const history = { Index: 0, Points: [{ Items: [{}] }] };
+    Object.assign(frame.contentWindow!, { AscCommon: { History: history }, Asc: { editor: {} } });
+    try {
+      requestSaveDocument.mockResolvedValue(fileOf([1]));
+      await beginAutosaveSession({ docId: 'report', title: 'Report.docx', origin: 'local' });
+      await takeSnapshot();
+      if (mode === 'append') history.Points[0].Items.push({});
+      else history.Points[0].Items[0] = {};
+      requestSaveDocument.mockResolvedValue(fileOf([2]));
+      await takeSnapshot();
+      expect((await getLatestSnapshot('report'))?.bytes[0]).toBe(2);
+      expect((await listDocs()).items[0].revCount).toBe(2);
+    } finally {
+      frame.remove();
+    }
   });
 
   it('does not start in embed mode', async () => {
@@ -209,6 +272,8 @@ describe('autosave session', () => {
   });
 
   it('gives up after repeated export failures instead of retrying forever', async () => {
+    const warning = vi.fn();
+    Object.assign(window, { message: { warning } });
     requestSaveDocument.mockRejectedValue(new Error('export failed'));
     await beginAutosaveSession({ docId: 'broken', title: 'Broken.docx', origin: 'local' });
 
@@ -218,6 +283,11 @@ describe('autosave session', () => {
     await takeSnapshot();
 
     expect(isAutosaveSessionActive()).toBe(false);
+    expect(warning).toHaveBeenCalledWith(t('autosaveExportStopped'));
+    expect(warning).toHaveBeenCalledTimes(1);
+    await takeSnapshot();
+    expect(warning).toHaveBeenCalledTimes(1);
+    delete (window as any).message;
   });
 
   it('waits its turn while a user-initiated save owns the channel', async () => {
@@ -247,17 +317,176 @@ describe('autosave session', () => {
   });
 
   it('keeps documents with the same name apart', async () => {
-    // Every blank document is called New_Document.docx, and plenty of people
+    // Every blank document is called Untitled.docx, and plenty of people
     // have two unrelated Report.docx files. Identity is the id, never the name.
-    requestSaveDocument.mockResolvedValue(fileOf([1], 'New_Document.docx'));
-    await beginAutosaveSession({ docId: 'first-blank', title: 'New_Document.docx', origin: 'new' });
+    requestSaveDocument.mockResolvedValue(fileOf([1], 'Untitled.docx'));
+    await beginAutosaveSession({ docId: 'first-blank', title: 'Untitled.docx', origin: 'new' });
     const first = await takeSnapshot();
 
     stopAutosaveSession();
-    await beginAutosaveSession({ docId: 'second-blank', title: 'New_Document.docx', origin: 'new' });
+    await beginAutosaveSession({ docId: 'second-blank', title: 'Untitled.docx', origin: 'new' });
     const second = await takeSnapshot();
 
     expect(second?.id).not.toBe(first?.id);
     expect((await listDocs()).total).toBe(2);
+  });
+  it('defers a cached departure export and stores a recovery point after a stable return', async () => {
+    requestSaveDocument.mockResolvedValue(fileOf([7, 8]));
+    await beginAutosaveSession({ docId: 'cached', title: 'Cached.docx', origin: 'local' });
+    markDocumentDirty();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(requestSaveDocument).not.toHaveBeenCalled();
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(requestSaveDocument).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(async () => expect(Array.from((await getLatestSnapshot('cached'))!.bytes)).toEqual([7, 8]));
+  });
+  it('cancels the resumed export on rapid cached departure and preserves recovery on the final return', async () => {
+    requestSaveDocument.mockResolvedValue(fileOf([9]));
+    await beginAutosaveSession({ docId: 'repeated', title: 'Repeated.docx', origin: 'local' });
+    markDocumentDirty();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    for (let cycle = 0; cycle < 2; cycle++) {
+      window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(requestSaveDocument).not.toHaveBeenCalled();
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+      window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    expect(requestSaveDocument).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(async () => expect(Array.from((await getLatestSnapshot('repeated'))!.bytes)).toEqual([9]));
+  });
+  it('keeps noncached hidden departure recovery enabled', async () => {
+    requestSaveDocument.mockResolvedValue(fileOf([3]));
+    await beginAutosaveSession({ docId: 'noncached', title: 'Noncached.docx', origin: 'local' });
+    markDocumentDirty();
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.waitFor(async () => expect(Array.from((await getLatestSnapshot('noncached'))!.bytes)).toEqual([3]));
+  });
+  it('waits for recent typing to settle before resumed recovery', async () => {
+    requestSaveDocument.mockResolvedValue(fileOf([4]));
+    await beginAutosaveSession({ docId: 'typing', title: 'Typing.docx', origin: 'local' });
+    markDocumentDirty();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    await vi.advanceTimersByTimeAsync(1500);
+    markDocumentDirty();
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(requestSaveDocument).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(async () => expect(Array.from((await getLatestSnapshot('typing'))!.bytes)).toEqual([4]));
+  });
+  it('does not let a stopped session resume exports into its replacement', async () => {
+    requestSaveDocument.mockResolvedValue(fileOf([5]));
+    await beginAutosaveSession({ docId: 'old', title: 'Old.docx', origin: 'local' });
+    markDocumentDirty();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    stopAutosaveSession();
+    await beginAutosaveSession({ docId: 'new', title: 'New.docx', origin: 'local' });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(requestSaveDocument).not.toHaveBeenCalled();
+    expect(await getLatestSnapshot('old')).toBeNull();
+    expect(await getLatestSnapshot('new')).toBeNull();
+  });
+  it('does not let an overdue periodic tick bypass the restored-page grace period', async () => {
+    requestSaveDocument.mockResolvedValue(fileOf([6]));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    await beginAutosaveSession({ docId: 'overdue', title: 'Overdue.docx', origin: 'local' });
+    markDocumentDirty();
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+    await vi.advanceTimersByTimeAsync(59000);
+    expect(requestSaveDocument).not.toHaveBeenCalled();
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(requestSaveDocument).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(async () => expect(Array.from((await getLatestSnapshot('overdue'))!.bytes)).toEqual([6]));
+  });
+  it('does not store a late export from a stopped session or interfere with its replacement', async () => {
+    let finish!: (file: File) => void;
+    requestSaveDocument.mockImplementationOnce(
+      () =>
+        new Promise<File>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await beginAutosaveSession({ docId: 'old-export', title: 'Old.docx', origin: 'local' });
+    const pending = takeSnapshot();
+    stopAutosaveSession();
+    await beginAutosaveSession({ docId: 'replacement', title: 'New.docx', origin: 'local' });
+    finish(fileOf([1]));
+    expect(await pending).toBeNull();
+    expect(await getLatestSnapshot('old-export')).toBeNull();
+    expect(getAutosaveDocId()).toBe('replacement');
+    requestSaveDocument.mockResolvedValue(fileOf([2]));
+    await takeSnapshot();
+    expect(Array.from((await getLatestSnapshot('replacement'))!.bytes)).toEqual([2]);
+  });
+  it('does not let an obsolete export failure stop the new document recovery session', async () => {
+    requestSaveDocument.mockRejectedValue(new Error('export failed'));
+    await beginAutosaveSession({ docId: 'failing-old', title: 'Old.docx', origin: 'local' });
+    await takeSnapshot();
+    await takeSnapshot();
+    let fail!: (error: Error) => void;
+    requestSaveDocument.mockImplementationOnce(
+      () =>
+        new Promise<File>((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    const pending = takeSnapshot();
+    stopAutosaveSession();
+    await beginAutosaveSession({ docId: 'healthy-new', title: 'New.docx', origin: 'local' });
+    fail(new Error('late old export failed'));
+    await pending;
+    expect(isAutosaveSessionActive()).toBe(true);
+    expect(getAutosaveDocId()).toBe('healthy-new');
+    requestSaveDocument.mockResolvedValue(fileOf([3]));
+    await takeSnapshot();
+    expect(Array.from((await getLatestSnapshot('healthy-new'))!.bytes)).toEqual([3]);
+  });
+  it('cancels old recovery storage while its quota estimate waits during document replacement', async () => {
+    let started!: () => void;
+    const estimating = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let finish!: (value: { quota: number }) => void;
+    const estimate = new Promise<{ quota: number }>((resolve) => {
+      finish = resolve;
+    });
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      storage: {
+        estimate: () => {
+          started();
+          return estimate;
+        },
+      },
+    });
+    requestSaveDocument.mockResolvedValue(fileOf([4]));
+    await beginAutosaveSession({ docId: 'old-storage', title: 'Old.docx', origin: 'local' });
+    const pending = takeSnapshot();
+    await estimating;
+    stopAutosaveSession();
+    await beginAutosaveSession({ docId: 'new-storage', title: 'New.docx', origin: 'local' });
+    finish({ quota: 1000 });
+    expect(await pending).toBeNull();
+    expect(await getLatestSnapshot('old-storage')).toBeNull();
+    expect(getAutosaveDocId()).toBe('new-storage');
+    await takeSnapshot();
+    expect(Array.from((await getLatestSnapshot('new-storage'))!.bytes)).toEqual([4]);
   });
 });

@@ -203,10 +203,11 @@ test.describe('local history page', () => {
     await page.goto('/');
     const line = page.locator('#landing-hero .recent');
     await expect(line).toContainText('7 days');
-    await expect(line.locator('a.recent-all')).toHaveAttribute('href', '/history');
+    await expect(line.locator('a.recent-all')).toHaveAttribute('href', '/history?locale=en');
 
     await line.locator('a.recent-all').click();
-    await page.waitForURL(/\/history/);
+    await page.waitForURL('**/history?locale=en');
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
     await expect(page.locator('.history-title')).toBeVisible();
   });
 
@@ -219,6 +220,12 @@ test.describe('local history page', () => {
 
     // Cancelling deletes nothing, and the dialog gets out of the way.
     await expect(page.locator('r-modal')).toHaveCount(0);
+    await expect(titles(page)).toHaveText(['Stays.docx']);
+    await expect(page.locator('.history-delete')).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.confirm-dialog')).toHaveAttribute('open', 'true');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.history-delete')).toBeFocused();
     await expect(titles(page)).toHaveText(['Stays.docx']);
   });
 

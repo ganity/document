@@ -43,6 +43,9 @@ import {
   toUint8Array,
 } from '../../lib/onlyoffice-editor';
 import { installOpenFailureGuard } from '../../lib/onlyoffice/open-failure';
+import { beginDocumentOpen, cancelDocumentOpen } from '../../lib/document-open';
+import { fetchRemoteDocument } from '../../lib/remote-document';
+import { getDocumentOpenError } from '../../lib/onlyoffice/open-state';
 
 function makeEditor(extra: Record<string, unknown> = {}) {
   return { sendCommand: vi.fn(), ...extra };
@@ -248,13 +251,195 @@ describe('onlyoffice-editor', () => {
       (window as any).DocsAPI = { DocEditor };
 
       const promise = createEditorInstance(options);
-      // Skip the internal cleanup delay (150ms when no prior editor exists).
+      // Allow queued editor work to settle.
       await vi.advanceTimersByTimeAsync(200);
       await promise;
 
       expect(DocEditor).toHaveBeenCalledTimes(1);
       return DocEditor.mock.calls[0][1] as any;
     }
+
+    it('opens the first document without waiting for teardown of a nonexistent editor', async () => {
+      vi.useFakeTimers();
+      const DocEditor = vi.fn();
+      (window as any).DocsAPI = { DocEditor };
+      const opening = createEditorInstance({ fileName: 'first.pptx', fileType: 'pptx' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(DocEditor).toHaveBeenCalledOnce();
+      await opening;
+    });
+
+    it('serializes simultaneous editor replacements', async () => {
+      vi.useFakeTimers();
+      const destroyEditor = vi.fn();
+      const DocEditor = vi.fn(function () {
+        return { destroyEditor };
+      });
+      (window as any).DocsAPI = { DocEditor };
+      const first = createEditorInstance({ fileName: 'first.docx', fileType: 'docx' });
+      const second = createEditorInstance({ fileName: 'second.docx', fileType: 'docx' });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(DocEditor).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.all([first, second]);
+      expect(DocEditor).toHaveBeenCalledTimes(2);
+      expect(destroyEditor).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows the next editor to open after construction fails', async () => {
+      vi.useFakeTimers();
+      const DocEditor = vi
+        .fn()
+        .mockImplementationOnce(function () {
+          throw new Error('mount failed');
+        })
+        .mockImplementation(function () {
+          return { destroyEditor: vi.fn() };
+        });
+      (window as any).DocsAPI = { DocEditor };
+      const first = createEditorInstance({ fileName: 'bad.docx', fileType: 'docx' });
+      const failed = expect(first).rejects.toThrow('mount failed');
+      await vi.advanceTimersByTimeAsync(200);
+      await failed;
+      const second = createEditorInstance({ fileName: 'good.docx', fileType: 'docx' });
+      const next = expect(second).resolves.toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1000);
+      await failed;
+      await next;
+      expect(DocEditor).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not mount an obsolete editor waiting in the operation queue', async () => {
+      vi.useFakeTimers();
+      const DocEditor = vi.fn();
+      (window as any).DocsAPI = { DocEditor };
+      let current = true;
+      const opening = createEditorInstance({ fileName: 'stale.docx', fileType: 'docx', isCurrent: () => current });
+      const failed = expect(opening).rejects.toMatchObject({ name: 'AbortError' });
+      current = false;
+      await vi.advanceTimersByTimeAsync(200);
+      await failed;
+      expect(DocEditor).not.toHaveBeenCalled();
+    });
+
+    it('finishes a replacement after teardown when a newer download fails', async () => {
+      vi.useFakeTimers();
+      const destroyEditor = vi.fn();
+      (window as any).editor = { destroyEditor };
+      const replacement = { destroyEditor: vi.fn() };
+      (window as any).DocsAPI = {
+        DocEditor: vi.fn(function () {
+          return replacement;
+        }),
+      };
+      const owner = beginDocumentOpen();
+      const opening = createEditorInstance({
+        fileName: 'replacement.docx',
+        fileType: 'docx',
+        isCurrent: owner.isCurrent,
+      });
+      const outcome = opening.then(
+        () => 'mounted',
+        () => 'cancelled',
+      );
+      await vi.advanceTimersByTimeAsync(50);
+      expect(destroyEditor).toHaveBeenCalledOnce();
+      const newer = beginDocumentOpen();
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('missing', { status: 404 })));
+      try {
+        await expect(fetchRemoteDocument('https://files.example/missing.docx', {}, newer.signal)).rejects.toThrow(
+          '404',
+        );
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await outcome).toBe('mounted');
+        expect(window.editor).toBe(replacement);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('does not resurrect a replacement closed during teardown', async () => {
+      vi.useFakeTimers();
+      (window as any).editor = { destroyEditor: vi.fn() };
+      const DocEditor = vi.fn();
+      (window as any).DocsAPI = { DocEditor };
+      const owner = beginDocumentOpen();
+      const opening = createEditorInstance({ fileName: 'closed.docx', fileType: 'docx', isCurrent: owner.isCurrent });
+      const failed = expect(opening).rejects.toMatchObject({ name: 'AbortError' });
+      await vi.advanceTimersByTimeAsync(50);
+      cancelDocumentOpen();
+      await vi.advanceTimersByTimeAsync(1000);
+      await failed;
+      expect(window.editor).toBeUndefined();
+      expect(DocEditor).not.toHaveBeenCalled();
+    });
+
+    it('retries the mounted document after a newer download fails', async () => {
+      vi.useFakeTimers();
+      const DocEditor = vi.fn(function (_id: string, _config: any) {
+        return { destroyEditor: vi.fn() };
+      });
+      (window as any).DocsAPI = { DocEditor };
+      const owner = beginDocumentOpen();
+      const opening = createEditorInstance({
+        fileName: 'mounted.docx',
+        fileType: 'docx',
+        binData: new ArrayBuffer(8),
+        isCurrent: owner.isCurrent,
+      });
+      await vi.advanceTimersByTimeAsync(200);
+      await opening;
+      const newer = beginDocumentOpen();
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('missing', { status: 404 })));
+      try {
+        await expect(fetchRemoteDocument('https://files.example/missing.docx', {}, newer.signal)).rejects.toThrow(
+          '404',
+        );
+        let reject!: (event: unknown) => void;
+        const sendEvent = vi.fn();
+        installOpenFailureGuard({
+          addEventListener: (type: string, handler: (event: unknown) => void) => {
+            if (type === 'unhandledrejection') reject = handler;
+          },
+          Asc: { editor: { sendEvent } },
+        } as unknown as Window);
+        reject(
+          Object.assign(new Event('unhandledrejection', { cancelable: true }), {
+            reason: new Error('X2T module failed to instantiate: Failed to fetch'),
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(DocEditor).toHaveBeenCalledTimes(2);
+        expect(DocEditor.mock.calls[1][1].document.title).toBe('mounted.docx');
+        expect(getDocumentOpenError()).toBeNull();
+        expect(sendEvent).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it.each(['docx', 'xlsx', 'pptx'])(
+      'provides same-window home navigation for standalone %s editors',
+      async (fileType) => {
+        const config = await createAndGetConfig({ fileName: `test.${fileType}`, fileType });
+        expect(config.editorConfig.customization.goback).toEqual({
+          url: new URL('/', location.href).href,
+          blank: false,
+          text: expect.any(String),
+        });
+      },
+    );
+
+    it('does not expose home navigation in an embedded editor', async () => {
+      const previousUrl = location.href;
+      history.replaceState(null, '', '/editor?embed=true');
+      try {
+        const config = await createAndGetConfig({ fileName: 'test.docx', fileType: 'docx' });
+        expect(config.editorConfig.customization.goback).toBeUndefined();
+      } finally {
+        history.replaceState(null, '', previousUrl);
+      }
+    });
 
     // The bytes are kept only so an environment-class open failure can be
     // retried with them (#144). Once the document is open that retry is
@@ -306,7 +491,9 @@ describe('onlyoffice-editor', () => {
             if (type === 'unhandledrejection') handlers.push(cb);
           },
         } as unknown as Window);
-        handlers.forEach((cb) => cb({ reason: { message } }));
+        handlers.forEach((cb) =>
+          cb(Object.assign(new Event('unhandledrejection', { cancelable: true }), { reason: { message } })),
+        );
       };
 
       it('quotes the heap size the wasm binary declares, not a hardcoded number', async () => {
@@ -469,7 +656,7 @@ describe('onlyoffice-editor', () => {
 
     it('creates a blank document (no url) when binData is absent', async () => {
       const config = await createAndGetConfig({
-        fileName: 'New_Document.xlsx',
+        fileName: 'Untitled.xlsx',
         fileType: 'xlsx',
       });
 

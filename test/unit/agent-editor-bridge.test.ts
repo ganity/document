@@ -64,17 +64,15 @@ describe('agent editor-bridge', () => {
       expect(getEditorApi()).toBeNull();
     });
 
-    it('skips iframes whose contentWindow access throws (cross-origin) and keeps scanning', () => {
-      const crossOrigin = document.createElement('iframe');
-      Object.defineProperty(crossOrigin, 'contentWindow', {
+    it('skips frames whose editor property access throws (cross-origin) and keeps scanning', () => {
+      const inaccessibleWindow = Object.defineProperty({}, 'editor', {
         get() {
           throw new Error('cross-origin');
         },
-        configurable: true,
       });
-      document.body.appendChild(crossOrigin);
+      mountIframe(inaccessibleWindow);
       const api = { pluginMethod_PasteHtml: () => {} };
-      mountIframe({ editor: api }, { name: 'frameEditor' });
+      mountIframe({ editor: api });
       expect(getEditorApi()).toBe(api);
     });
   });
@@ -129,4 +127,29 @@ describe('agent editor-bridge', () => {
       expect(requireEditorContext()).toEqual({ api, Asc });
     });
   });
+});
+
+it('returns native history from the same frame as the resolved API', () => {
+  document.body.innerHTML = '';
+  const unrelated = { History: { Index: 9 } };
+  mountIframe({ editor: {}, Asc: {}, AscCommon: unrelated });
+  const api = {},
+    Asc = {},
+    AscCommon = { History: { Index: 0 } };
+  mountIframe({ editor: api, Asc, AscCommon }, { name: 'frameEditor' });
+  const context = getEditorContext();
+  expect(context?.api).toBe(api);
+  expect(context?.AscCommon).toBe(AscCommon);
+  document.body.innerHTML = '';
+});
+it('refreshes native history when the editor frame is replaced', () => {
+  document.body.innerHTML = '';
+  const first = { History: { Index: 0 } };
+  mountIframe({ editor: {}, Asc: {}, AscCommon: first }, { name: 'frameEditor' });
+  expect(getEditorContext()?.AscCommon).toBe(first);
+  document.body.innerHTML = '';
+  const second = { History: { Index: -1 } };
+  mountIframe({ editor: {}, Asc: {}, AscCommon: second }, { name: 'frameEditor' });
+  expect(getEditorContext()?.AscCommon).toBe(second);
+  document.body.innerHTML = '';
 });

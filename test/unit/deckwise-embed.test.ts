@@ -18,6 +18,12 @@ function editorWindow() {
   }
   const win = {
     Asc: { editor, asc_CDownloadOptions: DownloadOptions },
+    AscCommon: {
+      x2t: {
+        convertFromBin: vi.fn(async () => ({ binary: new Uint8Array([1]) })),
+        downloadFile: vi.fn(),
+      },
+    },
   } as unknown as Window;
   return { win, editor, originalSave, originalDownloadAs };
 }
@@ -69,6 +75,7 @@ describe('DeckWise restricted embed mode', () => {
   it('allows the host-requested PPTX save through the export guard', async () => {
     window.history.pushState({}, '', '/?embed=1&deckwise=1');
     const iframe = document.createElement('iframe');
+    iframe.name = 'frameEditor';
     document.body.appendChild(iframe);
     const originalDownloadAs = vi.fn();
     class DownloadOptions {
@@ -96,7 +103,15 @@ describe('DeckWise restricted embed mode', () => {
       },
       asc_CDownloadOptions: DownloadOptions,
     };
-    installServerlessSaveSemantics(child);
+    Object.assign(child, {
+      AscCommon: {
+        x2t: {
+          convertFromBin: vi.fn(async () => ({ binary: new Uint8Array([1]) })),
+          downloadFile: vi.fn(),
+        },
+      },
+    });
+    expect(installServerlessSaveSemantics(child)).toBe(true);
     (window as unknown as { editor?: { downloadAs: (format: string) => void } }).editor = {
       downloadAs: vi.fn(),
     };
@@ -106,6 +121,8 @@ describe('DeckWise restricted embed mode', () => {
     await vi.waitFor(() => expect(originalDownloadAs).toHaveBeenCalledOnce());
     window.dispatchEvent(
       new MessageEvent('message', {
+        origin: window.location.origin,
+        source: child,
         data: { type: 'onlyoffice-file-stream', fileType: 'pptx', buffer: new ArrayBuffer(8) },
       }),
     );

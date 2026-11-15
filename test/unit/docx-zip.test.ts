@@ -199,6 +199,52 @@ describe('preprocessPptx', () => {
     '<Relationship Id="rId1" Type="http://x/officeDocument" Target="ppt/presentation.xml"/>' +
     '</Relationships>';
 
+  it('adapts web Hans theme fallback without changing slide elements or source bytes', async () => {
+    const theme =
+      '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:fontScheme name="source"><a:majorFont><a:latin typeface="Cambria"/><a:ea typeface=""/><a:font script="Hans" typeface="黑体"/></a:majorFont><a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:font script="Hans" typeface="宋体"/></a:minorFont></a:fontScheme></a:themeElements></a:theme>';
+    const slide =
+      '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld name="original"><a:rPr lang="zh-CN"/></p:cSld></p:sld>';
+    const zip = buildZip([
+      { name: '_rels/.rels', content: RELS },
+      { name: 'docProps/app.xml', content: '<Properties/>' },
+      { name: 'docProps/core.xml', content: '<Properties/>' },
+      { name: 'ppt/theme/theme1.xml', content: theme, deflate: true },
+      { name: 'ppt/slides/slide1.xml', content: slide, deflate: true },
+    ]);
+    const before = zip.slice();
+    const out = await preprocessPptx(zip);
+    const result = await textOf(out, 'ppt/theme/theme1.xml');
+    expect(result).toContain('<a:ea typeface="黑体"');
+    expect(result).toContain('<a:ea typeface="宋体"');
+    expect(result).toContain('<a:latin typeface="Calibri"');
+    expect(await textOf(out, 'ppt/slides/slide1.xml')).toBe(slide);
+    expect(zip).toEqual(before);
+  });
+
+  it('preserves an explicit East Asian face instead of replacing it with Hans', async () => {
+    const theme =
+      '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:minorFont><a:ea typeface="explicit"/><a:font script="Hans" typeface="宋体"/></a:minorFont></a:theme>';
+    const zip = buildZip([
+      { name: '_rels/.rels', content: RELS },
+      { name: 'ppt/theme/theme1.xml', content: theme },
+      { name: 'ppt/slides/slide1.xml', content: '<a:rPr lang="zh-CN"/>' },
+    ]);
+    expect(await textOf(await preprocessPptx(zip), 'ppt/theme/theme1.xml')).toBe(theme);
+  });
+
+  it('does not impose Hans theme fonts on Japanese or mixed East Asian decks', async () => {
+    const theme =
+      '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:minorFont><a:ea typeface=""/><a:font script="Hans" typeface="宋体"/></a:minorFont></a:theme>';
+    for (const languages of ['<a:rPr lang="ja-JP"/>', '<a:rPr lang="zh-CN"/><a:rPr lang="zh-TW"/>']) {
+      const zip = buildZip([
+        { name: '_rels/.rels', content: RELS },
+        { name: 'ppt/theme/theme1.xml', content: theme },
+        { name: 'ppt/slides/slide1.xml', content: languages },
+      ]);
+      expect(await textOf(await preprocessPptx(zip), 'ppt/theme/theme1.xml')).toBe(theme);
+    }
+  });
+
   it('injects app.xml / core.xml when missing and adds their relationships to .rels', async () => {
     const zip = buildZip([
       { name: '_rels/.rels', content: RELS },

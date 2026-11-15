@@ -50,20 +50,47 @@ const result = await runAgent(provider, 'echo hello', {
 
 ## Providers
 
-`createProvider(id, opts)` where id ∈ `anthropic | openai | gemini | ollama | webllm`.
-`defaultProviderId()` → `'webllm'` when WebGPU is available, else `'anthropic'`.
-Cloud keys live in localStorage via `getApiKey/setApiKey` (per provider).
+`createProvider(id, opts)` where id ∈ `anthropic | openai | gemini | ollama | webllm | wllama | loopback`.
+`defaultProviderId()` always returns `'webllm'`; the local inference provider can
+fall back to wllama on CPU. Cloud providers require explicit configuration.
+Cloud keys live in localStorage via `getApiKey/setApiKey` (per provider) or
+`getEndpointKey/setEndpointKey` (per configured endpoint).
+The writing route requires a connected endpoint or explicit experimental
+browser-local writing consent; it does not silently select a cloud destination.
 
 ## Gotchas
 
 - The runtime is **editor-agnostic**: it does NOT default to any tools. If you
   don't pass `options.tools`, the model gets none. Always pass your registry.
 - `runAgent` streams via `provider.chatStream` when available, else falls back to `chat`.
-- `signal` aborts _between_ iterations; the in-flight model call still finishes.
+- `signal` is forwarded to model calls and tool execution. Providers must
+  honor it during in-flight requests; tools must also guard asynchronous native
+  callbacks before mutating a document.
 - Tool `execute` errors are caught and fed back to the model as an error tool result (not thrown).
-- Deps: `@anthropic-ai/sdk`, `@mlc-ai/web-llm`. No editor/DOM beyond `localStorage` for keys.
+- Deps include `@anthropic-ai/sdk`, `@mlc-ai/web-llm` and `@wllama/wllama`.
+  Browser-local providers use Workers, WebGPU/WASM and browser model caches;
+  the runtime and tool contracts remain editor-independent.
 
 ## Testing
 
 Fully unit-testable: pass a scripted `LLMProvider` (returns canned `chat()` results)
 and mock `AgentTool`s; assert on the event stream and `result`.
+
+## Timing observations
+
+`onFirstProviderText` is an optional content-free once-per-run callback at the
+current `chatStream` boundary, after nonempty/abort checks and before runtime
+deferral. Adapters may already filter text; never label it raw model-token time.
+Keep local provider context construction/exact budgeting, first-text and total
+execution usage separate from host elapsed arrival/presentation clocks and
+backend first-token/prefill fields. Provider execution excludes queue/model load;
+unsupported stages remain absent. See README for provider-specific semantics.
+
+Host presentation metadata is optional and opaque: `LLMMessage.hostPresentation`
+contains a host-minted response id and bounded domain-owned metadata. Use
+`annotateAssistant(message)` to associate it with the exact inference response;
+do not reconstruct ownership from text or array indexes. The runtime strips this
+field from all provider-bound messages. `onRequestContext(reference)` observes the
+actual optional reference surviving runtime budgeting before each inference, so a
+host may retain only the excerpts that were sent. Provider-specific exact token
+budgets may still remove historical turns; presentation data is never context.

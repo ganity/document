@@ -2,16 +2,17 @@
   "name": "document",
   "version": "1.0.0",
   "packageManager": "pnpm@11.4.0",
-  "description": "A local web-based document editor based on OnlyOffice, allowing you to edit documents directly in your browser without server-side processing, ensuring your privacy and security.",
+  "description": "A local-first browser editor for Word, Excel, PowerPoint and PDF, with an experimental AI assistant and optional user-configured AI services.",
   "type": "module",
   "scripts": {
     "dev": "vite --host --force",
     "build": "sh ./bin/build.sh",
+    "build:module": "node bin/build-editor-module.mjs",
     "build:pages": "node bin/build-pages.mjs",
     "sitemap:lastmod": "node bin/sitemap-lastmod.mjs",
     "build:single": "node bin/bundle_single_html.js",
     "preview": "vite preview",
-    "tsc": "tsc --noEmit",
+    "tsc": "pnpm --recursive --filter '@ranuts/*' build && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -20,12 +21,13 @@
     "test:e2e:ui": "playwright test --ui",
     "docker:build": "docker build -t document:e2e .",
     "test:e2e:docker": "sh ./bin/test-e2e-docker.sh",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "lint:ts": "oxlint --deny-warnings && tsc --noEmit",
+    "format": "node bin/archive-quality.mjs format",
+    "format:check": "node bin/archive-quality.mjs format:check",
+    "lint:ts": "node bin/archive-quality.mjs lint && pnpm run tsc",
     "lint:docker": "docker compose -f docker-compose.yaml config --quiet",
     "lint": "pnpm run lint:ts && pnpm run lint:docker",
-    "test:e2e:corpus": "playwright test test/e2e/corpus.spec.ts"
+    "test:e2e:corpus": "playwright test test/e2e/corpus.spec.ts",
+    "test:archive": "node bin/evaluation-archive.mjs"
   },
   "engines": {
     "node": ">=20.19.0"
@@ -44,7 +46,11 @@
     "local-editor",
     "browser-editor",
     "document-converter",
-    "office-suite"
+    "office-suite",
+    "ai-assistant",
+    "webllm",
+    "webgpu",
+    "local-llm"
   ],
   "author": "ranuts",
   "license": "AGPL-3.0",
@@ -57,16 +63,16 @@
     "url": "https://github.com/ranuts/document/issues"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.1",
-    "@types/node": "^26.2.0",
+    "@playwright/test": "^1.64.0",
+    "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^4.1.11",
     "fake-indexeddb": "^6.2.5",
-    "jsdom": "^30.0.1",
+    "jsdom": "^30.1.2",
     "marked": "16.4.2",
-    "oxlint": "^1.78.0",
-    "prettier": "^3.9.6",
+    "oxlint": "^1.87.0",
+    "prettier": "^3.9.10",
     "typescript": "^7.0.2",
-    "vite": "^8.2.1",
+    "vite": "^8.3.4",
     "vitest": "^4.1.11"
   },
   "dependencies": {
@@ -75,6 +81,7 @@
     "@ranuts/chat-ui": "workspace:*",
     "@ranuts/converter": "workspace:*",
     "@ranuts/shared": "workspace:*",
+    "pdfjs-dist": "5.4.624",
     "ranui": "0.5.0-alpha.6",
     "ranuts": "0.4.1-alpha.2"
   }

@@ -16,6 +16,7 @@ const documentApi = vi.hoisted(() => ({
 const agentTools = vi.hoisted(() => ({
   text: '' as string,
   truncated: false,
+  error: false,
 }));
 const store = vi.hoisted(() => ({ doc: { fileName: '' } as { fileName: string } }));
 
@@ -29,7 +30,10 @@ vi.mock('@ranuts/shared/store', () => ({ getDocmentObj: () => store.doc }));
 vi.mock('../../lib/agent-plugin/tools', () => ({
   getDocumentTextTool: {
     name: 'get_document_text',
-    execute: async () => ({ text: agentTools.text, truncated: agentTools.truncated }),
+    execute: async () => {
+      if (agentTools.error) throw new Error('Current document text is unavailable without changing selection');
+      return { text: agentTools.text, truncated: agentTools.truncated };
+    },
   },
 }));
 
@@ -66,6 +70,7 @@ describe('WebMCP adapter', () => {
     store.doc = { fileName: '' };
     agentTools.text = '';
     agentTools.truncated = false;
+    agentTools.error = false;
     delete (document as any).modelContext;
     delete (navigator as any).modelContext;
   });
@@ -229,9 +234,29 @@ describe('WebMCP adapter', () => {
     expect(emptyWord.note).toBeUndefined();
 
     // Spreadsheet: the engine exposes no full text, and the answer says so.
-    store.doc = { fileName: 'budget.xlsx' };
-    const sheet = parse(await tool.execute({}));
-    expect(sheet).toMatchObject({ ok: true, text: '', supported: false });
-    expect(sheet.note).toMatch(/save_document/);
+    agentTools.error = true;
+    for (const fileName of ['budget.xlsx', 'slides.pptx']) {
+      store.doc = { fileName };
+      const unsupported = parse(await tool.execute({}));
+      expect(unsupported).toMatchObject({ ok: true, text: '', supported: false });
+      expect(unsupported.note).toMatch(/save_document/);
+    }
+    store.doc = { fileName: 'report.docx' };
+    await expect(tool.execute({})).rejects.toThrow('Current document text is unavailable');
+  });
+});
+
+describe('URL open failure contract', () => {
+  it('returns an error result from the registered tool when URL opening rejects', async () => {
+    disposeWebMcp();
+    const surface = fakeSurface();
+    (document as any).modelContext = surface;
+    documentApi.openDocumentFromUrl.mockRejectedValueOnce(new Error('download failed'));
+    initWebMcp();
+    const result = await surface.tools.get('open_document_url').execute({ url: 'https://example.com/bad.docx' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('download failed');
+    disposeWebMcp();
+    delete (document as any).modelContext;
   });
 });

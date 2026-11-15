@@ -2,9 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/icons/document.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/document-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/document-180.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <link href="img/64.png" rel="shortcut icon" />
-    <link rel="icon" type="image/png" href="img/64.png" />
     <link rel="manifest" href="manifest.json" />
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000" />
@@ -33,8 +34,38 @@
     </script>
     <!-- ranui design-token layer (vendored from ranui/dist/ranui.css, re-synced by bin/build.sh).
          Loaded before home.css so the landing hero's --ran-* tokens resolve on first paint. -->
+    <script src="/theme-presentation.js"></script>
     <link rel="stylesheet" href="/ran-fonts/fonts.css" />
     <link rel="stylesheet" href="/ran-tokens.css" />
+    <link rel="stylesheet" href="/app-tokens.css" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Online Document Editor" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:title" content="Online Document Editor" />
+    <meta
+      property="og:description"
+      content="Edit Word, Excel and PowerPoint locally; annotate PDFs. No signup or Office installation. Optional AI (Experimental Beta), WebMCP and PWA support."
+    />
+    <meta property="og:url" content="https://edit.chaxus.com/" />
+    <meta property="og:image" content="https://edit.chaxus.com/social/document-editor-v1.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Online Document Editor: Word, Excel, PowerPoint and PDF; local editing, open source and no signup."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Online Document Editor" />
+    <meta
+      name="twitter:description"
+      content="Edit Word, Excel and PowerPoint locally; annotate PDFs. No signup or Office installation. Optional AI (Experimental Beta), WebMCP and PWA support."
+    />
+    <meta name="twitter:image" content="https://edit.chaxus.com/social/document-editor-v1.png" />
+    <meta
+      name="twitter:image:alt"
+      content="Online Document Editor: Word, Excel, PowerPoint and PDF; local editing, open source and no signup."
+    />
   </head>
 
   <body>
@@ -43,7 +74,7 @@
     </div>
 
     <noscript>
-      <p style="max-width: 720px; margin: 0 auto; padding: 24px; font-family: system-ui, sans-serif">
+      <p style="max-width: 720px; margin: 0 auto; padding: var(--ran-space-6); font-family: var(--ran-font-family)">
         This editor requires JavaScript to run. Please enable JavaScript to open or create a document.
       </p>
     </noscript>

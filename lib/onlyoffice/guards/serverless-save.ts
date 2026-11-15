@@ -17,6 +17,8 @@ import { hasPendingEmbeddedSaveRequest } from '../save-stream';
  *    our save UX consumes. Autosave-flagged calls keep the original path so
  *    nothing else changes.
  */
+import { installSaveStreamTracking } from '../save-stream';
+
 export function installServerlessSaveSemantics(win: Window): boolean {
   const saveWin = win as unknown as {
     Asc?: {
@@ -74,5 +76,5 @@ export function installServerlessSaveSemantics(win: Window): boolean {
     saveWin.__ooServerlessSavePatched = true;
     console.log('[OO] serverless save semantics installed (autosave loop off, Save/Ctrl+S -> download stream)');
   }
-  return Boolean(saveWin.__ooServerlessSavePatched);
+  return Boolean(saveWin.__ooServerlessSavePatched) && installSaveStreamTracking(win);
 }

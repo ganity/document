@@ -19,7 +19,7 @@ const FONT_REGEX = /\.(ttf|woff2?|otf|eot)(\?.*)?$/;
 
 /** Keep in sync with DEPLOY_COUPLED in public/sw.js and the no-cache group in public/_headers. */
 const DEPLOY_COUPLED =
-  /^\/(?:home|landing)\.css$|^\/(?:lang-switch|sw-register|open-local|landing-prefetch|history-recent)\.js$|^\/ranui-iife\//;
+  /^\/(?:home|landing|app-tokens)\.css$|^\/(?:lang-switch|sw-register|open-local|landing-prefetch|history-recent|theme-presentation)\.js$|^\/ranui-iife\//;
 
 const isHtmlRequest = (mode: string, pathname: string): boolean =>
   mode === 'navigate' || pathname.endsWith('.html') || pathname === '/' || pathname.endsWith('/');
@@ -48,6 +48,7 @@ function swShouldHandle(method: string, urlStr: string): boolean {
   if (method !== 'GET') return false;
   const url = new URL(urlStr);
   if (url.origin !== ORIGIN) return false;
+  if (url.pathname.startsWith('/api/connectors/')) return false;
   if (url.searchParams.has('file') || url.searchParams.has('src')) return false;
   if (FONT_REGEX.test(url.pathname)) return false;
   if (url.pathname.includes('/sdkjs/common/spell/')) return false;

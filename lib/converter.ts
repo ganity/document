@@ -1,6 +1,6 @@
 import { getExtensions } from 'ranuts/utils';
 import { t } from '@ranuts/shared/i18n';
-import { X2TConverter, isHtmlDocument, preprocessDocxRuby } from '@ranuts/converter';
+import { X2TConverter, isHtmlDocument, preprocessDocxRuby, preprocessPptx } from '@ranuts/converter';
 import { createEditorInstance, loadEditorApi } from './onlyoffice-editor';
 import { getDocumentType } from '@ranuts/shared/document-utils';
 
@@ -32,6 +32,8 @@ export async function handleDocumentOperation(options: {
   fileName: string;
   file?: File;
   readonly?: boolean;
+  isCurrent?: () => boolean;
+  onContentReady?: () => void;
 }): Promise<void> {
   try {
     // The DocsAPI loader is no longer a render-blocking <script> in
@@ -39,6 +41,7 @@ export async function handleDocumentOperation(options: {
     // a document); every open path funnels through here, so load it on
     // demand. Idempotent once window.DocsAPI exists.
     await loadEditorApi();
+    if (options.isCurrent && !options.isCurrent()) throw new DOMException('Document open superseded', 'AbortError');
     const { isNew, fileName, file, readonly = false } = options;
     const fileType = fileName.split('.').pop() || getExtensions(file?.type || '')[0] || '';
     const _docType = getDocumentType(fileType);
@@ -73,6 +76,11 @@ export async function handleDocumentOperation(options: {
         // base word included; unwrap them to their base text first (see
         // packages/converter docx-zip.ts). No-op for documents without any.
         binData = (await preprocessDocxRuby(new Uint8Array(await file.arrayBuffer()))).buffer as ArrayBuffer;
+      } else if (lowerType === 'pptx') {
+        // Resolve source theme fallbacks before offline import; source File and
+        // slide XML remain untouched. The editor must not silently use Latin
+        // font metrics for a source +mn-ea Chinese theme reference.
+        binData = (await preprocessPptx(new Uint8Array(await file.arrayBuffer()))).buffer as ArrayBuffer;
       } else if (lowerType === 'csv') {
         // The vendor editor's internal x2t cannot ingest raw CSV (its import
         // needs delimiter/encoding parameters the bundled helper never
@@ -89,14 +97,19 @@ export async function handleDocumentOperation(options: {
       }
     }
 
+    if (options.isCurrent && !options.isCurrent()) throw new DOMException('Document open superseded', 'AbortError');
+
     // Create editor instance (returns a Promise, uses queue internally)
     await createEditorInstance({
       fileName,
       fileType: openFileType,
       binData,
       readonly,
+      isCurrent: options.isCurrent,
+      ...(options.onContentReady ? { onContentReady: options.onContentReady } : {}),
     });
   } catch (error: any) {
+    if (error?.name === 'AbortError') throw error;
     console.error(`${t('documentOperationFailed')}`, error);
     alert(`${t('documentOperationFailed')}${error.message}`);
     throw error;

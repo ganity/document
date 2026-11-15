@@ -12,6 +12,7 @@ RUN corepack enable && \
 # Scripts are skipped here because the packages' prepare (tsc) builds need
 # their sources, which are only copied in the next layer.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches/ ./patches/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/converter/package.json ./packages/converter/
 COPY packages/agent-core/package.json ./packages/agent-core/
@@ -23,8 +24,9 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 # Copy source code
 COPY . .
 
-# Build the workspace packages (their prepare scripts), then the app
-RUN pnpm -r run prepare && pnpm run build
+# Build the workspace packages, encode WASM for plain HTTP, then build the app.
+# Do this before build.sh hashes the vendor tree, so sw.js names the served bytes.
+RUN pnpm -r run prepare && node bin/prepare-docker-wasm.mjs public && pnpm run build
 
 #FROM nginxinc/nginx-unprivileged:stable-alpine
 #COPY --from=builder /app/dist /usr/share/nginx/html

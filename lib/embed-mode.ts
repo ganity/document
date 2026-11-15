@@ -9,10 +9,21 @@
  * autosave history all have to be silent when the document on screen belongs
  * to someone else's page.
  */
+let hostMode: 'embedded' | 'deckwise' | undefined;
+
+export function setEditorHostMode(mode: typeof hostMode): void {
+  hostMode = mode;
+}
+
+export function isEditorModule(): boolean {
+  return hostMode !== undefined;
+}
+
 const EMBED_QUERY_KEYS = ['embed', 'embedded'];
 export const DECKWISE_SAVE_REQUEST_EVENT = 'deckwise:save-requested';
 
 export function isEmbedMode(): boolean {
+  if (hostMode) return true;
   if (typeof window === 'undefined') {
     return false;
   }
@@ -28,6 +39,7 @@ export function isEmbedMode(): boolean {
 }
 
 export function isDeckWiseMode(): boolean {
+  if (hostMode) return hostMode === 'deckwise';
   if (!isEmbedMode()) return false;
   const value = new URLSearchParams(window.location.search).get('deckwise');
   return value === '' || value === '1' || value === 'true';

@@ -1,11 +1,27 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { OpenAIProvider } from '@ranuts/agent-core/llm/openai';
-import { clearApiKey, setApiKey } from '@ranuts/agent-core/llm/keys';
+import { OpenAIProvider } from '../../packages/agent-core/src/llm/openai';
+import { clearApiKey, setApiKey } from '../../packages/agent-core/src/llm/keys';
 
 const okResponse = (body: unknown): Response => ({ ok: true, json: async () => body }) as unknown as Response;
 
 describe('OpenAIProvider', () => {
   afterEach(() => clearApiKey('openai'));
+
+  it('uses a compatible endpoint, custom model and bearer key', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init: RequestInit) =>
+      okResponse({ choices: [{ message: { content: 'ok' } }] }),
+    );
+    await new OpenAIProvider({
+      apiKey: 'custom-key',
+      model: 'custom-model',
+      baseURL: 'https://inference.example/v1/',
+      fetchImpl,
+    }).chat([{ role: 'user', content: 'hello' }], []);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://inference.example/v1/chat/completions');
+    expect(JSON.parse(init.body as string).model).toBe('custom-model');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer custom-key');
+  });
 
   it('is not ready without a key', () => {
     expect(new OpenAIProvider({ apiKey: undefined }).isReady()).toBe(false);
@@ -38,6 +54,19 @@ describe('OpenAIProvider', () => {
     expect(result.text).toBe('hi there');
   });
 
+  it('sends plain chat without tool-only fields to a strict compatible endpoint', async () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test',
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(init.body as string);
+        if ('tools' in body || 'tool_choice' in body) return new Response('Unexpected tool fields', { status: 400 });
+        return okResponse({ choices: [{ message: { content: 'Plain reply' }, finish_reason: 'stop' }] });
+      },
+    });
+
+    expect((await provider.chat([{ role: 'user', content: 'Hello' }], [])).text).toBe('Plain reply');
+  });
+
   it('throws with status detail on a non-ok response', async () => {
     const fetchImpl = vi.fn(
       async () => ({ ok: false, status: 401, text: async () => 'Unauthorized' }) as unknown as Response,
@@ -50,4 +79,34 @@ describe('OpenAIProvider', () => {
     const provider = new OpenAIProvider({ apiKey: undefined });
     await expect(provider.chat([{ role: 'user', content: 'x' }], [])).rejects.toThrow('not configured');
   });
+});
+
+it('cancels a pending cloud request when Stop aborts its signal', async () => {
+  const abort = new AbortController();
+  let transport: AbortSignal | null | undefined;
+  const provider = new OpenAIProvider({
+    apiKey: 'test',
+    fetchImpl: async (_url, init) => {
+      transport = init.signal;
+      return new Promise((_resolve, reject) => {
+        init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+      });
+    },
+  });
+  const pending = (provider as import('@ranuts/agent-core/llm/types').LLMProvider).chat([], [], abort.signal);
+  abort.abort();
+  await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  expect(transport?.aborted).toBe(true);
+  expect(transport?.reason).toBe(abort.signal.reason);
+});
+
+it('does not send an already cancelled cloud request', async () => {
+  const fetchImpl = vi.fn(async () => okResponse({ choices: [] }));
+  const abort = new AbortController();
+  abort.abort();
+  const provider = new OpenAIProvider({ apiKey: 'test', fetchImpl });
+  await expect(
+    (provider as import('@ranuts/agent-core/llm/types').LLMProvider).chat([], [], abort.signal),
+  ).rejects.toMatchObject({ name: 'AbortError' });
+  expect(fetchImpl).not.toHaveBeenCalled();
 });

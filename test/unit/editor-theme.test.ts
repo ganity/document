@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { setEditorHostMode } from '../../lib/embed-mode';
+import { resolveUiTheme } from '../../lib/onlyoffice/ui-theme';
 import {
   applySiteThemeToEditor,
   hasUserPickedEditorTheme,
@@ -11,6 +13,7 @@ const LIGHT = 'theme-classic-light';
 const html = document.documentElement;
 
 afterEach(() => {
+  setEditorHostMode(undefined);
   html.removeAttribute('data-ran-theme');
   for (const k of ['ran-theme', 'ui-theme-id', 'ui-theme-site-driven']) window.localStorage.removeItem(k);
 });
@@ -89,6 +92,21 @@ describe('applySiteThemeToEditor / installEditorThemeFollow', () => {
     html.setAttribute('data-ran-theme', 'dark');
     expect(applySiteThemeToEditor(LIGHT, root)).toBeNull();
     expect(setTheme).not.toHaveBeenCalled();
+  });
+
+  it('desktop modules follow host light and dark even with an old stored editor theme', () => {
+    setEditorHostMode('deckwise');
+    window.localStorage.setItem('ui-theme-id', 'theme-classic-light');
+    const { root, setTheme } = fakeEditorRoot();
+    html.setAttribute('data-ran-theme', 'light');
+    expect(resolveUiTheme()).toBe('theme-white');
+    expect(applySiteThemeToEditor(LIGHT, root)).toBe('theme-white');
+    html.setAttribute('data-ran-theme', 'dark');
+    expect(resolveUiTheme()).toBe('theme-dark');
+    expect(applySiteThemeToEditor(LIGHT, root)).toBe('theme-dark');
+    html.setAttribute('data-ran-theme', 'light');
+    expect(applySiteThemeToEditor(LIGHT, root)).toBe('theme-white');
+    expect(setTheme.mock.calls.map(([theme]) => theme)).toEqual(['theme-white', 'theme-dark', 'theme-white']);
   });
 
   it('reacts to <html data-ran-theme> flips until disposed', async () => {

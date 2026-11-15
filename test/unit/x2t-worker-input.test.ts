@@ -21,7 +21,7 @@ describe('what the x2t proxy treats as a location', () => {
       'blob:http://127.0.0.1:4173/2f0a-4d1e',
       'http://example.test/report.docx',
       'https://example.test/report.docx',
-      'file:///Users/x/report.docx',
+      'file:///private/report.docx',
       'data:application/octet-stream;base64,AAAA',
     ]) {
       expect(looksLikeUrl(url), url).toBe(true);

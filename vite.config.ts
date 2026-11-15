@@ -2,8 +2,10 @@ import fs from 'node:fs';
 import path, { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
+import { workspaceSourceAliases } from './bin/workspace-aliases.mjs';
 import { PAGES, generate as generatePages } from './bin/build-pages.mjs';
 import { generate as generateLlmsFull } from './bin/llms-full.mjs';
+import { localSystemFonts } from './bin/local-system-fonts.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -51,6 +53,30 @@ const cleanUrls = (publicDirName: string): Plugin => {
   };
 };
 
+// Vite's static handler returns 304 before applying configured headers.
+// Set isolation policy before that handler so revalidated Worker responses
+// retain the same policy as their initial 200 response (required by WebKit).
+const localIsolationHeaders = (): Plugin => {
+  const middleware = (
+    _req: import('node:http').IncomingMessage,
+    res: import('node:http').ServerResponse,
+    next: () => void,
+  ): void => {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    next();
+  };
+  return {
+    name: 'local-isolation-headers',
+    configureServer(server) {
+      server.middlewares.use(middleware);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(middleware);
+    },
+  };
+};
+
 // The x2t WASM is stored as brotli bytes under its plain `.wasm` name, so the
 // browser decodes it at the network layer and `instantiateStreaming` can
 // compile it straight off the response (see public/_headers for why). Vite
@@ -85,6 +111,37 @@ const precompressedAssets = (): Plugin => {
   };
 };
 
+// The model Worker needs its own response policy; document meta CSP does not
+// restrict this module Worker. Keep legacy vendor scripts outside this scope.
+const MODEL_WORKER_CSP =
+  "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' https: http: blob:; worker-src 'self' blob:";
+const modelWorkerCsp = (): Plugin => {
+  const middleware = (
+    req: import('node:http').IncomingMessage,
+    res: import('node:http').ServerResponse,
+    next: () => void,
+  ): void => {
+    const pathname = (req.url ?? '/').split('?')[0];
+    if (
+      /^\/assets\/webllm\.worker-[A-Za-z0-9_-]+\.js$/.test(pathname) ||
+      pathname.endsWith('/packages/agent-core/dist/llm/webllm.worker.js') ||
+      pathname.endsWith('/packages/agent-core/src/llm/webllm.worker.ts')
+    ) {
+      res.setHeader('Content-Security-Policy', MODEL_WORKER_CSP);
+    }
+    next();
+  };
+  return {
+    name: 'model-worker-csp',
+    configureServer(server) {
+      server.middlewares.use(middleware);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(middleware);
+    },
+  };
+};
+
 // Render the markdown-sourced pages (/help, /changelog, ... see
 // bin/build-pages.mjs) into publicDir before Vite copies it. The outputs are
 // gitignored: generating at build/dev time means a CHANGELOG or help edit
@@ -94,6 +151,10 @@ const generatedPages = (): Plugin => {
   const sources = new Set<string>();
   for (const page of PAGES) for (const src of Object.values(page.sources)) sources.add(path.resolve(__dirname, src));
   const run = () => {
+    // The same legal notices must be available in dev, static hosting and Docker.
+    for (const name of ['LICENSE', 'NOTICE']) {
+      fs.copyFileSync(path.join(__dirname, name), path.join(__dirname, 'public', name));
+    }
     const outputs = generatePages();
     // After the markdown pages: llms-full.txt is assembled from the rendered
     // pages, so /help and /changelog have to exist before it is written.
@@ -118,32 +179,65 @@ const generatedPages = (): Plugin => {
   };
 };
 
-export default defineConfig(() => {
+export default defineConfig(({ command }) => {
   const publicDirName = 'public';
 
   return {
     base: './',
     publicDir: publicDirName,
+    server: {
+      headers: { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' },
+    },
+    preview: {
+      headers: { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' },
+    },
+    // A policy change must invalidate immutable Worker URLs, including old SW caches.
+    worker: {
+      plugins: () => [
+        {
+          name: 'model-worker-policy-version',
+          renderChunk(code) {
+            // Observable Worker-only metadata ensures minification retains the policy
+            // fingerprint, so a response-policy change gets a new immutable URL.
+            return {
+              code:
+                code +
+                '\nObject.defineProperty(self,"__localModelWorkerCsp",{value:' +
+                JSON.stringify(MODEL_WORKER_CSP) +
+                '});',
+              map: null,
+            };
+          },
+        },
+      ],
+    },
     build: {
       outDir: 'dist',
-      // Three HTML entries: / (static landing, no editor bundle), /editor (the
-      // app) and /history (the local library, which reads IndexedDB metadata
-      // and never loads the editor stack).
+      manifest: true,
+      // Standalone pages remain separate; module.html is the isolated desktop entry.
       rollupOptions: {
         input: {
           main: resolve(__dirname, 'index.html'),
           editor: resolve(__dirname, 'editor.html'),
+          module: resolve(__dirname, 'module.html'),
           history: resolve(__dirname, 'history.html'),
         },
       },
     },
-    plugins: [generatedPages(), precompressedAssets(), cleanUrls(publicDirName)],
+    plugins: [
+      localSystemFonts(__dirname),
+      localIsolationHeaders(),
+      modelWorkerCsp(),
+      generatedPages(),
+      precompressedAssets(),
+      cleanUrls(publicDirName),
+    ],
     resolve: {
       // One wildcard, matching tsconfig's `"@/*": ["./*"]`, so `@/lib/x`
       // resolves the same way for tsc and for the bundler. The five
       // directory-specific aliases that used to live here pointed at
       // `store/` and `assets/`, which do not exist in this repo.
-      alias: { '@': __dirname },
+      alias: [{ find: '@', replacement: __dirname }, ...(command === 'serve' ? workspaceSourceAliases(__dirname) : [])],
       extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json'],
     },
   };

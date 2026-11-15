@@ -43,7 +43,10 @@ function mockQuota(quota: number): void {
 }
 
 describe('history store', () => {
-  beforeEach(wipe);
+  beforeEach(async () => {
+    await wipe();
+    mockQuota(2_000_000);
+  });
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -184,6 +187,90 @@ describe('history store', () => {
     expect((await listDocs()).items.map((row) => row.title)).toEqual(['New.docx']);
   });
 
+  it.each(['QuotaExceededError', 'UnknownError'])(
+    'preserves recovery when the quota retry fails with %s',
+    async (retryError) => {
+      const cold = await putSnapshot({ title: 'Recovery.docx', origin: 'local', bytes: bytes(16, 7) });
+      const current = await putSnapshot({ title: 'Current.docx', origin: 'local', bytes: bytes(16, 9) });
+      const put = IDBObjectStore.prototype.put;
+      let attempts = 0;
+      vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+        if (this.name === 'blobs') {
+          attempts++;
+          throw Object.assign(new Error('Snapshot write failed'), {
+            name: attempts === 1 ? 'QuotaExceededError' : retryError,
+          });
+        }
+        return put.apply(this, args as Parameters<typeof put>);
+      });
+
+      const result = await putSnapshot({
+        id: current!.id,
+        title: 'Changed.docx',
+        origin: 'local',
+        bytes: bytes(32, 1),
+      });
+
+      expect(result).toBeNull();
+      expect(attempts).toBe(2);
+      expect(await getDoc(cold!.id)).toEqual(cold);
+      expect(Array.from((await getLatestSnapshot(cold!.id))!.bytes)).toEqual(Array(16).fill(7));
+      expect(await getDoc(current!.id)).toEqual(current);
+      expect(Array.from((await getLatestSnapshot(current!.id))!.bytes)).toEqual(Array(16).fill(9));
+      expect((await listDocs()).total).toBe(2);
+    },
+  );
+
+  it('rejects an impossible snapshot without evicting existing recovery', async () => {
+    mockQuota(200);
+    const keep = await putSnapshot({ title: 'Keep.docx', origin: 'local', bytes: bytes(40, 7) });
+    const large = await putSnapshot({ title: 'Too large.docx', origin: 'local', bytes: bytes(120) });
+    expect(large).toBeNull();
+    expect(Array.from((await getLatestSnapshot(keep!.id))!.bytes)).toEqual(Array(40).fill(7));
+    expect(await historyUsage()).toBe(40);
+  });
+
+  it.each(['blob', 'file'])('rejects an oversized %s before materializing its bytes', async (kind) => {
+    mockQuota(200);
+    const keep = await putSnapshot({ title: 'Keep.docx', origin: 'local', bytes: bytes(40, 7) });
+    const payload = kind === 'blob' ? new Blob([new Uint8Array(120)]) : new File([new Uint8Array(120)], 'Large.docx');
+    const read = vi.spyOn(payload, 'arrayBuffer');
+
+    expect(await putSnapshot({ title: 'Large.docx', origin: 'local', bytes: payload })).toBeNull();
+
+    expect(read).not.toHaveBeenCalled();
+    expect(Array.from((await getLatestSnapshot(keep!.id))!.bytes)).toEqual(Array(40).fill(7));
+    expect((await listDocs()).total).toBe(1);
+  });
+
+  it('trims its own revisions to the budget before evicting unrelated history', async () => {
+    mockQuota(240);
+    const keep = await putSnapshot({ title: 'Keep.docx', origin: 'local', bytes: bytes(10, 7) });
+    const first = await putSnapshot({ title: 'Large.docx', origin: 'local', bytes: bytes(60, 1) });
+    const next = await putSnapshot({ id: first!.id, title: 'Large.docx', origin: 'local', bytes: bytes(70, 2) });
+    expect(next?.revCount).toBe(1);
+    expect(next?.totalBytes).toBe(70);
+    expect(await historyUsage()).toBe(80);
+    expect(Array.from((await getLatestSnapshot(keep!.id))!.bytes)).toEqual(Array(10).fill(7));
+    expect(Array.from((await getLatestSnapshot(first!.id))!.bytes)).toEqual(Array(70).fill(2));
+  });
+
+  it('reads only the latest blob and prunes without cloning retained versions', async () => {
+    const first = await putSnapshot({ title: 'Versions.docx', origin: 'local', bytes: bytes(10, 1) });
+    for (const value of [2, 3])
+      await putSnapshot({ id: first!.id, title: 'Versions.docx', origin: 'local', bytes: bytes(10, value) });
+    const all = IDBIndex.prototype.getAll;
+    vi.spyOn(IDBIndex.prototype, 'getAll').mockImplementation(function (this: IDBIndex, ...args) {
+      if (this.objectStore.name === 'blobs') throw new Error('Unbounded blob read');
+      return all.apply(this, args as Parameters<typeof all>);
+    });
+    expect(Array.from((await getLatestSnapshot(first!.id))!.bytes)).toEqual(Array(10).fill(3));
+    const next = await putSnapshot({ id: first!.id, title: 'Versions.docx', origin: 'local', bytes: bytes(10, 4) });
+    expect(next?.totalBytes).toBe(30);
+    expect(next?.revCount).toBe(3);
+    expect(Array.from((await getLatestSnapshot(first!.id))!.bytes)).toEqual(Array(10).fill(4));
+  });
+
   it('deletes documents that went seven days without being touched', async () => {
     const stale = await putSnapshot({ title: 'Stale.docx', origin: 'local', bytes: bytes(16) });
     const fresh = await putSnapshot({ title: 'Fresh.docx', origin: 'local', bytes: bytes(16) });
@@ -228,5 +315,97 @@ describe('history store', () => {
 
     await markSavedToDisk(doc!.id);
     expect(hasUnsavedWork((await getDoc(doc!.id))!)).toBe(false);
+  });
+  it('does not start a snapshot write after cancellation during the storage estimate', async () => {
+    const controller = new AbortController();
+    let estimated!: (value: { quota: number }) => void;
+    Object.defineProperty(navigator, 'storage', {
+      configurable: true,
+      value: {
+        estimate: () =>
+          new Promise((resolve) => {
+            estimated = resolve;
+          }),
+      },
+    });
+    const pending = putSnapshot(
+      { id: 'cancelled', title: 'Cancelled.docx', origin: 'local', bytes: bytes(4) },
+      controller.signal,
+    );
+    controller.abort();
+    estimated({ quota: 1000 });
+    expect(await pending).toBeNull();
+    expect(await getDoc('cancelled')).toBeNull();
+    mockQuota(1000);
+  });
+  it('rolls back in-progress snapshot writes when their owner cancels', async () => {
+    mockQuota(1000);
+    const controller = new AbortController();
+    const put = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+      const request = put.apply(this, args as Parameters<typeof put>);
+      if (this.name === 'blobs') controller.abort();
+      return request;
+    });
+    expect(
+      await putSnapshot(
+        { id: 'rolled-back', title: 'Rollback.docx', origin: 'local', bytes: bytes(4) },
+        controller.signal,
+      ),
+    ).toBeNull();
+    expect(await getDoc('rolled-back')).toBeNull();
+    expect(await getLatestSnapshot('rolled-back')).toBeNull();
+  });
+  it('does not evict other recovery documents for an export cancelled at quota failure', async () => {
+    mockQuota(1000);
+    const old = await putSnapshot({ title: 'Keep.docx', origin: 'local', bytes: bytes(4) });
+    const controller = new AbortController();
+    const put = IDBObjectStore.prototype.put;
+    let first = true;
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+      if (this.name === 'blobs' && first) {
+        first = false;
+        controller.abort();
+        throw Object.assign(new Error('quota'), { name: 'QuotaExceededError' });
+      }
+      return put.apply(this, args as Parameters<typeof put>);
+    });
+    expect(
+      await putSnapshot(
+        { id: 'cancelled-quota', title: 'New.docx', origin: 'local', bytes: bytes(4) },
+        controller.signal,
+      ),
+    ).toBeNull();
+    expect(await getDoc(old!.id)).not.toBeNull();
+    expect(await getDoc('cancelled-quota')).toBeNull();
+  });
+  it('rolls back quota eviction if the export is cancelled while old blobs are being deleted', async () => {
+    mockQuota(1000);
+    const old = await putSnapshot({ title: 'Keep.docx', origin: 'local', bytes: bytes(4, 7) });
+    const controller = new AbortController();
+    const put = IDBObjectStore.prototype.put;
+    let first = true;
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+      if (this.name === 'blobs' && first) {
+        first = false;
+        throw Object.assign(new Error('quota'), { name: 'QuotaExceededError' });
+      }
+      return put.apply(this, args as Parameters<typeof put>);
+    });
+    const remove = IDBObjectStore.prototype.delete;
+    vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementation(function (this: IDBObjectStore, ...args) {
+      const request = remove.apply(this, args);
+      if (this.name === 'blobs') controller.abort();
+      return request;
+    });
+    expect(
+      await putSnapshot(
+        { id: 'aborted-eviction', title: 'New.docx', origin: 'local', bytes: bytes(4) },
+        controller.signal,
+      ),
+    ).toBeNull();
+    expect(await getDoc(old!.id)).not.toBeNull();
+    expect(Array.from((await getLatestSnapshot(old!.id))!.bytes)).toEqual([7, 7, 7, 7]);
+    expect(await getDoc('aborted-eviction')).toBeNull();
   });
 });

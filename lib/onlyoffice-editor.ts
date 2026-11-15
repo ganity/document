@@ -1,4 +1,8 @@
+import { isEditorModule } from './embed-mode';
+import { isEmbedMode } from './embed-mode';
+import { getDocumentCloseRevision } from './document-open';
 import 'ranui/message';
+import { waitForAppWorkerControl } from './offline-worker-control';
 import { getOnlyOfficeLang, t } from '@ranuts/shared/i18n';
 import { DOCUMENT_TYPE_MAP } from '@ranuts/shared/document-utils';
 import { prepareEditorIframe } from './onlyoffice/iframe-guards';
@@ -94,43 +98,15 @@ let editorOperationQueue: Promise<void> = Promise.resolve();
 /**
  * Queue editor operations to prevent concurrent editor creation/destruction
  */
-async function queueEditorOperation<T>(operation: () => Promise<T>): Promise<T> {
-  // Wait for previous operations to complete
-  // Add a timeout to prevent infinite waiting
-  try {
-    await Promise.race([
-      editorOperationQueue,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Editor operation queue timeout')), 30000)),
-    ]);
-  } catch (error) {
-    // If timeout, log warning but continue (previous operation may have failed)
-    if (error instanceof Error && error.message === 'Editor operation queue timeout') {
-      console.warn('Editor operation queue timeout, proceeding anyway');
-    } else {
-      // Re-throw other errors
-      throw error;
-    }
-  }
-
-  // Create a new promise for this operation
-  let resolveOperation: () => void;
-  let rejectOperation: (error: any) => void;
-  const operationPromise = new Promise<void>((resolve, reject) => {
-    resolveOperation = resolve;
-    rejectOperation = reject;
-  });
-
-  // Update the queue
-  editorOperationQueue = operationPromise;
-
-  try {
-    const result = await operation();
-    resolveOperation!();
-    return result;
-  } catch (error) {
-    rejectOperation!(error);
-    throw error;
-  }
+function queueEditorOperation<T>(operation: () => Promise<T>): Promise<T> {
+  // Reserve the queue position before yielding. A failed caller still receives
+  // its rejection, while the non-rejecting tail lets later opens recover.
+  const result = editorOperationQueue.then(operation);
+  editorOperationQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 // Blob URL handed to the current v9 editor via document.url; revoked when the
@@ -151,6 +127,7 @@ function createPersonalEditorInstance(config: {
   fileType: string;
   binData?: ArrayBuffer;
   editorLang: string;
+  onContentReady?: () => void;
 }): void {
   const { fileName, fileType, binData, editorLang } = config;
 
@@ -217,17 +194,18 @@ function createPersonalEditorInstance(config: {
         name: 'Guest',
       },
       customization: {
+        ...(isEditorModule() ? { compactHeader: true } : {}),
+        ...(!isEmbedMode()
+          ? { goback: { url: new URL('/', location.href).href, blank: false, text: t('editorBackHome') } }
+          : {}),
         help: false,
-        // `about` stays at its default (true). The About pane is where the
-        // ONLYOFFICE product logo, version and Ascensio System SIA copyright
-        // live, and Section 7(b) of the vendor's AGPL-3.0 headers requires a
-        // derivative work to keep the product logo. Switching it off is also
-        // what the vendor's own `canBrandingExt` check exists to prevent --
-        // this offline build just happens not to enforce it. See NOTICE.
+        // Keep About reachable for copyright, version, license and source
+        // information. Product marks are hidden separately; see NOTICE.
         hideRightMenu: true,
         uiTheme: resolveUiTheme(),
         ...(isCompactViewport() ? compactViewportCustomization() : {}),
         features: {
+          featuresTips: false,
           // Spellcheck is fully disabled (mode:false turns it off, not just
           // locks the toggle): its engine is imported inside a worker on
           // first document load and that request has been observed to hang
@@ -271,7 +249,9 @@ function createPersonalEditorInstance(config: {
         window.setTimeout(() => window.clearInterval(timer), 15_000);
       },
       onDocumentReady: () => {
+        config.onContentReady?.();
         markDocumentContentReady();
+        window.dispatchEvent(new Event('document:content-ready'));
         // The open succeeded, so the retry budget is spent and the bytes kept
         // for it are dead weight -- the editor holds the document itself, and
         // the blob it was mounted from is a second copy already. Keeping a
@@ -375,17 +355,27 @@ export function createEditorInstance(config: {
   fileType: string;
   binData?: ArrayBuffer;
   readonly?: boolean;
+  isCurrent?: () => boolean;
+  onContentReady?: () => void;
   /** Set only by retryCurrentOpen: keeps the attempt's one retry budget. */
   isRetry?: boolean;
 }): Promise<void> {
-  registerOpenAttempt(config);
-  // A new document is taking over the frame: whatever was unsaved belonged to
-  // the one being replaced.
-  resetUnsavedChanges();
-  // Asked once per session, well before any failure needs to report it: the
-  // answer is only read from the out-of-memory branch of the error toast.
-  resolveBuildBitness();
+  const closeRevision = getDocumentCloseRevision();
   return queueEditorOperation(async () => {
+    const assertCurrent = () => {
+      if (config.isCurrent && !config.isCurrent()) throw new DOMException('Document open superseded', 'AbortError');
+    };
+    assertCurrent();
+    const assertNotClosed = () => {
+      if (closeRevision !== getDocumentCloseRevision()) throw new DOMException('Document closed', 'AbortError');
+    };
+    assertNotClosed();
+    // This editor owns its retry until another queued mount replaces it or
+    // the document is explicitly closed. A failed pending download does not
+    // retire the mounted editor, even though it aborts that request's token.
+    registerOpenAttempt({ ...config, isCurrent: () => closeRevision === getDocumentCloseRevision() });
+    resetUnsavedChanges();
+    resolveBuildBitness();
     const { fileName, fileType, binData, readonly = false } = config;
     setReadonlyState(readonly);
 
@@ -428,17 +418,27 @@ export function createEditorInstance(config: {
     // This is especially important when switching between different document types
     // When switching editors, especially involving PPT, we need more time
     const isPresentation = fileType === 'pptx' || fileType === 'ppt';
-    const cleanupDelay = hasExistingEditor && isPresentation ? 400 : hasExistingEditor ? 250 : 150;
-    await new Promise((resolve) => setTimeout(resolve, cleanupDelay));
+    if (hasExistingEditor) {
+      const cleanupDelay = isPresentation ? 400 : 250;
+      await new Promise((resolve) => setTimeout(resolve, cleanupDelay));
+    }
 
     const editorLang = getOnlyOfficeLang();
     console.log('Creating new editor instance for:', fileName, 'type:', fileType);
 
-    createPersonalEditorInstance({ fileName, fileType, binData, editorLang });
+    // Once teardown starts, finish this replacement before serving the next
+    // queued open. A later failed download must not leave the editor empty.
+    // With no editor to replace, obsolete work can still be skipped safely.
+    if (!hasExistingEditor) assertCurrent();
+    assertNotClosed();
+    createPersonalEditorInstance({ fileName, fileType, binData, editorLang, onContentReady: config.onContentReady });
   });
 }
 
-export function loadEditorApi(): Promise<void> {
+export async function loadEditorApi(): Promise<void> {
+  // Embedded hosts may never receive worker control; optional caching must not delay opening.
+  if (!window.DocsAPI && !isEmbedMode() && /^\/editor(?:\.html)?\/?$/.test(location.pathname))
+    await waitForAppWorkerControl();
   return new Promise((resolve, reject) => {
     // Check if already loaded
     if (window.DocsAPI) {
@@ -462,3 +462,12 @@ export function loadEditorApi(): Promise<void> {
 // The retry path rebuilds the editor with the same bytes; injected here to
 // keep ./onlyoffice/open-failure free of a cycle back into this module.
 setOpenRunner(createEditorInstance);
+
+/** Release the single mounted SDK before its host container is removed. */
+export function destroyEditorInstance(): void {
+  cleanupViewportFollow();
+  window.editor?.destroyEditor();
+  window.editor = undefined;
+  if (currentDocumentBlobUrl) URL.revokeObjectURL(currentDocumentBlobUrl);
+  currentDocumentBlobUrl = null;
+}

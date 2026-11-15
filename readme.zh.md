@@ -26,47 +26,34 @@
   <a href="readme.fa.md">فارسی</a>
 </p>
 
-在浏览器标签页里打开和编辑 Word、Excel、PPT 文件。没有服务器：OnlyOffice 引擎和它的
-WASM 转换器都跑在访问者自己的设备上，文档不会被上传，也不需要注册账号。
+**开源文档工作台，为你和 AI Agent 准备。**
 
-**线上地址：[edit.chaxus.com](https://edit.chaxus.com/)**
+在浏览器里打开、编辑、转换并保存 Word、Excel 和 PowerPoint，为 PDF 添加批注。基础文档处理在本地完成，无需注册或安装 Office。
+
+支持可选 AI 助手（Experimental Beta）、WebMCP Agent 调用和 PWA 安装；已缓存的编辑器资源可离线使用，也可自行部署或嵌入应用。
+
+**在线体验：[edit.chaxus.com](https://edit.chaxus.com/)**
 
 ---
 
 ## ✨ 主要特性
 
-- 🔒 **不上传任何文件** — 转换、编辑、导出全部发生在这个标签页里
-- 📝 **是编辑，不是预览** — DOCX、XLSX、PPTX、CSV，另支持 ODF、RTF、TXT 与旧版二进制格式；PDF 可打开并批注
-- 💾 **直接存回你自己的文件** — 选一次文件，之后每次保存都写回它（Chromium 系；其它浏览器仍是下载）
-- 🕓 **误关标签页也不会丢** — 编辑内容自动保存进你自己的浏览器，保留 7 天，随时可手动删除（[说明](#-数据只留在你的设备上)）
-- 📴 **可离线使用** — 可安装为 PWA，首次访问之后无需联网
-- 🌍 **多语言** — 站点界面 8 种语言，编辑器界面 45 种
-- 🧩 **可嵌入** — 完整的 iframe postMessage API
-- 🤖 **面向 Agent** — 提供 WebMCP 工具，浏览器内的 AI Agent 可直接打开、转换、读取文档
-- 🚀 **随处部署** — 纯静态产物，放在任意 Web 服务器后面即可
-
----
+- **本地编辑与转换。** 文档处理在你的设备上完成，无需上传文档即可编辑和转换。
+- **自由保存，继续工作。** 浏览器支持时可存回选定文件，也可下载导出；从当前浏览器恢复最近的编辑。
+- **与 AI 协作（Experimental Beta）。** 起草和润色文字、处理表格数据、创建幻灯片，或询问当前 PDF 页面的内容；审阅后再应用修改。
+- **让 Agent 调用文档工具。** 支持 [WebMCP](docs/reference.md#webmcp-agent-tools) 的浏览器中，AI Agent 可打开、转换、导出文档，读取文字文档正文。
+- **安装为 PWA。** 像应用一样使用，已缓存的编辑器资源可离线复用。
+- **自行部署与集成。** 可作为静态站点部署，也可通过 iframe API 嵌入你的应用。
 
 ## 🚀 快速开始
 
-**直接使用：**[edit.chaxus.com](https://edit.chaxus.com/)，无需安装。
+[新建文档](https://edit.chaxus.com/editor?new=docx&locale=zh-CN) · [新建表格](https://edit.chaxus.com/editor?new=xlsx&locale=zh-CN) · [新建演示](https://edit.chaxus.com/editor?new=pptx&locale=zh-CN)
 
-**用 Docker 自建：**
+也可以运行自己的版本：
 
 ```bash
 docker run -d --name document -p 8080:80 ghcr.io/ranuts/document:latest
 ```
-
-**从源码运行：**
-
-```bash
-git clone https://github.com/ranuts/document.git
-cd document
-pnpm install
-pnpm run dev
-```
-
----
 
 ## 📄 支持的格式
 
@@ -77,167 +64,63 @@ pnpm run dev
 | 演示 | `.pptx`          | `.ppt` `.odp`               |
 | PDF  | 批注、填写、导出 | `.pdf`                      |
 
-以上都可以导出为 PDF。CSV 存回时保持原编码（打开时会依次嗅探 UTF-8、GB18030、Latin-1）。
+支持的文档可导出为 PDF。
 
----
+还支持多语言界面、明暗主题和只读预览。
 
-## 🔗 路由与 URL 参数
+## 🔐 本地编辑与数据去向
 
-| 路由                  | 说明                                     |
-| --------------------- | ---------------------------------------- |
-| `/`                   | 落地页。不打开文档就不会加载编辑器代码。 |
-| `/editor`             | 编辑器。                                 |
-| `/history`            | 本机浏览器当前保存的文档（见下）。       |
-| `/help`、`/changelog` | 由 `content/` 下的 markdown 生成。       |
+恢复副本保存在当前浏览器，最后编辑或打开后保留 7 天，可在[已保存的文档](https://edit.chaxus.com/history)中删除。恢复副本不是备份，重要文件请及时导出。
 
-`/editor` 的参数：
+使用外部 AI 服务时，请求所需内容会发送到该服务；本机模型在设备上处理。浏览器听写可能使用在线语音服务，嵌入模式下的导出由宿主应用处理。
 
-| 参数           | 说明                                                                     |
-| -------------- | ------------------------------------------------------------------------ |
-| `src=<url>`    | 从 URL 打开文档（该 URL 需允许 CORS）                                    |
-| `file=<url>`   | 同上，旧写法；两者同时存在时以它为准                                     |
-| `new=docx`     | 新建空白文档（`docx`、`xlsx`、`pptx`）                                   |
-| `saved=<id>`   | 打开本机保存的某一篇——编辑器会把自己的 id 写在这里，因此刷新会回到同一篇 |
-| `readonly=1`   | 只读打开：禁用编辑与导出                                                 |
-| `embed=1`      | 嵌入模式，由宿主页面通过 postMessage 驱动                                |
-| `locale=zh-CN` | 界面语言                                                                 |
+浏览器 AI Agent 对文档工具返回内容的后续处理，由所用 Agent 决定。
 
----
+## 文档与集成
 
-## 🔐 数据只留在你的设备上
+[使用指南](https://edit.chaxus.com/zh-CN/help) · [自行部署、URL 参数与集成](docs/reference.md) · [嵌入 API](docs/embed-api.zh.md) · [字体管理](docs/fonts.zh.md)
 
-文档不会被发送到任何地方。在浏览器支持的情况下，保存会直接写回你选定的那个文件，
-文档因此留在你自己的文件系统里，而不是下载目录里。浏览器本身还会保留两样东西，
-且都可以由你删除：
+离线使用需要已缓存的编辑器资源，未缓存的资源和远程文件仍需联网。
 
-- **你编辑过的文档副本**：编辑过程中，编辑器会把文档保存进这个浏览器（IndexedDB），
-  刷新、误关标签页、浏览器崩溃都不会让工作白做，重新打开编辑器会提示你接着编辑。
-  这些副本是为了让你接着做没做完的事，不是备份——想长期保留请导出到电脑。
-- **七天后自动删除**：每篇文档在你最后一次编辑或打开的七天后自动删除，不需要你做任何事。
+## AI 文档助手 (Experimental Beta)
 
-[`/history`](https://edit.chaxus.com/history) 列出当前保存了哪些文档，每一行都能删除，
-也可以一次全部删除，还能直接关掉自动保存。在那里删除立即生效。共用电脑上，先看这一页。
+起草和润色文字、处理表格数据、创建幻灯片，或询问当前 PDF 页面的内容。先审阅修改建议，再决定是否应用；需要时可撤销。
 
----
+可选择本机模型或连接自己的 AI 服务；浏览器支持时可通过语音输入指令。
 
-## 🧩 通过 iframe 嵌入
+**Experimental Beta.** 默认关闭。回答和修改可能有误，请核对重要结果。
 
-嵌入编辑器并用 postMessage 驱动。常见分工是：你的系统负责鉴权与存储，iframe 只负责编辑。
+<details>
+<summary>观看四段功能演示</summary>
 
-```html
-<iframe
-  id="documentEditor"
-  src="https://your-deployment/editor?embed=1"
-  style="width: 100%; height: 720px; border: 0"
-></iframe>
-```
+| Word                                                                                                                                          | Excel                                                                                                                                          |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| [![起草、写入、摘要与撤销](docs/media/ai-demos/word-ai.jpg)](https://github.com/user-attachments/assets/8d1d6386-e33a-45f2-b968-b8695c8f7da9) | [![填充、求和、排序与撤销](docs/media/ai-demos/excel-ai.jpg)](https://github.com/user-attachments/assets/5bb253d7-3cc5-4f31-989e-0c88dcb1615c) |
+| **起草、写入、摘要与撤销**                                                                                                                    | **填充、求和、排序与撤销**                                                                                                                     |
+| PowerPoint                                                                                                                                    | PDF                                                                                                                                            |
+| [![创建、复制与撤销](docs/media/ai-demos/pptx-ai.jpg)](https://github.com/user-attachments/assets/db3fc7a7-b54e-4147-a7ca-e7f16243618e)       | [![读取、问答与批注预览](docs/media/ai-demos/pdf-ai.jpg)](https://github.com/user-attachments/assets/f01c2da6-0669-4111-87c1-c4440f4a60e9)     |
+| **创建、复制与撤销**                                                                                                                          | **读取、问答与批注预览**                                                                                                                       |
 
-```js
-// 打开文档
-iframe.contentWindow.postMessage(
-  { id: '1', type: 'document:open-url', payload: { url: 'https://example.com/doc.xlsx' } },
-  'https://your-deployment',
-);
+英文界面下的完整流程，按正常速度录制；本机 Qwen3 4B 模型已提前加载，响应时间随模型和设备而变化。
 
-// 监听结果
-window.addEventListener('message', (e) => {
-  if (e.data?.type === 'document:opened') console.log('可以编辑了');
-  if (e.data?.type === 'document:saved') uploadFile(e.data.payload.file);
-});
-```
+[视频、字幕和文字说明](docs/media/ai-demos/README.md)
 
-嵌入模式下不会写入本地历史——那份文档属于宿主页面。
+PDF 助手支持当前页可选文字和页面便笺，不识别扫描图片中的文字，也不改写 PDF 正文。
 
-→ **[完整 API 文档](docs/embed-api.zh.md)** — 全部消息类型、来源白名单、只读模式与保存流程。
-
-也可以作为组件使用：本项目为
-[@ranui/preview](https://www.npmjs.com/package/@ranui/preview)
-提供文档预览能力（[组件文档](https://chaxus.github.io/ran/src/ranui/preview/)）。
-
----
-
-## 🤖 浏览器 AI Agent（WebMCP）
-
-在支持该能力的浏览器上，页面会注册一组工具，浏览器内的 Agent 可以直接调用，而不必去"看"和"点"
-界面：`open_document_url`、`open_document_buffer`、`create_document`、`save_document`、
-`get_document_text`、`set_readonly`、`get_document_state`。文档同样不会离开设备——由浏览器
-自己抓取和转换。浏览器没有这套 API 时整体无操作，对普通用户零影响。
-
----
-
-## 🚀 部署
-
-纯静态产物——没有运行时，没有数据库。
-
-```bash
-pnpm build   # 产物在 dist/
-```
-
-### 静态托管（Cloudflare Pages、Nginx、Vercel、Netlify……）
-
-上传 `dist/` 即可。`public/_headers` 里写着本站期望的缓存契约（带哈希的资源永久缓存、
-service worker 永不缓存）；不支持该文件的托管也能跑，只是会多做校验。
-
-Nginx 需要把 `index.html` 作为未知路由的兜底：
-
-```nginx
-location / {
-  root /var/www/document;
-  try_files $uri $uri/ /index.html;
-}
-```
-
-### GitHub Pages
-
-`.github/workflows/pages-build-site.yml` 会在推送到 `main` 时构建并部署。
-在仓库设置里启用 Pages，来源选 **GitHub Actions**。
-
-### Docker
-
-```bash
-# 基础用法
-docker run -d --name document -p 8080:80 ghcr.io/ranuts/document:latest
-
-# 带 HTTPS 与基础认证
-docker run -d --name document -p 443:443 \
-  -v /path/to/certs:/ssl \
-  -e SERVER_BASIC_AUTH='user:$2y$...' \
-  -e SERVER_HTTP2_TLS=true \
-  -e SERVER_HTTP2_TLS_CERT=/ssl/cert.pem \
-  -e SERVER_HTTP2_TLS_KEY=/ssl/key.pem \
-  ghcr.io/ranuts/document:latest
-```
-
-`SERVER_BASIC_AUTH` 接受 BCrypt 哈希；shell 里需要把 `$` 写成 `$$` 转义。
-镜像自身的缓存策略在 `sws.toml`。
-
----
-
-## 🔤 字体
-
-随附的 OnlyOffice 构建把字体库放在 `public/fonts/`，由
-`public/sdkjs/common/AllFonts.js` 建立索引。字体按需拉取——一篇文档只会下载它真正用到的那些。
-
-→ **[字体管理指南](docs/fonts.zh.md)** — 索引字体目录的线格式、各处注册表，
-以及如何用 `bin/font-catalog.mjs` 添加字体。
-
----
+</details>
 
 ## 🛠 开发
 
+从源码运行：
+
 ```bash
+git clone https://github.com/ranuts/document.git
+cd document
 pnpm install --frozen-lockfile
-pnpm run dev            # 开发服务器
-pnpm run build          # 生产构建（bin/build.sh）
-pnpm run lint           # oxlint + tsc + docker 配置检查
-pnpm run test           # 单元测试（Vitest）
-pnpm run test:e2e       # 端到端测试（Playwright，真实编辑器 + 真实 WASM）
+pnpm run dev
 ```
 
-端到端测试跑的是真实编辑器和真实转换器，不是 mock，覆盖文档往返、嵌入协议与恢复流程。
-`docs/explorations/` 记录了每一处不显然的设计为什么是现在这样——改编辑器集成之前值得先读。
-
----
+欢迎反馈和贡献： [Issues](https://github.com/ranuts/document/issues) · [Pull requests](https://github.com/ranuts/document/pulls)
 
 ## 📚 基于这些项目
 
@@ -246,19 +129,25 @@ pnpm run test:e2e       # 端到端测试（Playwright，真实编辑器 + 真�
 - [ranui / ranuts](https://github.com/chaxus/ran) — 本站使用的设计体系与工具库
 - [se-office](https://github.com/Qihoo360/se-office)、[onlyoffice-web-local](https://github.com/sweetwisdom/onlyoffice-web-local) — 无文档服务器运行 OnlyOffice 的先行方案
 
-## 🤝 贡献
-
-欢迎提 Issue 和 PR。`main` 受保护：请在分支上开发并提 PR，CI 会跑 lint、单元测试，
-以及三套端到端测试（开发服务器、Cloudflare Pages 语义、生产 Docker 镜像）。
-
 ## 📄 许可证
 
-[AGPL-3.0](LICENSE)。
+[AGPL-3.0](LICENSE) · [NOTICE](NOTICE)
 
-本项目是 ONLYOFFICE（sdkjs 与 web-apps，(c) Ascensio System SIA）的衍生作品。上游以
-AGPL 发布并附带第 7 条的附加条款：必须保留原产品 logo，且不授予任何商标权利。因此编辑器
-头部的 ONLYOFFICE logo 与“关于”面板都予以保留。条款原文、所用 vendor 版本以及我们对它做过
-的全部改动见 [NOTICE](NOTICE)。
+<details>
+<summary>上游声明与商标说明</summary>
 
-ONLYOFFICE 是 Ascensio System SIA 的商标。本项目并非官方 ONLYOFFICE 产品，与 Ascensio
-System SIA 无隶属关系，也未获其背书。
+本项目是 ONLYOFFICE 编辑器（sdkjs 与 web-apps，版权归 Ascensio System SIA）
+的修改版本。界面采用中性功能名称，不展示产品 logo 或品牌宣传。版权、许可证、
+修改说明及源码入口仍保留在编辑器的“关于”面板和 [NOTICE](NOTICE) 中。
+第三方 GUI 素材和字体仍适用各自的许可证，移除产品标识不改变这些许可。
+
+不展示产品 logo 的决定参考 FSF 对 AGPLv3 第 7 条的公开解释，不将其称为法院判决，
+也不据此保证完全合规。上游立场与本项目的处理依据见 NOTICE。
+
+ONLYOFFICE 是 Ascensio System SIA 的商标。本项目并非官方 ONLYOFFICE 产品，
+与该公司无隶属关系，亦未获其赞助或背书。法律声明及源码引用中的名称仅用于标明
+上游技术来源，不作为本项目品牌。
+
+PWA 安装和浏览器标签页使用独立绘制的中性文档图标，不含上游 logo、商标或项目字母标识。
+
+</details>

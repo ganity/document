@@ -38,7 +38,7 @@ pnpm install --frozen-lockfile   # 安装依赖
 pnpm run dev                     # 启动开发服务器（含热更新）
 pnpm run build                   # 生产构建（执行 bin/build.sh）
 pnpm run build:single            # 打包为单个 HTML 文件
-pnpm run lint:ts                 # oxlint + tsc --noEmit（CI 必跑）
+pnpm run lint:ts                 # oxlint + workspace rebuild + tsc --noEmit（CI 必跑）
 pnpm run format:check            # prettier 格式检查（CI 必跑）
 pnpm run test                    # 单元测试（Vitest）
 pnpm run test:coverage           # 带覆盖率的单元测试
@@ -203,9 +203,13 @@ test/unit/
 test/setup/vitest.ts          # 全局 mock：matchMedia、URL.createObjectURL、localStorage
 ```
 
-覆盖率阈值（全局）：语句 34%、分支 25%、函数 35%、行 35%（当前实际约
-45%/49%/49%，具体以 `pnpm run test:coverage` 输出为准，不要在本文件里维护
-逐文件数字——它们过期得很快）。
+覆盖率统计 `lib/**/*.ts` 与 `packages/*/src/**/*.ts`，排除类型声明。
+全局门槛为 lines/functions/statements 80%、branches 75%；Agent 应用层、历史、shared、converter、agent-core 与 chat-ui
+另有独立模块门槛。实际数字以 `pnpm run test:coverage` 为准。
+
+开发与 Vitest 通过 `bin/workspace-aliases.mjs` 从 workspace 的 `exports` 派生源码别名，
+避免读取旧 `dist`。生产构建继续使用编译包，并由 `bin/build.sh` 先重建。源码别名
+必须精确匹配包入口与子路径；WebLLM 的开发 Worker 响应策略同时覆盖源码路径。
 
 **注意事项：**
 
@@ -901,8 +905,12 @@ v7 代码分支（OO_VARIANT、页面级 x2t 打开转换、empty_bin 模板、v
   `x2t.wasm.br`（6,898,179 字节，`brotli -q 11`；对比最好的 gzip（zopfli `--i15`）
   9,483,006、裸 42,111,200——全站最大的那个下载省掉 2.58 MB。brotli 不是仓库依赖，
   vendor 升级后手动重跑 `brotli -q 11 -c x2t.wasm > x2t.wasm.br`，`vendor-contract`
-  的尺寸门会提醒）。三处托管各自声明 `Content-Encoding: br`（`public/_headers` /
-  `sws.toml` / `vite.config.ts` 的 `precompressedAssets` 中间件），**浏览器在网络层
+  的尺寸门会提醒）。Pages 与 Vite 声明 `Content-Encoding: br`（`public/_headers` /
+  `vite.config.ts` 的 `precompressedAssets` 中间件）。Docker 在构建容器中运行
+  `bin/prepare-docker-wasm.mjs public`，把同一 URL 的文件转换为 gzip，`sws.toml`
+  对应声明 `Content-Encoding: gzip`：Chrome 不解码普通 HTTP 非 localhost 来源的
+  Brotli（#267）。转换必须在 `pnpm run build` 前做，使 SW 指纹对应实际投递的字节；
+  不改仓库里的 Brotli 文件或 Pages/Vite 的响应头。**浏览器在网络层
   就解压完了，我们这边一行解压代码都没有**。
   **`.br` 这个扩展名和 `_headers` 里"没有 Content-Type 规则"两件事都是承重的**：
   `wrangler pages dev`（`e2e-pages` 跑的那个）会按可压缩性**重新压一遍并覆盖掉
@@ -1132,3 +1140,26 @@ E2E 回归套件覆盖**（`pnpm run test:e2e` 的 embed-regression.spec：打�
 - `getSavedFileMimeType` / `getNormalizedFile` / `toUint8Array` — 纯计算逻辑
 - `setReadonlyMode` / `getReadonlyMode` — 状态读写
 - `requestSaveDocument` — 所有拒绝路径（无编辑器、只读、并发、超时、不支持 downloadAs）
+
+### AI assistant product entry
+
+`lib/agent-entry.ts` owns the discoverable entry and browser-local default-off preference. URL `agent` flags do not enable it. Opening restores only UI/preferences; loading a model or connecting a service requires an explicit user action. Generated writing must be reviewed before applying. Developer transport and provider details belong in developer references, not product onboarding.
+
+The panel delegates endpoint lifetimes to `ui/endpoint-lifecycle.ts`, native task
+scope/review/context bindings to `ui/controller-bindings.ts`, and settings layout
+to `ui/settings-view.ts`. Keep these owners separate when adding providers or
+changing cancellation. Optional document reference text must fit the runtime
+request budget after preserving the user's request and current tool exchange.
+
+Standalone exports bind their SDK save points to the actual conversion result,
+not the SDK busy flag, which ends before conversion completes. Install save-stream
+tracking after the x2t worker proxy. Disk writes for a document are serialized;
+late older ordinary-save results must not overwrite a newer saved version, while
+other-format exports retain their independent output.
+
+## Runtime and storage maintenance (2026-10-13)
+
+- `bin/offline-assets.mjs` derives mandatory app dependencies from Vite's emitted manifest. Inference chunks/WASM are optional; the small assistant UI static graph stays in core for live-page compatibility. `PREPARE_ASSISTANT` follows explicit or persisted opt-in, and a prepared marker refreshes runtime assets before later worker activation. Model weights and external endpoints remain outside app caches. Preserve the vendor precache for first offline export.
+- `pnpm run tsc` rebuilds workspace declarations before checking the app; `lint:ts` calls it. Do not rely on an earlier production build to refresh package contracts.
+- History v3 uses key-only revision/size indexing for retention; latest snapshot reads only one value. Conversation storage keeps explicit opt-in and atomic revision conflicts while updating individual sessions.
+- Panel context synchronization is lifecycle-owned: no periodic reads while closed, disabled or hidden, and BFCache restoration reinstalls observers. Keep extracted settings/context owners rather than adding them back to `panel.ts`.

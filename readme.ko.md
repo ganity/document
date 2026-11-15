@@ -14,6 +14,7 @@
     <img src="https://img.shields.io/badge/Live-edit.chaxus.com-brightgreen" alt="Live site">
   </a>
 </p>
+
 <p align="center">
   <a href="readme.md">English</a> |
   <a href="readme.zh.md">简体中文</a> |
@@ -25,47 +26,34 @@
   <a href="readme.fa.md">فارسی</a>
 </p>
 
-Word, Excel, PowerPoint 파일을 브라우저 탭에서 바로 열고 편집합니다. 서버는 없습니다.
-OnlyOffice 엔진과 WASM 변환기가 방문자의 기기에서 직접 돌아가므로 문서가 업로드되는 일이
-없고, 계정도 필요 없습니다.
+**사용자와 AI 에이전트를 위한 오픈 소스 문서 작업 공간.**
 
-**서비스 주소: [edit.chaxus.com](https://edit.chaxus.com/)**
+브라우저에서 Word, Excel, PowerPoint를 열고 편집·변환·저장하며 PDF에 주석을 추가하세요. 기본 문서 처리는 기기에서 이루어지며 계정이나 Office 설치가 필요 없습니다.
+
+선택형 AI 도우미(Experimental Beta), WebMCP를 통한 에이전트의 문서 도구 호출, PWA 설치를 지원합니다. 캐시된 편집기 리소스는 오프라인에서 사용할 수 있고, 자체 호스팅하거나 앱에 임베드할 수도 있습니다.
+
+**온라인으로 사용: [edit.chaxus.com](https://edit.chaxus.com/)**
 
 ---
 
 ## ✨ 특징
 
-- 🔒 **아무것도 올라가지 않습니다** — 변환, 편집, 내보내기가 모두 탭 안에서 끝납니다
-- 📝 **미리보기가 아니라 진짜 편집** — DOCX, XLSX, PPTX, CSV와 함께 ODF, RTF, TXT 및 옛 바이너리 형식까지. PDF는 열어서 주석을 달 수 있습니다
-- 🕓 **탭을 닫아도 잃지 않습니다** — 편집 내용이 내 브라우저에 자동 저장되어 7일간 보관되고, 언제든 지울 수 있습니다 ([자세히](#-데이터는-기기-밖으로-나가지-않습니다))
-- 📴 **오프라인에서도 동작** — PWA로 설치할 수 있고, 첫 방문 이후에는 네트워크가 필요 없습니다
-- 🌍 **다국어** — 사이트 인터페이스 8개 언어, 편집기 자체는 45개 언어
-- 🧩 **임베드 가능** — iframe 연동을 위한 완전한 postMessage API
-- 🤖 **에이전트 지원** — WebMCP 도구를 공개해 브라우저 안의 AI 에이전트가 문서를 열고, 변환하고, 읽을 수 있습니다
-- 🚀 **어디에나 배포** — 정적 빌드. 아무 웹 서버 뒤에 두면 되는 파일 묶음입니다
-
----
+- **로컬 편집과 변환.** 문서를 기기에서 처리하므로 편집과 변환을 위해 업로드할 필요가 없습니다.
+- **원하는 방식으로 저장.** 지원되는 브라우저에서는 선택한 파일에 저장하고, 그 외에는 다운로드합니다. 이 브라우저에서 최근 작업을 다시 열 수 있습니다.
+- **AI와 함께 작업 (Experimental Beta).** 글 초안과 수정, 표 데이터 처리, 슬라이드 생성, 현재 PDF 페이지에 대한 질문을 지원합니다. 변경 내용을 확인한 뒤 적용하세요.
+- **에이전트가 문서 도구 호출.** [WebMCP](docs/reference.md#webmcp-agent-tools) 지원 브라우저에서는 AI 에이전트가 파일을 열고 변환하고 내보내며, 텍스트 문서의 본문을 읽을 수 있습니다.
+- **PWA로 설치.** 앱처럼 사용하고 캐시된 편집기 리소스를 오프라인에서 이용할 수 있습니다.
+- **자체 호스팅과 통합.** 정적 사이트로 배포하거나 iframe API로 앱에 임베드하세요.
 
 ## 🚀 빠른 시작
 
-**그냥 쓰기:** [edit.chaxus.com](https://edit.chaxus.com/) — 설치할 것이 없습니다.
+[새 문서](https://edit.chaxus.com/editor?new=docx&locale=ko-KR) · [새 스프레드시트](https://edit.chaxus.com/editor?new=xlsx&locale=ko-KR) · [새 프레젠테이션](https://edit.chaxus.com/editor?new=pptx&locale=ko-KR)
 
-**Docker로 직접 운영하기:**
+직접 실행할 수도 있습니다:
 
 ```bash
 docker run -d --name document -p 8080:80 ghcr.io/ranuts/document:latest
 ```
-
-**소스에서 실행하기:**
-
-```bash
-git clone https://github.com/ranuts/document.git
-cd document
-pnpm install
-pnpm run dev
-```
-
----
 
 ## 📄 지원 형식
 
@@ -76,176 +64,63 @@ pnpm run dev
 | 프레젠테이션 | `.pptx`                   | `.ppt` `.odp`               |
 | PDF          | 주석, 양식 작성, 내보내기 | `.pdf`                      |
 
-모두 PDF로 내보낼 수 있습니다. CSV는 내보낼 때도 원래 인코딩을 유지합니다(열 때 UTF-8,
-GB18030, Latin-1을 판별합니다).
+지원 문서를 PDF로 내보낼 수 있습니다.
 
----
+다국어 UI, 밝은 테마와 어두운 테마, 읽기 전용 미리보기도 지원합니다.
 
-## 🔗 경로와 URL 매개변수
+## 🔐 로컬 편집과 데이터 처리
 
-| 경로                  | 설명                                                      |
-| --------------------- | --------------------------------------------------------- |
-| `/`                   | 첫 화면. 무언가를 열기 전에는 편집기를 내려받지 않습니다. |
-| `/editor`             | 편집기.                                                   |
-| `/history`            | 이 브라우저가 보관 중인 문서(아래 참조).                  |
-| `/help`, `/changelog` | `content/` 아래의 마크다운에서 생성됩니다.                |
+복구 사본은 마지막 편집 또는 열기 후 7일 동안 이 브라우저에 보관됩니다. [저장된 문서](https://edit.chaxus.com/history)에서 삭제할 수 있습니다. 백업이 아니므로 중요한 파일은 내보내세요.
 
-`/editor`의 매개변수:
+외부 AI 서비스에는 요청에 필요한 내용이 전송됩니다. 기기 내 모델은 로컬에서 처리합니다. 음성 입력은 온라인 서비스를 사용할 수 있고, 임베드 내보내기는 호스트 앱이 처리합니다.
 
-| 매개변수     | 설명                                                                                                           |
-| ------------ | -------------------------------------------------------------------------------------------------------------- |
-| `src=<url>`  | URL에서 문서 열기(해당 URL이 CORS를 허용해야 합니다)                                                           |
-| `file=<url>` | 같은 뜻의 옛 표기. 둘 다 있으면 이쪽이 우선합니다                                                              |
-| `new=docx`   | 빈 문서 새로 만들기(`docx`, `xlsx`, `pptx`)                                                                    |
-| `doc=<id>`   | 이 브라우저의 기록에서 문서를 다시 열기. 편집기가 자기 ID를 여기에 넣으므로 새로 고쳐도 같은 문서로 돌아옵니다 |
-| `readonly=1` | 보기 전용으로 열기. 편집과 내보내기가 꺼집니다                                                                 |
-| `embed=1`    | 임베드 모드. 호스트 페이지가 postMessage로 편집기를 조종합니다                                                 |
-| `locale=ko`  | 인터페이스 언어                                                                                                |
+문서 도구가 반환한 내용의 후속 처리는 사용하는 브라우저 AI 에이전트가 관리합니다.
 
----
+## 문서 및 통합
 
-## 🔐 데이터는 기기 밖으로 나가지 않습니다
+[사용 안내](https://edit.chaxus.com/ko/help) · [호스팅, URL 및 통합](docs/reference.md) · [임베드 API](docs/embed-api.md) · [글꼴](docs/fonts.md)
 
-문서는 어디로도 전송되지 않습니다. 기기에 남는 것은 두 가지뿐이고, 둘 다 직접 지울 수 있습니다.
+오프라인 사용에는 캐시된 편집기 리소스가 필요합니다. 캐시되지 않은 리소스와 원격 파일에는 네트워크가 필요합니다.
 
-- **편집한 것의 사본.** 작업하는 동안 편집기는 문서를 이 브라우저(IndexedDB)에 저장합니다.
-  새로 고침, 탭 닫기, 브라우저 멈춤이 작업을 앗아가지 않게 하기 위해서입니다. 편집기를 다시
-  열면 그 사본을 되돌려 줍니다. 이 사본은 하던 일을 이어가기 위한 것이지 백업이 아닙니다.
-  보관하고 싶은 것은 계속 내보내 두세요.
-- **7일 뒤에는 사라집니다.** 각 문서는 마지막으로 편집하거나 연 날로부터 7일 뒤, 다시 오지
-  않더라도 자동으로 삭제됩니다.
+## AI 문서 도우미 (Experimental Beta)
 
-[`/history`](https://edit.chaxus.com/history)에 보관 중인 목록이 있습니다. 줄마다 삭제
-버튼이 있고, 전체 삭제와 자동 저장을 아예 끄는 스위치도 있습니다. 여기서 지우면 즉시
-반영됩니다. 공용 컴퓨터라면 먼저 들러야 할 페이지입니다.
+글 초안과 수정, 표 데이터 처리, 슬라이드 생성, 현재 PDF 페이지에 대한 질문을 지원합니다. 변경 내용을 확인한 뒤 적용하고 필요하면 실행 취소하세요.
 
----
+기기 내 모델을 선택하거나 자체 AI 서비스에 연결하세요. 지원되는 브라우저에서는 음성 입력도 사용할 수 있습니다.
 
-## 🧩 iframe으로 임베드하기
+**Experimental Beta.** 기본적으로 꺼져 있습니다. 답변과 수정이 틀릴 수 있으므로 중요한 결과는 확인하세요.
 
-편집기를 임베드하고 postMessage로 조종합니다. 흔한 분담은 인증과 저장은 내 시스템이,
-편집은 iframe이 맡는 형태입니다.
+<details>
+<summary>네 가지 데모 보기</summary>
 
-```html
-<iframe
-  id="documentEditor"
-  src="https://your-deployment/editor?embed=1"
-  style="width: 100%; height: 720px; border: 0"
-></iframe>
-```
+| Word                                                                                                                                                 | Excel                                                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [![초안 작성·삽입·요약·실행 취소](docs/media/ai-demos/word-ai.jpg)](https://github.com/user-attachments/assets/8d1d6386-e33a-45f2-b968-b8695c8f7da9) | [![입력·계산·정렬·실행 취소](docs/media/ai-demos/excel-ai.jpg)](https://github.com/user-attachments/assets/5bb253d7-3cc5-4f31-989e-0c88dcb1615c) |
+| **초안 작성·삽입·요약·실행 취소**                                                                                                                    | **입력·계산·정렬·실행 취소**                                                                                                                     |
+| PowerPoint                                                                                                                                           | PDF                                                                                                                                              |
+| [![만들기·복제·실행 취소](docs/media/ai-demos/pptx-ai.jpg)](https://github.com/user-attachments/assets/db3fc7a7-b54e-4147-a7ca-e7f16243618e)         | [![읽기·질문·메모 검토](docs/media/ai-demos/pdf-ai.jpg)](https://github.com/user-attachments/assets/f01c2da6-0669-4111-87c1-c4440f4a60e9)        |
+| **만들기·복제·실행 취소**                                                                                                                            | **읽기·질문·메모 검토**                                                                                                                          |
 
-```js
-// 문서 열기
-iframe.contentWindow.postMessage(
-  { id: '1', type: 'document:open-url', payload: { url: 'https://example.com/doc.xlsx' } },
-  'https://your-deployment',
-);
+영어 UI와 미리 로드한 로컬 Qwen3 4B 모델로 전체 작업을 정상 속도로 녹화했습니다. 응답 시간은 모델과 기기에 따라 달라집니다.
 
-// 결과 받기
-window.addEventListener('message', (e) => {
-  if (e.data?.type === 'document:opened') console.log('편집할 수 있습니다');
-  if (e.data?.type === 'document:saved') uploadFile(e.data.payload.file);
-});
-```
+[영상, 자막 및 설명](docs/media/ai-demos/README.md)
 
-임베드된 편집기는 로컬 기록을 남기지 않습니다. 문서는 호스트 페이지의 것이기 때문입니다.
+PDF는 선택 가능한 텍스트와 페이지 메모를 지원하며, 스캔 이미지 문자 인식이나 본문 수정은 지원하지 않습니다.
 
-→ **[전체 API 문서](docs/embed-api.md)** — 모든 메시지 종류, 오리진 허용 목록,
-읽기 전용 모드, 저장 흐름.
-
-컴포넌트로도 제공합니다. 이 프로젝트가
-[@ranui/preview](https://www.npmjs.com/package/@ranui/preview)
-([문서](https://chaxus.github.io/ran/src/ranui/preview/))의 문서 미리보기를 구동합니다.
-
----
-
-## 🤖 브라우저 AI 에이전트(WebMCP)
-
-브라우저가 지원하는 경우, 페이지는 에이전트가 화면을 조작하는 대신 직접 호출할 수 있는
-도구를 등록합니다. `open_document_url`, `open_document_buffer`, `create_document`,
-`save_document`, `get_document_text`, `set_readonly`, `get_document_state`입니다.
-이때도 문서는 기기를 떠나지 않습니다. 내려받기와 변환을 브라우저가 직접 하기 때문입니다.
-해당 API가 없는 환경에서는 아무 일도 일어나지 않습니다.
-
----
-
-## 🚀 배포
-
-정적 빌드입니다. 런타임도 데이터베이스도 없습니다.
-
-```bash
-pnpm build   # dist/ 에 출력됩니다
-```
-
-### 정적 호스팅(Cloudflare Pages, Nginx, Vercel, Netlify 등)
-
-`dist/`를 올리면 됩니다. `public/_headers`에 이 사이트가 전제하는 캐시 규약이 들어 있습니다
-(해시가 붙은 자산은 불변, 서비스 워커는 절대 캐시하지 않음). 이를 읽지 않는 호스트에서도
-동작하지만 재검증이 잦아집니다.
-
-Nginx에서는 알 수 없는 경로의 대체로 `index.html`을 내주세요.
-
-```nginx
-location / {
-  root /var/www/document;
-  try_files $uri $uri/ /index.html;
-}
-```
-
-### GitHub Pages
-
-`.github/workflows/pages-build-site.yml`이 `main`에 push할 때 빌드와 배포를 수행합니다.
-저장소 설정에서 Pages를 켜고 소스를 **GitHub Actions**로 지정하세요.
-
-### Docker
-
-```bash
-# 기본
-docker run -d --name document -p 8080:80 ghcr.io/ranuts/document:latest
-
-# HTTPS와 기본 인증 포함
-docker run -d --name document -p 443:443 \
-  -v /path/to/certs:/ssl \
-  -e SERVER_BASIC_AUTH='user:$2y$...' \
-  -e SERVER_HTTP2_TLS=true \
-  -e SERVER_HTTP2_TLS_CERT=/ssl/cert.pem \
-  -e SERVER_HTTP2_TLS_KEY=/ssl/key.pem \
-  ghcr.io/ranuts/document:latest
-```
-
-`SERVER_BASIC_AUTH`에는 BCrypt 해시를 넣습니다. 셸 이스케이프를 위해 `$`는 두 번 씁니다.
-이미지의 캐시 설정은 `sws.toml`에 있습니다.
-
----
-
-## 🔤 글꼴
-
-함께 넣은 OnlyOffice 빌드는 글꼴 라이브러리를 `public/fonts/`에 두고
-`public/sdkjs/common/AllFonts.js`로 색인합니다. 글꼴은 필요할 때 받아오므로, 문서가 실제로
-쓰는 것만 내려받습니다.
-
-→ **[글꼴 관리 안내](docs/fonts.md)** — 색인 카탈로그의 형식, 각 레지스트리,
-`bin/font-catalog.mjs`로 글꼴 추가하기.
-
----
+</details>
 
 ## 🛠 개발
 
+소스에서 실행:
+
 ```bash
+git clone https://github.com/ranuts/document.git
+cd document
 pnpm install --frozen-lockfile
-pnpm run dev            # 개발 서버
-pnpm run build          # 프로덕션 빌드(bin/build.sh)
-pnpm run lint           # oxlint + tsc + docker 설정 검사
-pnpm run test           # 단위 테스트(Vitest)
-pnpm run test:e2e       # 종단 간 테스트(Playwright, 실제 편집기 + 실제 WASM)
+pnpm run dev
 ```
 
-종단 간 테스트는 모의 객체가 아니라 진짜 편집기와 진짜 변환기를 돌립니다. 문서 왕복,
-임베드 프로토콜, 복구 흐름까지 포함합니다. `docs/explorations/`에는 언뜻 이해하기 어려운
-구현이 왜 그렇게 되어 있는지가 기록되어 있습니다. 편집기 연동을 건드리기 전에 읽어 볼
-가치가 있습니다.
-
----
+피드백과 기여를 환영합니다: [Issues](https://github.com/ranuts/document/issues) · [Pull requests](https://github.com/ranuts/document/pulls)
 
 ## 📚 기반
 
@@ -254,21 +129,26 @@ pnpm run test:e2e       # 종단 간 테스트(Playwright, 실제 편집기 + �
 - [ranui / ranuts](https://github.com/chaxus/ran) — 이 사이트를 이루는 디자인 시스템과 유틸리티
 - [se-office](https://github.com/Qihoo360/se-office), [onlyoffice-web-local](https://github.com/sweetwisdom/onlyoffice-web-local) — 문서 서버 없이 OnlyOffice를 돌린 선행 사례
 
-## 🤝 기여
-
-이슈와 풀 리퀘스트를 환영합니다. `main`은 보호되어 있으니 브랜치에서 작업하고 PR을
-열어 주세요. lint, 단위 테스트, 세 가지 종단 간 테스트(개발 서버, Cloudflare Pages 동작,
-프로덕션 Docker 이미지)가 실행됩니다.
-
 ## 📄 라이선스
 
-[AGPL-3.0](LICENSE).
+[AGPL-3.0](LICENSE) · [NOTICE](NOTICE)
 
-이 프로젝트는 ONLYOFFICE(sdkjs 및 web-apps, (c) Ascensio System SIA)의 2차적 저작물입니다.
-원본은 AGPL과 함께 제7조의 추가 조항으로 배포되며, 원래의 제품 로고를 유지해야 하고 상표법상
-어떤 권리도 부여되지 않습니다. 그래서 편집기 헤더의 ONLYOFFICE 로고와 정보 패널을 그대로
-두었습니다. 조항 전문, 사용 중인 vendor 버전, 우리가 가한 모든 변경 사항은
-[NOTICE](NOTICE)를 참고하세요.
+<details>
+<summary>상위 프로젝트 고지 및 상표</summary>
 
-ONLYOFFICE는 Ascensio System SIA의 상표입니다. 이 프로젝트는 공식 ONLYOFFICE 제품이 아니며
-Ascensio System SIA와 제휴하거나 후원받지 않았습니다.
+이 프로젝트는 ONLYOFFICE 편집기(sdkjs 및 web-apps, 저작권자 Ascensio System SIA)의
+수정 버전입니다. 화면에는 중립적인 기능 이름을 사용하며 제품 로고나 브랜드 홍보를
+표시하지 않습니다. 저작권, 라이선스, 수정 내역 및 소스 코드 링크는 편집기의 정보 패널과
+[NOTICE](NOTICE)에 유지됩니다. 타사 GUI 자료와 글꼴에는 각각의 라이선스가 계속 적용됩니다.
+
+제품 로고를 표시하지 않는 결정은 AGPLv3 제7조에 관한 FSF의 공개 해석을 참고합니다.
+이는 법원 판결이나 완전한 법적 준수를 보장하는 주장이 아닙니다. 원본 프로젝트의 입장과
+처리 근거는 NOTICE에 기록되어 있습니다.
+
+ONLYOFFICE는 Ascensio System SIA의 상표입니다. 이 프로젝트는 공식 제품이 아니며
+해당 회사와 제휴, 후원 또는 보증 관계가 없습니다. 법적 고지와 소스 참조의 이름은
+원본 기술을 식별하기 위한 것이며 이 프로젝트의 브랜드가 아닙니다.
+
+PWA 설치와 브라우저 탭에는 독립적으로 그린 중립적인 문서 아이콘을 사용합니다. 업스트림 로고, 상표 또는 프로젝트 이니셜은 포함하지 않습니다.
+
+</details>

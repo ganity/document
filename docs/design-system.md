@@ -125,3 +125,76 @@ Notion 正文 708）。**不存在"一个正确的宽度"，只存在按内容�
   侧栏不是正文列，短行宽是常态。
 - **`/embed-demo.html` 顶栏 72px vs 全站 77px**：它少一个语言切换控件（它只有英文版），
   是内容差异不是样式差异。
+
+## Application icon
+
+The PWA and browser icon uses two offset angular bands around an open center.
+The mark is abstract rather than a file illustration, with solid monochrome fills,
+broad negative space and restrained rounded corners that match the interface.
+SVG sources live in `public/icons/`.
+The universal launcher icon resolves the light-theme tokens
+`--ran-gray-1000` (#171717) and `--ran-background-100` (#ffffff).
+Exported assets use these fixed values because launcher icons do not inherit
+page CSS variables. There are no additional accent colors, gradients or shadows.
+The same silhouette is used at every size, including the 16 px browser display.
+
+The ordinary icon has a rounded background; the maskable variant has an opaque,
+full-bleed background. The entire mark fits within the central 80%-diameter
+safe circle, so platform masks can crop the background without clipping the mark.
+The 32 px favicon, 180 px touch icon, 192/512 px PWA icons and 512 px maskable icon
+are checked in. Regenerate PNG files from the SVG sources with:
+
+```sh
+npm install --prefix /tmp/document-icon-tools --no-audit --no-fund @resvg/resvg-js@2.6.2
+node bin/build-app-icons.mjs /tmp/document-icon-tools/package.json
+```
+
+Keep this functional icon separate from legal attribution and from page headers.
+
+### Light and dark browser presentation
+
+Browser favicons use `document-light.svg` / `document-dark.svg` and their 32 px
+PNG fallbacks. Both share the abstract mark geometry. The light variant uses the
+foreground token on a transparent canvas; the dark variant uses
+`--ran-gray-1000` (#ededed) on the same transparent canvas. Browser tab icons must not inherit the filled PWA installation tile. Regenerate these PNGs with the same command above.
+
+`public/theme-presentation.js` follows the effective `data-ran-theme`, then the
+stored choice, then the system preference. It updates the favicon, native
+`color-scheme` and browser `theme-color` before page styles paint, and follows
+runtime changes. A manual choice takes precedence over an opposite OS theme.
+The helper is precached and treated as a deploy-coupled, revalidated asset.
+
+The manifest and Apple touch icons retain the universal monochrome design.
+Manifest icon entries have no theme selector; publishing competing light/dark
+entries at the same size would not establish a reliable selection rule.
+The manifest's white startup background is a fallback; the page's browser color
+tracks its effective theme once running. Native launch screens remain subject
+to platform behavior. See [manifest icons](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Manifest/Reference/icons)
+and [theme colors](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Manifest/Reference/theme_color).
+
+## Application roles and regression enforcement
+
+`public/ran-tokens.css` remains the dependency-owned foundation. `public/app-tokens.css`
+adds only product roles missing from that foundation: page actions (42px), compact
+controls (the foundation's 32px size), coarse-pointer targets (44px), and destructive
+fill/foreground/state pairs. Every authored entry and generated page loads this layer
+after the foundation and before its page styles. The service worker precaches it and
+revalidates its deploy-coupled URL; shared chat keeps standalone defaults in its own
+`--cui-*` roles rather than depending on an application stylesheet.
+
+Page actions, inline commands and physical touch targets have different jobs. Choose
+by semantic context; do not resize every action to the largest size. Hover and active
+feedback apply only to enabled controls, keyboard focus stays visible, and destructive
+commands retain their colour and readable foreground in every state and theme.
+
+`test/unit/site-token-consistency.test.ts` audits all authored application CSS, the
+shared chat stylesheet, handwritten HTML styles and freshly generated pages. Roles
+resolve against each consumer's own definitions and loaded dependencies; an unknown
+role still fails when a fallback is present. The same contract rejects raw semantic
+spacing, type sizes and corners. Intentional exceptions are fluid viewport/brand
+composition (`clamp()`), breakpoints and fixed page geometry, hairline borders and
+optical 1px offsets, accessible offscreen sentinels, and standalone fallbacks inside
+validated token references. Static icon artwork and vendor assets are separate owners.
+The browser suite verifies real component parts, page families, seven locales, both
+themes, narrow widths and coarse-pointer targets. Token audit success alone does not
+prove component API or interaction correctness.

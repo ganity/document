@@ -1,11 +1,15 @@
-import { createObjectURL } from 'ranuts/utils';
+import { beginDocumentOpen, commitDocumentOpen, isMountedDocumentOpen } from './document-open';
+import { fetchRemoteDocument } from './remote-document';
+import { remoteFileName } from './remote-file-name';
 import { View } from 'ranui/builder';
 import { getDocmentObj, setDocmentObj } from '@ranuts/shared/store';
 import { t } from '@ranuts/shared/i18n';
 import 'ranui/message';
 import { handleDocumentOperation, loadEditorApi } from './converter';
 import { showLoading } from './loading';
-import { startDocumentSession } from './history/session';
+import { startDocumentSession, newDocumentId } from './history/session';
+import { clearDocumentSession } from './history/autosave';
+import { rememberActiveSource, clearActiveSource } from './active-document-source';
 
 // Import UI functions with type-only to avoid circular dependency
 // These will be passed as callbacks or called after document operations
@@ -36,6 +40,8 @@ const fileInput = View('input')
 document.body.appendChild(fileInput);
 
 export const onCreateNew = async (ext: string, options?: { docId?: string }): Promise<void> => {
+  const opening = beginDocumentOpen();
+  const operation = opening.id;
   // Callers own the loading indicator (the control panel shows it around this
   // call), so showing one here too would stack two of them.
   try {
@@ -43,16 +49,22 @@ export const onCreateNew = async (ext: string, options?: { docId?: string }): Pr
       hideControlPanelFn();
     }
     setDocmentObj({
-      fileName: 'New_Document' + ext,
+      fileName: 'Untitled' + ext,
       file: undefined,
     });
     await loadEditorApi();
+    opening.assertCurrent();
     const { fileName, file: fileBlob } = getDocmentObj();
-    await handleDocumentOperation({ file: fileBlob, fileName, isNew: !fileBlob });
+    await handleDocumentOperation({ file: fileBlob, fileName, isNew: !fileBlob, isCurrent: opening.isCurrent });
+    if (!commitDocumentOpen(operation)) return;
+    clearDocumentSession();
+    await clearActiveSource();
+    if (!isMountedDocumentOpen(operation)) return;
     // Recovery points from here on. A blank document is the case with the most
     // to lose: there is no file on disk to fall back to at all.
     startDocumentSession({ title: fileName, origin: 'new', docId: options?.docId });
   } catch (error) {
+    if (!opening.isCurrent()) throw error;
     console.error('Error creating new document:', error);
     // Ensure control panel is shown on error
     if (showControlPanelFn) {
@@ -69,27 +81,44 @@ export const openLocalFile = async (
   options?: {
     /** Continue an existing history row (the file came out of the history). */
     historyId?: string;
+    readonly?: boolean;
   },
 ): Promise<void> => {
+  const opening = beginDocumentOpen();
+  const operation = opening.id;
   const { removeLoading } = showLoading();
   try {
     if (hideControlPanelFn) {
       hideControlPanelFn();
     }
-    setDocmentObj({
-      fileName: file.name,
-      file: file,
-      url: await createObjectURL(file),
-    });
+    opening.assertCurrent();
+    // The editor owns the URL it creates from these bytes. This store needs
+    // only the File; a second Blob URL would retain every replaced original.
+    setDocmentObj({ fileName: file.name, file });
     const { fileName, file: fileBlob } = getDocmentObj();
-    await handleDocumentOperation({ file: fileBlob, fileName, isNew: !fileBlob });
-    startDocumentSession({ title: file.name, origin: 'local', docId: options?.historyId });
+    await handleDocumentOperation({
+      file: fileBlob,
+      fileName,
+      isNew: !fileBlob,
+      readonly: options?.readonly,
+      isCurrent: opening.isCurrent,
+    });
+    if (!commitDocumentOpen(operation)) throw new DOMException('Document open superseded', 'AbortError');
+    // The replacement editor now owns exports; retire the previous identity
+    // before asynchronous source storage, while delaying URL stamping until commit.
+    clearDocumentSession();
+    const docId = options?.historyId || newDocumentId();
+    await rememberActiveSource(docId, file);
+    if (!isMountedDocumentOpen(operation)) throw new DOMException('Document open superseded', 'AbortError');
+    startDocumentSession({ title: file.name, origin: 'local', docId });
   } catch (error) {
+    if (!opening.isCurrent()) throw error;
     console.error('Error opening document:', error);
     // Ensure control panel is shown on error
     if (showControlPanelFn) {
       showControlPanelFn();
     }
+    throw error;
   } finally {
     // Always remove loading, even if there's an error
     removeLoading();
@@ -111,7 +140,9 @@ export const onOpenDocument = (): void => {
     // Only process if a file was actually selected
     // If user cancelled, onchange won't fire, nothing happens
     if (file) {
-      await openLocalFile(file);
+      // The open path already reports failure. A DOM event has no caller to
+      // receive its rejection, unlike tools and recovery operations.
+      await openLocalFile(file).catch(() => {});
       // Clear file selection so the same file can be selected again
       fileInput.value = '';
     }
@@ -164,60 +195,25 @@ export const openDocumentFromUrl = async (
     docId?: string;
   },
 ): Promise<void> => {
+  const opening = beginDocumentOpen();
+  const operation = opening.id;
   const { removeLoading } = showLoading();
   try {
     if (hideControlPanelFn) {
       hideControlPanelFn();
     }
 
-    // Fetch the file from URL
-    console.log('Fetching document from URL:', url);
-    // eslint-disable-next-line n/no-unsupported-features/node-builtins
-    const response = await fetch(url, options?.fetchOptions);
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch document: ${response.status} ${response.statusText}`);
-    }
-
-    // Get file name from URL or Content-Disposition header, or use provided name
-    let finalFileName = fileName;
-    if (!finalFileName) {
-      // Try to get filename from Content-Disposition header
-      const contentDisposition = response.headers.get('Content-Disposition');
-      if (contentDisposition) {
-        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-        if (filenameMatch && filenameMatch[1]) {
-          finalFileName = filenameMatch[1].replace(/['"]/g, '');
-        }
-      }
-
-      // If still no filename, extract from URL. Resolve against the current
-      // page so relative URLs (?file=/docs/report.xlsx) keep their real file
-      // name instead of falling back to the extensionless "document", which
-      // then fails the editor's fileType validation.
-      if (!finalFileName) {
-        try {
-          const urlObj = new URL(url, window.location.href);
-          const pathname = urlObj.pathname;
-          finalFileName = pathname.split('/').pop() || 'document';
-          // Remove query parameters if any
-          finalFileName = finalFileName.split('?')[0];
-        } catch {
-          finalFileName = 'document';
-        }
-      }
-    }
+    const remote = await fetchRemoteDocument(url, options?.fetchOptions, opening.signal);
+    opening.assertCurrent();
+    const finalFileName =
+      fileName || remoteFileName(url, remote.headers.get('Content-Disposition'), window.location.href);
 
     // Get file blob
-    const blob = await response.blob();
-    const file = new File([blob], finalFileName, { type: blob.type });
+    const file = new File([remote.blob], finalFileName, { type: remote.blob.type });
 
     // Set document object
-    setDocmentObj({
-      fileName: finalFileName,
-      file: file,
-      url: await createObjectURL(file),
-    });
+    opening.assertCurrent();
+    setDocmentObj({ fileName: finalFileName, file });
 
     // Initialize and open document
     const { fileName: docFileName, file: fileBlob } = getDocmentObj();
@@ -226,14 +222,21 @@ export const openDocumentFromUrl = async (
       fileName: docFileName,
       isNew: !fileBlob,
       readonly: options?.readonly,
+      isCurrent: opening.isCurrent,
     });
+    if (!commitDocumentOpen(operation)) throw new DOMException('Document open superseded', 'AbortError');
+    clearDocumentSession();
+    await clearActiveSource();
+    if (!isMountedDocumentOpen(operation)) throw new DOMException('Document open superseded', 'AbortError');
     startDocumentSession({ title: docFileName, origin: 'url', docId: options?.docId });
   } catch (error) {
+    if (!opening.isCurrent() || (error as { name?: string })?.name === 'AbortError') throw error;
     console.error('Error opening document from URL:', error);
     reportUrlOpenFailure(error);
     if (showControlPanelFn) {
       showControlPanelFn();
     }
+    throw error;
   } finally {
     removeLoading();
   }

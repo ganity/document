@@ -28,6 +28,13 @@ let lastEditAt = 0;
 
 type UnsavedChangesListener = (dirty: boolean) => void;
 const listeners = new Set<UnsavedChangesListener>();
+const editListeners = new Set<() => void>();
+export function onDocumentEdit(listener: () => void): () => void {
+  editListeners.add(listener);
+  return () => {
+    editListeners.delete(listener);
+  };
+}
 
 function setDirty(next: boolean): void {
   if (dirty === next) return;
@@ -51,6 +58,7 @@ export function onUnsavedChangesChange(listener: UnsavedChangesListener): () => 
 export function markDocumentDirty(): void {
   lastEditAt = Date.now();
   setDirty(true);
+  for (const listener of editListeners) listener();
 }
 
 /**

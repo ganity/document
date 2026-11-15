@@ -7,7 +7,202 @@ notes. Entries describe what users experience, not internal refactors.
 
 ## [Unreleased]
 
+- Allow Quiz pictures to be adopted into PPT-master assessment groups, including
+  wrapped questions and differing template/page IDs. Preserve unrelated objects
+  and reject changes made while images are being prepared.
+
+- Acknowledge native teaching initialization independently of sidebar mounting
+  and visibility, so closed panels and hidden DeckWise workers can execute tools.
+
+- Avoid teaching slideshow layout feedback that could trigger an editor error
+  and unexpectedly switch the presentation to view-only mode.
+
+- Play speech-linked effects from saved native PPT animations, including separate
+  entrance/exit effects on one object. Report missing native effects instead of
+  manufacturing playback-only animations.
+
+- Start teaching alongside page-entry animations without applying the narrower
+  speech-binding preset restrictions to the whole PPT. Pause/resume background
+  animations with narration and preserve saved timing on exit.
+
+- Retry failed teaching media reads once without regenerating audio, retain edits and report the actual failed read. Keep animation names readable beside unsupported-animation notices.
+
+- Automatically play unlinked PPT animations on page entry alongside narration; reuse unique native group animations at their generated speech cues without requiring manual clicks.
+
+- Play saved PPT-master basic zoom, fill-color and lighten animations during teaching slideshows without rejecting the whole page.
+
+- Resolve teaching spotlights and highlights inside saved PPT groups; keep native preparation open when background speech-task status checks finish.
+
+- Make teaching slideshow controls readable; add page navigation, replay, media seeking and five-second fast-forward.
+
+- Open the first document without an unnecessary teardown delay and avoid duplicate teaching retries when newer selection reads are already queued.
+
+- Teaching UI: consolidate playback icons, status and page notes into one row; size narration to its content and explain animation timing with translated effect names, object numbers and duration units.
+
+- Teaching: add inline native-animation linking and narration start/end or selected-word triggers, with real-audio timing marks. Keep native effects on unlink; temporary preview timing is restored on exit.
+
+- Play local teaching audio and video under the production security policy. Preserve edited PPT animation presets, durations and native click order during teaching playback instead of requiring equality with generated cues.
+
+- Offer page-scoped Delete draft for conflicting recovery edits; restore saved teaching and clear page-local errors.
+
+- Spotlight and highlight forms use short Add/Save labels, a filled primary action and a bordered Cancel button.
+
+- Edit saved spotlight and highlight cues without per-page teaching confirmation. Audio, mapped targets and unlocked-page checks remain automatic prerequisites.
+
+- Teaching reloads renew expired selection bindings instead of leaving an empty panel. Spotlight, highlight and native animation entries remain visible with precise prerequisites; cue targets and edit controls are readable. Music and video steps show local playback controls and duration, legacy teacher pauses explain their behavior, and speech task details stay inside voice settings.
+
+- WiseOffice teaching uses a wider panel with inline step editing and one scroll area. Compact icon controls reduce clutter, and closing teaching restores the native property-panel width. Spotlight is a primary action, narration can be inserted after the selected step, and whole-lesson playback stays available. Narration tails offer none, a short pause, or a 3–30 second timed wait; new standalone waits are no longer created.
+
+- Embedded DeckWise hosts can insert one reviewed PNG at an explicit on-page millimeter rectangle when the native capability is available. Review stretching/overlap; saving stays explicit.
+
+- Embedded DeckWise hosts can resize a supported selected rectangular text box to explicit on-page millimeter dimensions while preserving its position and text. Review text reflow visually; saving remains explicit.
+
+- DeckWise readonly source previews accept an optional one-based page without navigation, preserving source, generation and native-text guards.
+
+- Embedded DeckWise hosts can move the rectangular text box containing the current text selection to explicit on-page millimeter coordinates on shape-only slides. Dimensions and text are verified; saving remains explicit.
+
+- DeckWise: add capability-gated opaque RGB color for a nonempty plain-text selection in one current-slide text object. Native readback verifies text/selection/color; saving remains explicit. Theme colors, transparency, gradients, grouped objects and master editing are excluded.
+
 ### Added
+
+- DeckWise hosts can request a source-bound preview without native text for supported ordinary pages. Pictures remain intact, including text inside pictures; candidate backgrounds still require review.
+
+- DeckWise source-page previews retain the page aspect ratio at a 1600-pixel longest edge, improving text and image detail for reviewed page candidates.
+
+- Embedded DeckWise hosts can render a bounded current-page PNG preview tied to the opened PPTX hash, page identity and latest edit generation. Rendering does not modify or save the source.
+
+- Trusted DeckWise hosts can pass one reviewed PNG selection and fresh command-scoped bytes through the existing editor bridge; bytes cannot be reused by ordinary commands. Saving remains explicit.
+
+- Embedded DeckWise hosts can change the font size of one selected text range
+  when the native presentation capability is available. Changes remain unsaved
+  until an explicit save.
+
+### Fixed
+
+- Embedded presentation image replacement rejects corrupt or incomplete PNG chunks before native loading, even when the browser decoder would accept them.
+
+- Editing a document after more than seven idle days keeps the new recovery
+  bytes instead of leaving an empty history record.
+- Turning off recovery, or stopping it after a storage failure, keeps ordinary
+  saves linked to the document's authorized file.
+- Closing or replacing a document cancels recovery startup still waiting for a
+  browser lock, so late callbacks cannot revive the previous document's session.
+- Anthropic requests now time out even when response data stops after headers;
+  timeouts and service overloads show the corresponding recovery guidance.
+- Browser tools report failed or superseded local opens as failures and apply
+  read-only mode only as part of the document being opened.
+- Repeated document opens no longer retain extra Blob URLs for previous source
+  files. App updates reuse unchanged prepared assistant runtime assets already
+  held in earlier app caches.
+- First-visit editor preparation waits for the service worker to control the
+  page, so warmed font resources remain available in its offline cache.
+- A failed recovery snapshot no longer removes an older document when storage
+  remains full after a retry.
+- Recovery files that exceed the storage budget are rejected before their
+  contents are copied into another memory buffer.
+- Unresponsive OpenAI-compatible, Gemini and Ollama requests now time out,
+  including stalled response reads, so another request can be sent.
+- Gemini authentication, rate-limit and service failures now show actionable
+  guidance without exposing the service's response body.
+- Plain assistant requests omit unused tool-calling settings for better
+  compatibility with configured AI services.
+- Oversized AI responses stop before unbounded data accumulates in memory.
+- OpenAI-compatible, Gemini, Ollama and local-service chat answers appear
+  progressively; interrupted streams are not treated as complete replies.
+- AI offline preparation now downloads only the runtime capabilities actually
+  used. Cloud-only setup avoids local inference downloads, and prepared
+  capabilities remain available after app updates.
+
+- A failed download started while switching documents no longer leaves the
+  editor empty. Closing the editor still cancels an unfinished replacement.
+- A document still loading can recover from a temporary conversion failure
+  even if a newer download fails before replacing it.
+- Opening or creating a document through browser tools during startup no longer
+  raises an uncaught cancellation error for the initial blank document.
+- Saving keeps edits made during conversion or writing protected. Further edits
+  after a save reactivate the unsaved-changes warning and recovery snapshots.
+- Long document context no longer blocks a short assistant question. Partial
+  context is identified while the original question and conversation stay intact.
+- A recovery snapshot too large for the storage budget leaves existing recovery
+  records intact. Reading the newest version avoids loading every older file.
+
+- Returning to the latest assistant conversation during dictation keeps each
+  chat's draft intact and ignores late speech results after navigation.
+- The first assistant request stays in its original chat while saved conversations
+  finish loading. Requests being prepared or stopped show their state and keep
+  unavailable queue actions disabled until recovery is ready.
+- Ordinary chat continues while you edit the document. Deleting another saved
+  chat preserves the current reply, loaded messages, draft and reading position.
+- Returning to the latest reply follows new content during smooth scrolling;
+  scrolling or dragging the scrollbar keeps you in control of your reading position.
+- Starting assistant dictation or editing a draft during first-use setup no longer
+  gets interrupted by the background model-cache check opening settings.
+- Docker deployments accessed over ordinary HTTP can load the document converter
+  in Chrome without a WASM content-decoding error ([#267](https://github.com/ranuts/document/issues/267)).
+- Stopping a browser-local assistant response no longer prevents the next question
+  from being answered. Stop responds immediately and keeps your next draft and
+  partial answer available.
+- Cancelling a save keeps the unsaved-changes warning and recovery status intact.
+- Exporting another format, such as PDF, preserves the original document file
+  and its ordinary save target, including when the export is cancelled or fails.
+- Deleting, clearing or expiring local recovery records also forgets their saved
+  file associations. Unchanged documents no longer create duplicate recovery
+  versions or repeatedly run a full export.
+
+### Added
+
+- **Start with a task for the document in front of you.** Assistant suggestions
+  follow the editor and selection. Choose a task to prepare an editable request,
+  then send. If the document scope changes, your draft is kept for you to confirm
+  again. Selected passages align with the input and expand or collapse smoothly.
+- **Read drafts and review changes more clearly.** Document drafts and incomplete
+  responses have distinct labels. Change reviews emphasize Apply and Cancel,
+  with editing, refinement, copying and location in More actions.
+
+- **See what the assistant is doing while you wait.** Request understanding,
+  generation and review show their actual stage. A compact elapsed-time hint
+  clears when content arrives or you stop, while your next draft stays editable.
+
+- **Find earlier assistant conversations.** Search titles and messages locally,
+  browse recent chats by date and see the current conversation at a glance.
+  Large histories load in pages and search without rebuilding every conversation.
+  Long conversations open with recent messages; load earlier messages without
+  losing your place or the full original text.
+  Compact row actions confirm which conversation will be deleted; history
+  saving and data tools stay available in a collapsed section.
+  Click the assistant title to return to your latest conversation; unsent drafts
+  stay with their own chat and remain reachable from history.
+
+- **Keep document structure when writing an assistant draft.** Word headings,
+  lists and emphasis remain formatted; long slide content continues on fitted
+  pages without dropping text. Completed changes keep location and Undo guidance.
+  Reading progress names the actual scope, and spreadsheet reviews distinguish
+  formulas from calculated values.
+
+- **Read formatted replies as they arrive.** Headings, lists, code and tables
+  appear progressively, with stable completed paragraphs and safe partial links.
+  Very large unfinished sections remain readable as original text.
+
+- **Keep going while the assistant responds.** Send follow-ups to a queue, edit or
+  remove them, or choose Send now. Dictate the next draft during a reply and send
+  it when ready. Older queued requests pause after Stop or an
+  error; resume when ready. Document changes still wait for your review.
+  Reading older messages keeps your place, and activity hints distinguish
+  reading, responding and waiting for your review.
+  The draft adapts when you resize the sidebar, and long drafts scroll inside the
+  input. Copy feedback stays compact; code and tables can be navigated by keyboard.
+
+- **Spend less time preparing simple requests.** Greetings and document-reading
+  shortcuts avoid unnecessary model steps. Ordinary chat no longer scans the
+  whole document before answering, and long source excerpts show when only part
+  of the content is included.
+
+- **Ask the assistant about the current PDF page and review notes before adding them.**
+  It can read selectable page text and add page notes that you can undo. Scanned
+  pages still need text recognition elsewhere; the assistant does not rewrite PDF text.
+- **Review changes where they belong.** Text changes and spreadsheet values show
+  what will change before you approve. You can refine a suggestion in conversation,
+  and completed changes stay in a compact record instead of a separate panel.
 
 - **Embed API: the host page can tell when a document has unsaved edits.**
   `document:dirty-changed` is pushed when the flag flips, and `dirty` is
@@ -45,6 +240,61 @@ notes. Entries describe what users experience, not internal refactors.
 
 ### Changed
 
+- Voice controls stay in place while recording or finishing. Explanations appear
+  without moving the draft, and cancelling preserves the text typed before dictation.
+- **Configured assistants reopen in chat.** Enable a downloaded model or reconnect
+  your service without losing your draft. Preparation never sends the draft.
+  Speech language choices open directly, and model settings use one consistent
+  expansion style.
+- **Presentation drafts can have separate titles and body text.** Review the new
+  slide before adding it; one Undo restores the previous presentation.
+- **Interrupted tasks explain what happened.** Confirmed changes remain visible
+  when later steps fail or repeat an operation. Check the result before asking
+  for the unfinished work; completed changes can still be undone.
+
+- **Read requests now finish with an answer to your question.** After reading text
+  or cells, the assistant answers from that content instead of showing the whole
+  tool result. Empty files still show a clear message, and stopped requests cannot
+  add a late answer.
+
+- **Browser model choices now start at Qwen3 4B.** Smaller presets are no longer
+  offered, and saved choices move to 4B. Previously downloaded smaller models can
+  still be deleted in settings. Browser models remain experimental.
+
+- **Writing help now goes to a model on your own machine by default.** Rewrite,
+  summarize and translate used to run on the small model inside the browser tab.
+  We tested sixteen of those models and none of them kept dates, names, roles or
+  negations straight across the seven interface languages -- and a rewrite that
+  quietly turns "not approved" into "approved" is worse than no rewrite. So the
+  assistant now talks to a model service you run yourself (Ollama on
+  `http://localhost:11434` by default, set up under Settings -> Writing
+  destination); your file still never leaves the device, because a local service
+  is only reachable on your own machine.
+- **Or point it at a cloud model with your own API key.** Settings -> Writing
+  destination also accepts an OpenAI-compatible endpoint (OpenAI, DeepSeek, Groq,
+  OpenRouter, a local vLLM/LM Studio server, ...), Claude or Gemini. A remote
+  address must be HTTPS. The panel always states where the writing will go, and
+  when it goes to a third party it says so plainly, because that text leaves your
+  device. Which destination wins when you have configured both is your choice
+  (this device first, or the cloud endpoint first).
+- **Browser-local writing is still available, but you have to ask for it.** With
+  no destination connected, asking for a rewrite tells you so instead of silently
+  using the in-browser model. Tick "Allow browser-local model writing" in Settings
+  to use it anyway; it is marked experimental, because it is.
+- **Offline, only a destination on this device can work.** A cloud endpoint is not
+  attempted without a connection -- the panel says so (next to the destination it
+  would use) instead of failing with a network error. A local service and the
+  in-browser model both keep working offline, and the choice between them is still
+  yours rather than an automatic substitution.
+- **The assistant no longer asks you to download a model you are not going to use.**
+  With a cloud endpoint connected, writing goes there even if no in-browser model
+  is loaded; previously that combination quietly did nothing but tell you to load
+  one. A fixed spreadsheet command such as "read A1:A5, then set B1 to `done`"
+  likewise runs without any model loaded, because choosing the operation is not
+  something it needs help with. Changing the address, model or key now also disconnects the endpoint (and
+  does not carry the key to a different address) instead of leaving the panel
+  showing one destination while requests went to another.
+
 - **The editor gives its memory back while you work.** Converting a document
   used to reserve a few hundred megabytes and hold them for as long as the tab
   was open; that work now happens off to one side and is released once it is
@@ -70,14 +320,31 @@ notes. Entries describe what users experience, not internal refactors.
   the session on them, so a laptop keeps a recovery point about every 30
   seconds while a phone under load backs off instead of competing with the
   document you are editing.
-- **The ONLYOFFICE logo is back in the editor header, and the About pane with
-  it.** Both had been switched off as interface clutter. They are not: this
-  editor is a modified version of ONLYOFFICE, and the license it is published
-  under requires the product logo to stay. The About pane now also says that
-  this build is not an official ONLYOFFICE product and links to the source it
-  was built from. Every page of the site carries the same trademark notice in
-  its footer, and the repository has a NOTICE file with the full terms and the
-  list of changes made to the vendor build.
+- **Neutral presentation with legal attribution retained.** Product logos
+  and ecosystem promotion are removed. A neutral document icon supplies PWA and browser icons. The editor's About pane stays
+  available with the upstream copyright and version, a modified-version notice,
+  license and source links. NOTICE explains the logo decision with reference to
+  the FSF's interpretation of AGPLv3; it does not claim a court ruling. Offline caching remains available.
+
+### Fixed
+
+- Browser icons, theme-color and native controls now follow the effective light
+  or dark theme, including manual choices opposite to the OS preference.
+  Universal PWA / touch icons remain stable. The editor's existing theme
+  follow behavior is covered by light/dark browser tests.
+
+- Save messages are accepted only from the same-origin editor frame. Embedded
+  commands are accepted only from the direct parent, with a fixed origin.
+  Exported document bytes no longer bypass the host API by going straight to
+  the top-level ancestor.
+- Service Worker cache eviction stays within its `waitUntil` lifetime, removes
+  excess entries in a batch and tolerates storage failures.
+- Editor title updates preserve the filename and unsaved marker without
+  restoring a product-name suffix. Language controls include the visible
+  language in their accessible names.
+- Image-export tests use the current neutral icon. All README translations
+  distinguish local editing from optional cloud AI, qualify offline resource
+  availability and state the seven supported site languages.
 
 ### Known issues
 

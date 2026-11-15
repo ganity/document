@@ -49,9 +49,14 @@ const TEXT_LINE = { x: 170, y: 230, width: 980, height: 120 };
  * dropped "Wo" is a 1.4% diff on its own, which is the same order as the
  * defect being looked for).
  */
-async function renderIn(page: import('@playwright/test').Page, family: string, text: string): Promise<Buffer> {
+async function renderIn(
+  page: import('@playwright/test').Page,
+  family: string,
+  text: string,
+  style = '',
+): Promise<Buffer> {
   await page.evaluate(
-    ({ name, body }) => {
+    ({ name, body, style }) => {
       const findWin = (win: Window): Window | null => {
         try {
           if ((win as any).Asc?.editor?.asc_registerCallback) return win;
@@ -68,10 +73,10 @@ async function renderIn(page: import('@playwright/test').Page, family: string, t
       if (!frame) throw new Error('editor SDK instance not found');
       (frame.document.getElementById('area_id') as HTMLElement | null)?.focus();
       (frame as any).Asc.editor.pluginMethod_PasteHtml(
-        `<p><span style="font-family:'${name}';font-size:14pt">${body}</span></p>`,
+        `<p><span style="font-family:'${name}';font-size:14pt;${style}">${body}</span></p>`,
       );
     },
-    { name: family, body: text },
+    { name: family, body: text, style },
   );
   await page.waitForTimeout(2500);
   // Just the first line of the page, not the whole frame: the toolbar shows
@@ -107,6 +112,21 @@ test.describe('font substitution renders', () => {
         diff.differingPct,
         `"${pair.substituted}" and "${pair.backedBy}" share a catalog position, so they must draw the same pixels`,
       ).toBeLessThan(0.3);
+    });
+  }
+
+  for (const style of ['font-weight:bold', 'font-style:italic', 'font-weight:bold;font-style:italic']) {
+    test(`Calibri styled text matches Carlito: ${style}`, async ({ page }) => {
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await page.goto('/editor?new=docx');
+      await settleEditor(page);
+      const text = '701—762 “李杜” yè sù shān sì ' + LATIN;
+      const alias = await renderIn(page, 'Calibri', text, style);
+      const backing = await renderIn(page, 'Carlito', text, style);
+      const diff = await pixelDiff(page, alias, backing);
+      expect(diff.sizeSame).toBe(true);
+      expect(diff.nonWhitePct, 'nothing was rendered').toBeGreaterThan(0.5);
+      expect(diff.differingPct, 'styled alias must shape and paint the same face').toBeLessThan(0.3);
     });
   }
 });

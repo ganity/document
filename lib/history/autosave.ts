@@ -24,6 +24,7 @@ import { requestSaveDocument } from '../onlyoffice/save-stream';
 import { getReadonlyMode } from '../onlyoffice/readonly';
 import { getLastEditAt, hasUnsavedChanges } from '../unsaved-guard';
 import { isEmbedMode } from '../embed-mode';
+import { captureSavePoint, type SavePoint } from '../onlyoffice/save-point';
 import { extensionOf, markOpened, putSnapshot } from './store';
 import type { HistoryDoc, HistoryOrigin } from './types';
 
@@ -130,14 +131,24 @@ interface ActiveSession {
   lastSnapshotAt: number;
   exporting: boolean;
   lastExportMs: number | null;
+  lastSnapshotPoint: SavePoint | null;
+  lastSnapshotItems: unknown[] | null;
   failures: number;
   holdsLock: boolean;
   releaseLock: (() => void) | null;
   onVisibility: () => void;
+  onPagehide: (event: PageTransitionEvent) => void;
+  onPageshow: (event: PageTransitionEvent) => void;
+  storageAbort: AbortController;
+  cached: boolean;
+  resumeTimer: number | null;
   stopped: boolean;
 }
 
 let session: ActiveSession | null = null;
+let sessionGeneration = 0;
+// Editing identity outlives the optional recovery scheduler.
+let activeDocumentId: string | null = null;
 
 function notify(kind: 'warning' | 'error', text: string): void {
   (window as unknown as { message?: Record<string, ((msg: string) => void) | undefined> }).message?.[kind]?.(text);
@@ -180,18 +191,43 @@ async function acquireLock(name: string): Promise<{ held: boolean; release: (() 
 /** Export the document now and store the bytes. Returns the row, or null. */
 export async function takeSnapshot(): Promise<HistoryDoc | null> {
   const active = session;
-  if (!active || active.exporting || !active.ext) return null;
+  if (!active || active.cached || active.exporting || !active.ext) return null;
+
+  const point = captureSavePoint();
+  const pointItems = (point?.head as { Items?: unknown[] } | undefined)?.Items;
+  const items = Array.isArray(pointItems) ? [...pointItems] : null;
+  const previous = active.lastSnapshotPoint;
+  const previousItems = active.lastSnapshotItems;
+  if (
+    point &&
+    previous &&
+    point.frame === previous.frame &&
+    point.index === previous.index &&
+    point.head === previous.head &&
+    items &&
+    previousItems &&
+    items.length === previousItems.length &&
+    items.every((item, index) => item === previousItems[index])
+  )
+    return null;
 
   active.exporting = true;
   const startedAt = Date.now();
   try {
     const file = await requestSaveDocument(active.ext.toUpperCase());
-    const doc = await putSnapshot({
-      id: active.docId,
-      title: active.title,
-      origin: active.origin,
-      bytes: await file.arrayBuffer(),
-    });
+    if (session !== active || active.stopped) return null;
+    // Let storage check the exported file's size before copying its bytes.
+    // The owner signal also guards budget checks and asynchronous file reads.
+    const doc = await putSnapshot(
+      {
+        id: active.docId,
+        title: active.title,
+        origin: active.origin,
+        bytes: file,
+      },
+      active.storageAbort.signal,
+    );
+    if (session !== active || active.stopped) return null;
     if (!doc) {
       // The store gave up (no room, and eviction did not help). Stopping and
       // saying so beats a silent autosave, which is the most dangerous kind:
@@ -205,15 +241,21 @@ export async function takeSnapshot(): Promise<HistoryDoc | null> {
     // What this export cost sets the next interval: a slow device asks for
     // snapshots less often without anyone having to identify it as slow.
     active.lastExportMs = active.lastSnapshotAt - startedAt;
+    // Capture before export, so an edit made during conversion still needs a
+    // later recovery point. With no SDK history, retain the conservative cadence.
+    active.lastSnapshotPoint = point;
+    active.lastSnapshotItems = items;
     active.failures = 0;
     return doc;
   } catch (error) {
+    if (session !== active || active.stopped) return null;
     const message = error instanceof Error ? error.message : String(error);
     // A save the user asked for owns the channel; this tick simply waits.
     if (!message.includes('already in progress')) {
       active.failures += 1;
       if (active.failures >= MAX_CONSECUTIVE_FAILURES) {
         console.warn('[history] autosave stopped after repeated export failures:', message);
+        notify('warning', t('autosaveExportStopped'));
         stopAutosaveSession();
       }
     }
@@ -225,7 +267,7 @@ export async function takeSnapshot(): Promise<HistoryDoc | null> {
 
 function tick(): void {
   const active = session;
-  if (!active) return;
+  if (!active || active.cached || active.resumeTimer !== null) return;
   const decision: SnapshotDecision = {
     now: Date.now(),
     enabled: isAutosaveEnabled(),
@@ -248,6 +290,8 @@ function tick(): void {
  */
 export async function beginAutosaveSession(input: AutosaveSessionInput): Promise<void> {
   stopAutosaveSession();
+  activeDocumentId = input.docId;
+  const generation = sessionGeneration;
   if (typeof window === 'undefined' || isEmbedMode() || !isAutosaveEnabled()) return;
 
   const ext = extensionOf(input.title);
@@ -261,6 +305,12 @@ export async function beginAutosaveSession(input: AutosaveSessionInput): Promise
   // holds the write lock is our bookkeeping, not their business. This page
   // simply stops writing snapshots -- the other tab is taking them.
   const { held, release } = await acquireLock(lockName);
+  // Stopping or replacing a document also cancels starts still waiting for a
+  // lock. A late grant must release ownership before installing any resources.
+  if (generation !== sessionGeneration || !isAutosaveEnabled()) {
+    release?.();
+    return;
+  }
 
   const onVisibility = (): void => {
     // The last chance that reliably gets time to run. beforeunload cannot be
@@ -268,9 +318,35 @@ export async function beginAutosaveSession(input: AutosaveSessionInput): Promise
     // its way out -- and a phone being task-switched away never sees one.
     if (document.visibilityState !== 'hidden') return;
     const active = session;
-    if (!active || !active.holdsLock || active.exporting) return;
+    if (!active || active.cached || !active.holdsLock || active.exporting) return;
     if (!hasUnsavedChanges() || getReadonlyMode() || !isAutosaveEnabled()) return;
     void takeSnapshot();
+  };
+
+  const onPagehide = (event: PageTransitionEvent): void => {
+    const active = session;
+    if (!active) return;
+    active.cached = event.persisted;
+    if (active.resumeTimer !== null) window.clearTimeout(active.resumeTimer);
+    active.resumeTimer = null;
+  };
+  const onPageshow = (event: PageTransitionEvent): void => {
+    const active = session;
+    if (!event.persisted || !active?.cached) return;
+    active.cached = false;
+    // A cold export starts a large conversion Worker. Do not launch it while
+    // entering BFCache, or immediately before another rapid departure. Keep
+    // recovery enabled and catch up after the restored document is idle.
+    const resume = (): void => {
+      active.resumeTimer = null;
+      if (session !== active || active.cached || document.visibilityState !== 'visible') return;
+      if (!active.holdsLock || active.exporting || !hasUnsavedChanges() || getReadonlyMode() || !isAutosaveEnabled())
+        return;
+      const remaining = IDLE_GRACE_MS - (Date.now() - getLastEditAt());
+      if (remaining > 0) active.resumeTimer = window.setTimeout(resume, remaining);
+      else void takeSnapshot();
+    };
+    active.resumeTimer = window.setTimeout(resume, IDLE_GRACE_MS);
   };
 
   session = {
@@ -283,27 +359,41 @@ export async function beginAutosaveSession(input: AutosaveSessionInput): Promise
     lastSnapshotAt: Date.now(),
     exporting: false,
     lastExportMs: null,
+    lastSnapshotPoint: null,
+    lastSnapshotItems: null,
     failures: 0,
     holdsLock: held,
     releaseLock: release,
     onVisibility,
+    onPagehide,
+    onPageshow,
+    storageAbort: new AbortController(),
+    cached: false,
+    resumeTimer: null,
     stopped: false,
     timer: window.setInterval(tick, TICK_MS),
   };
 
   document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('pagehide', onPagehide);
+  window.addEventListener('pageshow', onPageshow);
   // No-op until this document has a row; from then on it restarts the
   // seven-day clock every time the document is opened.
   void markOpened(input.docId);
 }
 
 export function stopAutosaveSession(): void {
+  sessionGeneration += 1;
   const active = session;
   session = null;
   if (!active || active.stopped) return;
   active.stopped = true;
+  active.storageAbort.abort();
   window.clearInterval(active.timer);
   document.removeEventListener('visibilitychange', active.onVisibility);
+  window.removeEventListener('pagehide', active.onPagehide);
+  window.removeEventListener('pageshow', active.onPageshow);
+  if (active.resumeTimer !== null) window.clearTimeout(active.resumeTimer);
   active.releaseLock?.();
 }
 
@@ -315,4 +405,15 @@ export function getAutosaveDocId(): string | null {
 /** Test seam: inspect whether a session is running. */
 export function isAutosaveSessionActive(): boolean {
   return session !== null;
+}
+
+/** The currently opened document, including when recovery is disabled. */
+export function getActiveDocumentId(): string | null {
+  return activeDocumentId;
+}
+
+/** Retire the opened document before closing or replacing its editor. */
+export function clearDocumentSession(): void {
+  stopAutosaveSession();
+  activeDocumentId = null;
 }

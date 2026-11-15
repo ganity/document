@@ -17,9 +17,20 @@
  * Everything here resolves to a null/empty result when IndexedDB is missing;
  * see lib/history/db.ts for why.
  */
-import { BLOBS_BY_DOC, BLOBS_STORE, DOCS_STORE, requestToPromise, withStores } from './db';
+import {
+  BLOBS_BY_DOC,
+  BLOBS_BY_REVISION,
+  BLOBS_STORE,
+  DOCS_BY_UPDATED,
+  DOCS_STORE,
+  HANDLES_STORE,
+  requestToPromise,
+  withStores,
+} from './db';
 import type { HistoryDoc, HistoryOrigin, HistorySnapshot } from './types';
 import { MAX_AGE_MS, expiresAt, hasUnsavedWork } from './types';
+import { deleteDocumentSources } from '../active-document-source';
+import { clearSessionSaveTargets } from '../save-target';
 
 /** Revisions kept per document: the newest plus two recovery points behind it. */
 export const MAX_REVS_PER_DOC = 3;
@@ -111,27 +122,57 @@ export async function storageBudget(): Promise<number> {
   return MAX_TOTAL_BYTES;
 }
 
-/** Delete every revision of one document. Caller owns the transaction. */
-async function deleteBlobsOf(tx: IDBTransaction, docId: string): Promise<void> {
+/** Delete all history data and its disk link atomically. Caller owns the transaction. */
+async function deleteDocumentData(tx: IDBTransaction, docId: string): Promise<void> {
   const store = tx.objectStore(BLOBS_STORE);
   const keys = await requestToPromise(store.index(BLOBS_BY_DOC).getAllKeys(IDBKeyRange.only(docId)));
   for (const key of keys) store.delete(key);
+  tx.objectStore(DOCS_STORE).delete(docId);
+  tx.objectStore(HANDLES_STORE).delete(docId);
+  tx.addEventListener('complete', () => clearSessionSaveTargets(docId), { once: true });
 }
 
-/** Drop revisions past MAX_REVS_PER_DOC, oldest first. Returns bytes freed. */
-async function trimRevisions(tx: IDBTransaction, docId: string): Promise<number> {
+/** Keep the newest revisions that fit this document's count and byte budget. */
+async function trimRevisions(
+  tx: IDBTransaction,
+  docId: string,
+  budget: number,
+): Promise<{ freed: number; count: number }> {
   const store = tx.objectStore(BLOBS_STORE);
-  const rows = ((await requestToPromise(store.index(BLOBS_BY_DOC).getAll(IDBKeyRange.only(docId)))) ??
-    []) as HistorySnapshot[];
-  if (rows.length <= MAX_REVS_PER_DOC) return 0;
-
-  const doomed = rows.sort((a, b) => a.rev - b.rev).slice(0, rows.length - MAX_REVS_PER_DOC);
-  let freed = 0;
-  for (const row of doomed) {
-    store.delete([row.docId, row.rev]);
-    freed += row.byteLength;
-  }
-  return freed;
+  // Array-valued keys sort after numeric revisions. These bounds include
+  // exactly this document's [docId, rev, byteLength] keys, even with rev gaps.
+  const range = IDBKeyRange.bound([docId], [docId, []]);
+  return new Promise<{ freed: number; count: number }>((resolve, reject) => {
+    const request = store.index(BLOBS_BY_REVISION).openKeyCursor(range, 'prev');
+    let kept = 0;
+    let freed = 0;
+    let count = 0;
+    let keptBytes = 0;
+    let retaining = true;
+    request.onerror = () => reject(request.error ?? new Error('Revision cursor failed'));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve({ freed, count });
+        return;
+      }
+      try {
+        const byteLength = (cursor.key as [string, number, number])[2];
+        if (retaining && kept < MAX_REVS_PER_DOC && keptBytes + byteLength <= budget) {
+          kept += 1;
+          keptBytes += byteLength;
+        } else {
+          retaining = false;
+          store.delete(cursor.primaryKey);
+          freed += byteLength;
+          count += 1;
+        }
+        cursor.continue();
+      } catch (error) {
+        reject(error);
+      }
+    };
+  });
 }
 
 /**
@@ -139,12 +180,22 @@ async function trimRevisions(tx: IDBTransaction, docId: string): Promise<number>
  * caller already has: expiry has to be something the browser does on its own,
  * not something that waits for the user to visit a page.
  */
-async function sweepExpired(tx: IDBTransaction, now: number): Promise<string[]> {
-  const docs = await readAllDocs(tx);
-  const expired = docs.filter((doc) => expiresAt(doc) <= now);
+async function sweepExpired(tx: IDBTransaction, now: number, protectedId?: string): Promise<string[]> {
+  // A recent snapshot cannot expire, regardless of when it was last opened.
+  // Read only old snapshot metadata, then keep the opening-time renewal rule.
+  const docs = (await requestToPromise(
+    tx
+      .objectStore(DOCS_STORE)
+      .index(DOCS_BY_UPDATED)
+      .getAll(IDBKeyRange.upperBound(now - MAX_AGE_MS)),
+  )) as HistoryDoc[];
+  // The forward index orders timestamp ties by ascending primary key, just
+  // like getAll did. A stable sort preserves the returned expiry ID order.
+  const expired = docs
+    .filter((doc) => doc.id !== protectedId && expiresAt(doc) <= now)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
   for (const doc of expired) {
-    await deleteBlobsOf(tx, doc.id);
-    tx.objectStore(DOCS_STORE).delete(doc.id);
+    await deleteDocumentData(tx, doc.id);
   }
   return expired.map((doc) => doc.id);
 }
@@ -163,18 +214,48 @@ async function enforceBudget(tx: IDBTransaction, budget: number, protectedId: st
 
   for (const doc of candidates) {
     if (total <= budget) break;
-    await deleteBlobsOf(tx, doc.id);
-    tx.objectStore(DOCS_STORE).delete(doc.id);
+    await deleteDocumentData(tx, doc.id);
     total -= doc.totalBytes || 0;
   }
 }
 
-async function writeSnapshot(payload: Uint8Array, input: SnapshotInput, budget: number): Promise<HistoryDoc | null> {
+/** Keep an owner's cancelled export from committing or evicting recovery data. */
+function watchSnapshotCancellation(tx: IDBTransaction, signal?: AbortSignal): boolean {
+  if (!signal) return true;
+  const abort = (): void => {
+    try {
+      tx.abort();
+    } catch {
+      /* Already committed or aborted. */
+    }
+  };
+  if (signal.aborted) {
+    abort();
+    return false;
+  }
+  const cleanup = (): void => signal.removeEventListener('abort', abort);
+  signal.addEventListener('abort', abort, { once: true });
+  tx.addEventListener('complete', cleanup, { once: true });
+  tx.addEventListener('abort', cleanup, { once: true });
+  return true;
+}
+
+async function writeSnapshot(
+  payload: Uint8Array,
+  input: SnapshotInput,
+  budget: number,
+  signal?: AbortSignal,
+  quotaRetry = false,
+): Promise<HistoryDoc | null> {
   const byteLength = payload.byteLength;
   const now = stamp();
   const title = input.title.trim() || 'Untitled';
 
-  return withStores([DOCS_STORE, BLOBS_STORE], 'readwrite', async (tx) => {
+  return withStores([DOCS_STORE, BLOBS_STORE, HANDLES_STORE], 'readwrite', async (tx) => {
+    if (!watchSnapshotCancellation(tx, signal)) return null;
+    // Reclaim and replace in one transaction: a failed retry must not consume
+    // another document's only recovery point without storing this snapshot.
+    if (quotaRetry && !(await evictColdest(tx, input.id))) return null;
     const docs = tx.objectStore(DOCS_STORE);
     const existing = input.id ? ((await requestToPromise(docs.get(input.id))) as HistoryDoc | undefined) : undefined;
 
@@ -211,11 +292,12 @@ async function writeSnapshot(payload: Uint8Array, input: SnapshotInput, budget: 
 
     // Expiry first: room freed by documents that were due to go anyway is room
     // the budget does not have to take from documents that are still current.
-    await sweepExpired(tx, now);
+    // Its old metadata can be expired while these new bytes are being written.
+    await sweepExpired(tx, now, doc.id);
 
-    const freed = await trimRevisions(tx, doc.id);
-    doc.totalBytes -= freed;
-    doc.revCount = Math.min(doc.revCount, MAX_REVS_PER_DOC);
+    const trimmed = await trimRevisions(tx, doc.id, budget);
+    doc.totalBytes -= trimmed.freed;
+    doc.revCount -= trimmed.count;
     docs.put(doc);
 
     await enforceBudget(tx, budget, doc.id);
@@ -225,47 +307,48 @@ async function writeSnapshot(payload: Uint8Array, input: SnapshotInput, budget: 
 
 /**
  * Append a snapshot, enforcing retention in the same transaction.
+ * An optional owner signal cancels pending writes and uncommitted eviction;
+ * cancellation returns null and never rolls back an already committed write.
  *
  * Returns the stored metadata row, or null when the snapshot could not be
  * kept -- the caller (the autosave scheduler) treats that as "stop trying and
  * tell the user", because an autosave that fails in silence is worse than one
  * that was never switched on.
  */
-export async function putSnapshot(input: SnapshotInput): Promise<HistoryDoc | null> {
+export async function putSnapshot(input: SnapshotInput, signal?: AbortSignal): Promise<HistoryDoc | null> {
+  if (signal?.aborted) return null;
   const budget = await storageBudget();
+  if (signal?.aborted) return null;
+  // File/Blob sizes are available without allocating another full byte buffer.
+  // Reject an impossible snapshot before reading it, retaining existing recovery.
+  const inputSize = 'byteLength' in input.bytes ? input.bytes.byteLength : input.bytes.size;
+  if (inputSize > budget) return null;
   const payload = await toBytes(input.bytes);
+  if (signal?.aborted) return null;
+  // No eviction can make an individually oversized snapshot fit. Preserve the
+  // existing library (including the current document's previous recovery).
+  if (payload.byteLength > budget) return null;
   try {
-    return await writeSnapshot(payload, input, budget);
+    return await writeSnapshot(payload, input, budget, signal);
   } catch (error) {
-    if (!isQuotaError(error)) return null;
-    // Out of room: drop the coldest document and try once. Retrying forever
-    // would trade the user's whole library for one snapshot.
-    const evicted = await evictColdest(input.id);
-    if (!evicted) return null;
+    if (signal?.aborted || !isQuotaError(error)) return null;
+    // Retry once with transactional eviction. A second failure rolls back the
+    // eviction along with the new snapshot, retaining the previous recovery.
     try {
-      return await writeSnapshot(payload, input, budget);
+      return await writeSnapshot(payload, input, budget, signal, true);
     } catch {
       return null;
     }
   }
 }
 
-/** Delete the least-recently-opened document. Returns false when there is none. */
-async function evictColdest(protectedId?: string): Promise<boolean> {
-  try {
-    return (
-      (await withStores([DOCS_STORE, BLOBS_STORE], 'readwrite', async (tx) => {
-        const docs = (await readAllDocs(tx)).filter((doc) => doc.id !== protectedId);
-        if (!docs.length) return false;
-        const coldest = docs.sort((a, b) => a.lastOpenedAt - b.lastOpenedAt)[0];
-        await deleteBlobsOf(tx, coldest.id);
-        tx.objectStore(DOCS_STORE).delete(coldest.id);
-        return true;
-      })) ?? false
-    );
-  } catch {
-    return false;
-  }
+/** Delete the coldest document within the caller's replacement transaction. */
+async function evictColdest(tx: IDBTransaction, protectedId?: string): Promise<boolean> {
+  const docs = (await readAllDocs(tx)).filter((doc) => doc.id !== protectedId);
+  if (!docs.length) return false;
+  const coldest = docs.sort((a, b) => a.lastOpenedAt - b.lastOpenedAt)[0];
+  await deleteDocumentData(tx, coldest.id);
+  return true;
 }
 
 /**
@@ -305,11 +388,14 @@ export async function listDocs(
   return { items: matched.slice(start, start + pageSize), total: matched.length, page, pageSize };
 }
 
-export async function getDoc(id: string): Promise<HistoryDoc | null> {
+/** A null result means storage failed; a null doc means it was truly absent. */
+export async function readDocumentRecord(id: string): Promise<{ doc: HistoryDoc | null } | null> {
   try {
     return (
       (await withStores([DOCS_STORE], 'readonly', async (tx) => {
-        return ((await requestToPromise(tx.objectStore(DOCS_STORE).get(id))) as HistoryDoc | undefined) ?? null;
+        return {
+          doc: ((await requestToPromise(tx.objectStore(DOCS_STORE).get(id))) as HistoryDoc | undefined) ?? null,
+        };
       })) ?? null
     );
   } catch {
@@ -317,16 +403,21 @@ export async function getDoc(id: string): Promise<HistoryDoc | null> {
   }
 }
 
+export async function getDoc(id: string): Promise<HistoryDoc | null> {
+  return (await readDocumentRecord(id))?.doc ?? null;
+}
+
 /** The newest stored revision of one document, bytes included. */
 export async function getLatestSnapshot(id: string): Promise<HistorySnapshot | null> {
   try {
     return (
       (await withStores([BLOBS_STORE], 'readonly', async (tx) => {
-        const rows = ((await requestToPromise(
-          tx.objectStore(BLOBS_STORE).index(BLOBS_BY_DOC).getAll(IDBKeyRange.only(id)),
-        )) ?? []) as HistorySnapshot[];
-        if (!rows.length) return null;
-        return rows.sort((a, b) => b.rev - a.rev)[0];
+        // Equal index keys are ordered by the [docId, rev] primary key, so a
+        // reverse cursor clones only the highest revision and never advances.
+        const cursor = await requestToPromise(
+          tx.objectStore(BLOBS_STORE).index(BLOBS_BY_DOC).openCursor(IDBKeyRange.only(id), 'prev'),
+        );
+        return (cursor?.value as HistorySnapshot | undefined) ?? null;
       })) ?? null
     );
   } catch {
@@ -337,13 +428,13 @@ export async function getLatestSnapshot(id: string): Promise<HistorySnapshot | n
 /** Remove one document and every revision of it. */
 export async function deleteDoc(id: string): Promise<boolean> {
   try {
-    return (
-      (await withStores([DOCS_STORE, BLOBS_STORE], 'readwrite', async (tx) => {
-        await deleteBlobsOf(tx, id);
-        tx.objectStore(DOCS_STORE).delete(id);
+    const originalsDeleted = await deleteDocumentSources(id);
+    const historyDeleted =
+      (await withStores([DOCS_STORE, BLOBS_STORE, HANDLES_STORE], 'readwrite', async (tx) => {
+        await deleteDocumentData(tx, id);
         return true;
-      })) ?? false
-    );
+      })) ?? false;
+    return originalsDeleted && historyDeleted;
   } catch {
     return false;
   }
@@ -356,13 +447,16 @@ export async function deleteDoc(id: string): Promise<boolean> {
  */
 export async function clearAllHistory(): Promise<boolean> {
   try {
-    return (
-      (await withStores([DOCS_STORE, BLOBS_STORE], 'readwrite', async (tx) => {
+    const originalsDeleted = await deleteDocumentSources();
+    const historyDeleted =
+      (await withStores([DOCS_STORE, BLOBS_STORE, HANDLES_STORE], 'readwrite', async (tx) => {
         tx.objectStore(DOCS_STORE).clear();
         tx.objectStore(BLOBS_STORE).clear();
+        tx.objectStore(HANDLES_STORE).clear();
+        tx.addEventListener('complete', () => clearSessionSaveTargets(), { once: true });
         return true;
-      })) ?? false
-    );
+      })) ?? false;
+    return originalsDeleted && historyDeleted;
   } catch {
     return false;
   }
@@ -412,7 +506,10 @@ export function resetHistoryClockForTests(): void {
 
 export async function pruneExpired(): Promise<string[]> {
   try {
-    return (await withStores([DOCS_STORE, BLOBS_STORE], 'readwrite', (tx) => sweepExpired(tx, Date.now()))) ?? [];
+    return (
+      (await withStores([DOCS_STORE, BLOBS_STORE, HANDLES_STORE], 'readwrite', (tx) => sweepExpired(tx, Date.now()))) ??
+      []
+    );
   } catch {
     return [];
   }

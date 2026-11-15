@@ -306,7 +306,16 @@ const nextSlot = (() => {
 // already there: after the first pass there is nothing proprietary left to
 // swap, but the families would still be added.
 const toAdd = ADDED_FAMILIES.filter(({ family }) => !infos.some((row) => row[0] === family));
-if (!toAdd.length && !proprietary.size) {
+// Calibri used to ship regular-only. Once its regular face points at Carlito,
+// leaving the other styles absent makes shaping use Carlito's real bold while
+// rasterisation uses a synthetic bold of its regular face: glyph IDs differ.
+// Repair already-swept catalogs too, before the no-op exit.
+const calibri = infos[rowOf('Calibri')];
+const carlito = infos[rowOf('Carlito')];
+const calibriStyleRepairs = Object.values(FACE_SLOT)
+  .filter((idx) => carlito?.[idx] >= 0 && calibri && calibri[idx] < 0)
+  .map((idx) => ({ row: calibri, idx, to: [carlito[idx], carlito[idx + 1]] }));
+if (!toAdd.length && !proprietary.size && !calibriStyleRepairs.length) {
   console.log('catalog is already swept: no proprietary faces, no families to add');
   process.exit(0);
 }
@@ -398,9 +407,13 @@ console.log(`proprietary faces: ${proprietary.size} files, ${totalMb([...proprie
 console.log(`replacements added: ${added.length} families, ${addedMb} MB`);
 console.log(`swaps planned: ${swaps.length} faces across ${new Set(swaps.map((s) => s.family)).size} families`);
 console.log(`bold faces gained: ${boldAdditions.length} Chinese families that shipped regular-only`);
+console.log(`Calibri style aliases repaired: ${calibriStyleRepairs.length}`);
 if (CHECK_ONLY) {
   for (const s of swaps) {
     console.log(`  ${s.family.padEnd(22)} ${s.face.padEnd(5)} ${s.from} -> position ${s.to[0]} (${files[s.to[0]]})`);
+  }
+  for (const s of calibriStyleRepairs) {
+    console.log(`  Calibri style slot ${s.idx} -> position ${s.to[0]} (${files[s.to[0]]})`);
   }
   process.exit(0);
 }
@@ -417,7 +430,7 @@ for (const { family, faces } of added) {
   }
 }
 
-for (const s of [...swaps, ...boldAdditions]) {
+for (const s of [...swaps, ...boldAdditions, ...calibriStyleRepairs]) {
   s.row[s.idx] = s.to[0];
   s.row[s.idx + 1] = s.to[1];
 }

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { t } from '@ranuts/shared/i18n';
+import { createDocumentAgentTools } from '../../lib/agent-plugin/document-agent-tools';
+import { agentTools } from '../../lib/agent-plugin/tools';
+import { historyToTurns } from '../../lib/agent-plugin/ui/storage';
+import { ChatView } from '../../packages/chat-ui/src/chat-view';
 import { AgentChatController, type ChatTurn } from '../../lib/agent-plugin/ui/controller';
 import type { AgentTool } from '@ranuts/agent-core/types';
 import type { LLMMessage, LLMProvider, LLMResponse } from '@ranuts/agent-core/llm/types';
@@ -9,6 +13,99 @@ const textResponse = (text: string): LLMResponse => ({
   toolCalls: [],
   stopReason: 'end_turn',
   assistant: { role: 'assistant', content: [{ type: 'text', text }] },
+});
+
+it('preserves visible interrupted prose and safe error guidance after a streaming failure', async () => {
+  let saved: LLMMessage[] = [];
+  const turns: ChatTurn[] = [];
+  const provider: LLMProvider = {
+    name: 'test',
+    isReady: () => true,
+    chat: async () => textResponse('unused'),
+    chatStream: async (_messages, _tools, delta) => {
+      delta('<think>private reasoning</think>visible fragment');
+      throw new Error('network failed secret=private');
+    },
+  };
+  const controller = new AgentChatController(provider, (turn) => turns.push(turn), {
+    onAgentDelta: () => {},
+    storage: {
+      load: () => saved,
+      save: (messages) => {
+        saved = structuredClone(messages);
+      },
+      clear: () => {},
+    },
+  });
+  await controller.send('question');
+  expect(saved).toEqual([
+    { role: 'user', content: 'question' },
+    { role: 'assistant', content: 'visible fragment', interrupted: true },
+    { role: 'assistant', content: t('agentRequestFailed'), hostGuidance: 'error' },
+  ]);
+  expect(historyToTurns(saved).slice(-2)).toEqual([
+    { role: 'agent', text: 'visible fragment', interrupted: true },
+    { role: 'error', text: t('agentRequestFailed') },
+  ]);
+  expect(turns.at(-1)).toEqual({ role: 'error', text: t('agentRequestFailed') });
+  expect(JSON.stringify(saved)).not.toContain('private');
+  const restored = new ChatView({ onSend: () => {}, onApplyMessage: async () => 'verified' });
+  restored.el.querySelector<HTMLElement>('.cui-messages')!.scrollTo = vi.fn();
+  for (const turn of historyToTurns(saved)) restored.append(turn);
+  expect(restored.getLastAnswer()).toBe('');
+  expect(restored.el.querySelector('[data-interrupted]')?.textContent).toContain('visible fragment');
+  expect(restored.el.querySelector('.cui-apply')).toBeNull();
+  expect(restored.el.querySelector('.cui-copy')).not.toBeNull();
+});
+
+it('does not duplicate host history after a model failure and retry', async () => {
+  let reject!: (error: Error) => void;
+  const save = vi.fn();
+  let calls = 0;
+  const provider: LLMProvider = {
+    name: 'test',
+    isReady: () => true,
+    chat: async () =>
+      ++calls === 1
+        ? new Promise((_resolve, fail) => {
+            reject = fail;
+          })
+        : textResponse('answer'),
+  };
+  const controller = new AgentChatController(provider, () => {}, {
+    storage: { load: () => [], save, clear: () => {} },
+  });
+  const run = controller.send('question');
+  await vi.waitFor(() => expect(reject).toBeTypeOf('function'));
+  controller.recordExternalMessages([{ role: 'assistant', content: 'host operation' }]);
+  reject(new Error('model failed'));
+  await run;
+  await controller.send('retry');
+  expect(save.mock.calls.at(-1)![0].filter((message: LLMMessage) => message.content === 'host operation')).toHaveLength(
+    1,
+  );
+});
+
+it('preserves host-operation history arriving during a model turn', async () => {
+  let resolve!: (response: LLMResponse) => void;
+  const save = vi.fn();
+  const provider: LLMProvider = {
+    name: 'test',
+    isReady: () => true,
+    chat: () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  };
+  const controller = new AgentChatController(provider, () => {}, {
+    storage: { load: () => [], save, clear: () => {} },
+  });
+  const run = controller.send('question');
+  await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
+  controller.recordExternalMessages([{ role: 'assistant', content: 'verified external operation' }]);
+  resolve(textResponse('answer'));
+  await run;
+  expect(save.mock.calls.at(-1)![0]).toContainEqual({ role: 'assistant', content: 'verified external operation' });
 });
 
 const toolResponse = (id: string, name: string, input: Record<string, unknown>): LLMResponse => ({
@@ -60,6 +157,91 @@ function collect(provider: LLMProvider, options = {}) {
 }
 
 describe('AgentChatController', () => {
+  it('returns and persists host preflight guidance without invoking the model or tools', async () => {
+    let saved: LLMMessage[] = [];
+    const provider = scripted([toolResponse('must-not-run', 'write', {})]);
+    const write = vi.fn(async () => ({ status: 'verified' }));
+    const { controller, turns } = collect(provider, {
+      tools: { write: makeTool('write', write) },
+      prepareRun: async () => ({ tools: {}, reply: 'Body editing is unavailable; no change was made.' }),
+      storage: {
+        load: () => saved,
+        save: (messages: LLMMessage[]) => {
+          saved = structuredClone(messages);
+        },
+        clear: () => {},
+      },
+    });
+    await controller.send('Change body text');
+    expect(provider.chat).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(turns.at(-1)).toEqual({ role: 'tool', text: 'Body editing is unavailable; no change was made.' });
+    expect(historyToTurns(saved).at(-1)).toEqual(turns.at(-1));
+  });
+
+  it('stops while preflight is pending without publishing its late reply or starting inference', async () => {
+    let finish!: (value: { tools: Record<string, AgentTool>; reply: string }) => void;
+    const provider = scripted([textResponse('must-not-run')]);
+    const { controller, turns } = collect(provider, {
+      prepareRun: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    });
+    const pending = controller.send('request');
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    controller.stop();
+    finish({ tools: {}, reply: 'late host guidance' });
+    await pending;
+    expect(provider.chat).not.toHaveBeenCalled();
+    expect(turns).toEqual([
+      { role: 'user', text: 'request' },
+      { role: 'status', text: t('agentStopped') },
+    ]);
+  });
+  it('disposes pending requests without clearing persisted history or saving late results', async () => {
+    let finish!: (response: LLMResponse) => void;
+    const provider: LLMProvider = {
+      name: 'test',
+      isReady: () => true,
+      chat: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    };
+    const storage = { load: () => [], save: vi.fn(), clear: vi.fn() };
+    const { controller, turns } = collect(provider, { tools: {}, storage });
+    const pending = controller.send('old request');
+    await Promise.resolve();
+    controller.dispose();
+    finish(textResponse('late answer'));
+    await pending;
+    expect(turns).toHaveLength(1);
+    expect(storage.save).toHaveBeenCalledExactlyOnceWith([{ role: 'user', content: 'old request' }]);
+    expect(storage.clear).not.toHaveBeenCalled();
+  });
+  it('does not restore cleared history or display late output when reset during a pending request', async () => {
+    let finish!: (response: LLMResponse) => void;
+    const provider: LLMProvider = {
+      name: 'test',
+      isReady: () => true,
+      chat: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    };
+    const storage = { load: () => [], save: vi.fn(), clear: vi.fn() };
+    const { controller, turns } = collect(provider, { tools: {}, storage });
+    const pending = controller.send('old request');
+    await Promise.resolve();
+    controller.reset();
+    const count = turns.length;
+    finish(textResponse('late answer'));
+    await pending;
+    expect(turns).toHaveLength(count);
+    expect(storage.save).toHaveBeenCalledTimes(1);
+    expect(storage.clear).toHaveBeenCalledTimes(1);
+  });
   it('ignores empty input', async () => {
     const { controller, turns } = collect(scripted([textResponse('x')]), { tools: {} });
     await controller.send('   ');
@@ -75,6 +257,16 @@ describe('AgentChatController', () => {
       { role: 'agent', text: 'done editing' },
     ]);
   });
+  it('offers recovery rather than leaving a blank answer when the model only emits protocol text', async () => {
+    const { controller, turns } = collect(scripted([textResponse('[{"name":"get_selection","arguments":{}}]')]), {
+      tools: {},
+    });
+    await controller.send('hello');
+    expect(turns).toEqual([
+      { role: 'user', text: 'hello' },
+      { role: 'error', text: t('agentRequestFailed') },
+    ]);
+  });
 
   it('emits a tool turn when the agent calls a tool', async () => {
     const tools = { insert_text: makeTool('insert_text', async () => ({ inserted: true })) };
@@ -83,7 +275,7 @@ describe('AgentChatController', () => {
     await controller.send('insert hi');
     expect(turns).toEqual([
       { role: 'user', text: 'insert hi' },
-      { role: 'tool', text: t('agentToolCallPrefix') + 'insert_text' },
+      { role: 'tool', text: t('agentUpdateDocument') },
       { role: 'agent', text: 'inserted' },
     ]);
   });
@@ -97,15 +289,77 @@ describe('AgentChatController', () => {
     const provider = scripted([toolResponse('t1', 'boom', {}), textResponse('recovered')]);
     const { turns, controller } = collect(provider, { tools });
     await controller.send('go');
-    expect(turns).toContainEqual({ role: 'error', text: t('agentToolErrorPrefix') + 'editor not ready' });
+    expect(turns).toContainEqual({ role: 'error', text: t('agentRequestFailed') });
   });
 
-  it('emits an error turn when the iteration cap is hit', async () => {
-    const tools = { loop: makeTool('loop', async () => ({})) };
-    const provider = scripted([toolResponse('t', 'loop', {})]);
+  it('reports one verified change when a native task repeats it, without a duplicate failure', async () => {
+    let writes = 0;
+    let saved: LLMMessage[] = [];
+    const tools = {
+      write: makeTool('write', async () => {
+        writes++;
+        return { status: 'verified' };
+      }),
+    };
+    const provider = scripted([toolResponse('first', 'write', {}), toolResponse('repeat', 'write', {})]);
+    const { controller, turns } = collect(provider, {
+      tools,
+      storage: {
+        load: () => saved,
+        save: (messages: LLMMessage[]) => {
+          saved = structuredClone(messages);
+        },
+        clear: () => {},
+      },
+    });
+    await controller.send('write');
+    expect(writes).toBe(1);
+    expect(turns.filter((turn) => turn.role === 'error')).toEqual([]);
+    expect(turns.at(-1)).toEqual({ role: 'tool', text: t('agentTaskRepeatStopped', { count: 1 }) });
+    expect(historyToTurns(saved).at(-1)).toEqual(turns.at(-1));
+    expect(historyToTurns(saved).filter((turn) => turn.role === 'error')).toEqual([]);
+  });
+
+  it('reports only verified mutations when a native task reaches its iteration limit', async () => {
+    const tools = {
+      write: makeTool('write', async () => ({ status: 'verified' })),
+      read: { ...makeTool('read', async () => ({ status: 'verified' })), readOnlyHint: true },
+    };
+    const provider = scripted([toolResponse('write', 'write', {}), toolResponse('read', 'read', {})]);
     const { controller, turns } = collect(provider, { tools, maxIterations: 2 });
-    await controller.send('go');
-    expect(turns).toContainEqual({ role: 'error', text: t('agentMaxSteps') });
+    await controller.send('write and read');
+    expect(turns.filter((turn) => turn.role === 'error')).toEqual([]);
+    expect(turns.at(-1)).toEqual({ role: 'tool', text: t('agentTaskLimitStopped', { count: 1 }) });
+  });
+
+  it('preserves verified changes and reports an interrupted remainder after a provider failure', async () => {
+    let saved: LLMMessage[] = [];
+    let calls = 0;
+    const write = vi.fn(async () => ({ status: 'verified' }));
+    const provider: LLMProvider = {
+      name: 'test',
+      isReady: () => true,
+      chat: async () => {
+        if (++calls === 1) return toolResponse('write', 'write', {});
+        throw new Error('network failed secret=private');
+      },
+    };
+    const { controller, turns } = collect(provider, {
+      tools: { write: makeTool('write', write) },
+      storage: {
+        load: () => saved,
+        save: (messages: LLMMessage[]) => {
+          saved = structuredClone(messages);
+        },
+        clear: () => {},
+      },
+    });
+    await controller.send('write then summarize');
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(turns.at(-1)).toEqual({ role: 'error', text: t('agentTaskPartialFailed', { count: 1 }) });
+    expect(turns.at(-1)?.text).toContain('Approved changes applied: 1.');
+    expect(historyToTurns(saved).at(-1)).toEqual(turns.at(-1));
+    expect(JSON.stringify(saved)).not.toContain('private');
   });
 
   it('emits an error turn when the provider throws', async () => {
@@ -118,7 +372,7 @@ describe('AgentChatController', () => {
     };
     const { controller, turns } = collect(provider, { tools: {} });
     await controller.send('go');
-    expect(turns).toContainEqual({ role: 'error', text: '401 unauthorized' });
+    expect(turns).toContainEqual({ role: 'error', text: t('agentRequestFailed') });
     expect(controller.isRunning()).toBe(false);
   });
 
@@ -154,7 +408,7 @@ describe('AgentChatController', () => {
     resolveChat(); // first chat returns a tool call; next iteration sees the abort
     await pending;
 
-    expect(turns).toContainEqual({ role: 'error', text: t('agentStopped') });
+    expect(turns).toContainEqual({ role: 'status', text: t('agentStopped') });
     expect(controller.isRunning()).toBe(false);
   });
 
@@ -247,4 +501,628 @@ describe('AgentChatController', () => {
     // The restored history precedes the new user message in what the model sees.
     expect(snapshots[0]).toEqual([...prior, { role: 'user', content: 'next' }]);
   });
+});
+
+it('forwards backend statistics without persisting them as conversation messages', async () => {
+  const usage = { completionTokens: 7, decodeTokensPerSecond: 12.5, timeToFirstTokenMs: 200 };
+  const stats = vi.fn(),
+    save = vi.fn();
+  const provider: LLMProvider = {
+    name: 'test',
+    isReady: () => true,
+    chat: async () => ({ ...textResponse('answer'), usage }),
+  };
+  const controller = new AgentChatController(provider, () => {}, {
+    onUsage: stats,
+    storage: { load: () => [], save, clear: () => {} },
+  });
+  await controller.send('question');
+  expect(stats).toHaveBeenCalledWith(usage);
+  expect(JSON.stringify(save.mock.calls)).not.toContain('decodeTokensPerSecond');
+});
+
+it('ignores statistics from a backend completion arriving after Stop', async () => {
+  let finish!: (response: LLMResponse) => void;
+  const stats = vi.fn();
+  const provider: LLMProvider = {
+    name: 'test',
+    isReady: () => true,
+    chat: () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  };
+  const controller = new AgentChatController(provider, () => {}, { onUsage: stats });
+  const pending = controller.send('question');
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+  controller.stop();
+  finish({ ...textResponse('late answer'), usage: { completionTokens: 7, decodeTokensPerSecond: 12.5 } });
+  await pending;
+  expect(stats).not.toHaveBeenCalled();
+});
+
+it('labels a rejected cancelled request as stopped rather than a model failure', async () => {
+  let calls = 0;
+  const provider: LLMProvider = {
+    name: 'test',
+    isReady: () => true,
+    chat: (_messages, _tools, signal) =>
+      ++calls === 1
+        ? new Promise((_resolve, reject) =>
+            signal?.addEventListener('abort', () => reject(signal.reason), { once: true }),
+          )
+        : Promise.resolve(textResponse('Recovered')),
+  };
+  const { controller, turns } = collect(provider);
+  const pending = controller.send('go');
+  await Promise.resolve();
+  controller.stop();
+  await pending;
+  expect(turns).toContainEqual({ role: 'status', text: t('agentStopped') });
+  expect(controller.isRunning()).toBe(false);
+  await controller.send('Try again');
+  expect(turns.at(-1)).toEqual({ role: 'agent', text: 'Recovered' });
+  expect(turns.some((turn) => turn.role === 'error')).toBe(false);
+});
+
+it('preserves a completed tool exchange when the following model call fails', async () => {
+  let saved: LLMMessage[] = [];
+  let call = 0;
+  const requests: LLMMessage[][] = [];
+  const execute = vi.fn(async () => ({ applied: true }));
+  const provider: LLMProvider = {
+    name: 'test',
+    isReady: () => true,
+    chat: async (messages) => {
+      requests.push(structuredClone(messages));
+      if (++call === 1) return toolResponse('write-once', 'write', { text: '中文🧾' });
+      if (call === 2) throw new Error('model failed after document update');
+      return textResponse('already applied');
+    },
+  };
+  const storage = {
+    load: () => saved,
+    save: (messages: LLMMessage[]) => {
+      saved = structuredClone(messages);
+    },
+    clear: () => {},
+  };
+  const controller = new AgentChatController(provider, () => {}, {
+    storage,
+    tools: { write: makeTool('write', execute) },
+  });
+  await controller.send('write it');
+  expect(saved).toEqual([
+    { role: 'user', content: 'write it' },
+    toolResponse('write-once', 'write', { text: '中文🧾' }).assistant,
+    {
+      role: 'user',
+      content: [{ type: 'tool_result', toolUseId: 'write-once', content: '{"applied":true}', isError: false }],
+    },
+  ]);
+  await controller.send('what happened?');
+  expect(requests[2].slice(0, 3)).toEqual(saved.slice(0, 3));
+  expect(execute).toHaveBeenCalledTimes(1);
+});
+
+it('does not restore a completed tool checkpoint into a reset conversation', async () => {
+  let finish!: (result: unknown) => void;
+  const save = vi.fn();
+  const clear = vi.fn();
+  const execute = vi.fn(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const controller = new AgentChatController(
+    { name: 'test', isReady: () => true, chat: async () => toolResponse('pending', 'write', {}) },
+    () => {},
+    {
+      storage: { load: () => [], save, clear },
+      tools: { write: makeTool('write', execute) },
+    },
+  );
+  const run = controller.send('write');
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+  controller.reset();
+  finish({ applied: true });
+  await run;
+  expect(save).toHaveBeenCalledTimes(1);
+  expect(clear).toHaveBeenCalledTimes(1);
+});
+
+it('saves the executed and cancelled results of a multi-tool batch after Stop', async () => {
+  let saved: LLMMessage[] = [];
+  let controller: AgentChatController;
+  const response = toolResponse('first', 'write', { text: 'first' });
+  response.toolCalls.push({ id: 'second', name: 'write', input: { text: 'second' } });
+  response.assistant.content = response.toolCalls.map((call) => ({ type: 'tool_use', ...call }));
+  const execute = vi.fn(async () => {
+    controller.stop();
+    return { applied: true };
+  });
+  const provider = scripted([response]);
+  controller = new AgentChatController(provider, () => {}, {
+    tools: { write: makeTool('write', execute) },
+    storage: {
+      load: () => saved,
+      save: (messages) => {
+        saved = structuredClone(messages);
+      },
+      clear: () => {},
+    },
+  });
+  await controller.send('do both');
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(provider.chat).toHaveBeenCalledTimes(1);
+  expect(saved).toEqual([
+    { role: 'user', content: 'do both' },
+    response.assistant,
+    {
+      role: 'user',
+      content: [
+        { type: 'tool_result', toolUseId: 'first', content: '{"applied":true}', isError: false },
+        { type: 'tool_result', toolUseId: 'second', content: 'Cancelled before execution', isError: true },
+      ],
+    },
+    { role: 'assistant', content: t('agentStopped'), hostGuidance: 'status' },
+  ]);
+});
+
+it('keeps a concurrent host operation exactly once after a checkpoint and inference failure', async () => {
+  let saved: LLMMessage[] = [];
+  let reject!: (error: Error) => void;
+  let calls = 0;
+  const provider: LLMProvider = {
+    name: 'test',
+    isReady: () => true,
+    chat: async () =>
+      ++calls === 1
+        ? toolResponse('done', 'write', {})
+        : new Promise((_resolve, fail) => {
+            reject = fail;
+          }),
+  };
+  const controller = new AgentChatController(provider, () => {}, {
+    tools: { write: makeTool('write', async () => ({ applied: true })) },
+    storage: {
+      load: () => saved,
+      save: (messages) => {
+        saved = structuredClone(messages);
+      },
+      clear: () => {},
+    },
+  });
+  const run = controller.send('write');
+  await vi.waitFor(() => expect(reject).toBeTypeOf('function'));
+  const host: LLMMessage = { role: 'assistant', content: 'host operation complete' };
+  controller.recordExternalMessages([host]);
+  reject(new Error('model failed'));
+  await run;
+  expect(saved).toHaveLength(4);
+  expect(saved.at(-1)).toEqual(host);
+  expect(saved[2].content).toEqual([
+    { type: 'tool_result', toolUseId: 'done', content: '{"applied":true}', isError: false },
+  ]);
+});
+
+it.each(['reject', 'resolve'] as const)(
+  'persists visible interrupted prose after %s cancellation and supplies it to the next turn',
+  async (mode) => {
+    let saved: LLMMessage[] = [{ role: 'user', content: 'earlier' }, textResponse('previous').assistant];
+    let finish!: () => void;
+    const requests: LLMMessage[][] = [];
+    let calls = 0;
+    const provider: LLMProvider = {
+      name: 'test',
+      isReady: () => true,
+      chat: async () => textResponse('unused'),
+      chatStream: (messages, _tools, delta, signal) => {
+        requests.push(structuredClone(messages));
+        if (++calls > 1) return Promise.resolve(textResponse('next'));
+        delta('<think>private reasoning</think>visible partial');
+        return new Promise((resolve, reject) => {
+          finish = () => (mode === 'reject' ? reject(signal?.reason) : resolve(textResponse('late answer')));
+        });
+      },
+    };
+    const deltas: string[] = [];
+    const storage = {
+      load: () => saved,
+      save: (messages: LLMMessage[]) => {
+        saved = structuredClone(messages);
+      },
+      clear: () => {},
+    };
+    const controller = new AgentChatController(provider, () => {}, {
+      storage,
+      onAgentDelta: (delta) => deltas.push(delta),
+    });
+    const pending = controller.send('interrupted');
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    controller.stop();
+    finish();
+    await pending;
+    expect(deltas.join('')).toBe('visible partial');
+    expect(saved.slice(0, 2)).toEqual([{ role: 'user', content: 'earlier' }, textResponse('previous').assistant]);
+    expect(saved.slice(-2)).toEqual([
+      { role: 'assistant', content: 'visible partial', interrupted: true },
+      { role: 'assistant', content: t('agentStopped'), hostGuidance: 'status' },
+    ]);
+    expect(historyToTurns(saved).slice(-2)).toEqual([
+      { role: 'agent', text: 'visible partial', interrupted: true },
+      { role: 'status', text: t('agentStopped') },
+    ]);
+    const reopened = new AgentChatController(provider, () => {}, { storage });
+    await reopened.send('new request');
+    expect(requests[1].slice(-3)).toEqual([
+      { role: 'assistant', content: 'visible partial', interrupted: true },
+      { role: 'assistant', content: t('agentStopped'), hostGuidance: 'status' },
+      { role: 'user', content: 'new request' },
+    ]);
+    expect(JSON.stringify(saved)).not.toContain('private reasoning');
+    expect(JSON.stringify(saved)).not.toContain('late answer');
+  },
+);
+
+it.each(['<think>private unfinished', '{"name":"insert_text","arguments":'])(
+  'does not reveal held content when stopped: %s',
+  async (hidden) => {
+    let saved: LLMMessage[] = [];
+    let fail!: () => void;
+    const delta = vi.fn();
+    const provider: LLMProvider = {
+      name: 'test',
+      isReady: () => true,
+      chat: async () => textResponse('unused'),
+      chatStream: (_messages, _tools, emit, signal) => {
+        emit(hidden);
+        return new Promise((_resolve, reject) => {
+          fail = () => {
+            emit('late');
+            reject(signal?.reason);
+          };
+        });
+      },
+    };
+    const controller = new AgentChatController(provider, () => {}, {
+      onAgentDelta: delta,
+      storage: {
+        load: () => [],
+        save: (messages) => {
+          saved = structuredClone(messages);
+        },
+        clear: () => {},
+      },
+    });
+    const pending = controller.send('go');
+    await vi.waitFor(() => expect(fail).toBeTypeOf('function'));
+    controller.stop();
+    fail();
+    await pending;
+    expect(delta).not.toHaveBeenCalled();
+    expect(saved).toEqual([
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: t('agentStopped'), hostGuidance: 'status' },
+    ]);
+  },
+);
+
+it.each(['cancel', 'failure'] as const)(
+  'preserves the completed tool exchange exactly once before %s',
+  async (mode) => {
+    let saved: LLMMessage[] = [];
+    let fail!: () => void;
+    let calls = 0;
+    const first = toolResponse('read', 'read_document', {});
+    first.text = 'Reading';
+    first.assistant.content = [
+      { type: 'text', text: 'Reading' },
+      { type: 'tool_use', id: 'read', name: 'read_document', input: {} },
+    ];
+    const execute = vi.fn(async () => ({ text: 'verified source' }));
+    const provider: LLMProvider = {
+      name: 'test',
+      isReady: () => true,
+      chat: async () => textResponse('unused'),
+      chatStream: (_messages, _tools, emit, signal) => {
+        if (++calls === 1) {
+          emit('Reading');
+          return Promise.resolve(first);
+        }
+        emit('Partial follow-up');
+        return new Promise((_resolve, reject) => {
+          fail = () => reject(mode === 'cancel' ? signal?.reason : new Error('private provider failure'));
+        });
+      },
+    };
+    const controller = new AgentChatController(provider, () => {}, {
+      onAgentDelta: () => {},
+      tools: { read_document: makeTool('read_document', execute) },
+      storage: {
+        load: () => [],
+        save: (messages) => {
+          saved = structuredClone(messages);
+        },
+        clear: () => {},
+      },
+    });
+    const pending = controller.send('read');
+    await vi.waitFor(() => expect(fail).toBeTypeOf('function'));
+    if (mode === 'cancel') controller.stop();
+    fail();
+    await pending;
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(saved[1]).toEqual(first.assistant);
+    expect(saved[2]).toEqual({
+      role: 'user',
+      content: [{ type: 'tool_result', toolUseId: 'read', content: '{"text":"verified source"}', isError: false }],
+    });
+    // Tool-bearing partial streams are unclassified and never shown or archived
+    // as an answer. The completed read exchange remains paired and durable.
+    expect(saved.slice(3)).toEqual(
+      mode === 'cancel' ? [{ role: 'assistant', content: t('agentStopped'), hostGuidance: 'status' }] : [],
+    );
+  },
+);
+
+it('does not display or archive unclassified follow-up after a tool response', async () => {
+  let saved: LLMMessage[] = [];
+  let fail!: () => void;
+  let calls = 0;
+  const deltas: string[] = [];
+  const provider: LLMProvider = {
+    name: 'test',
+    isReady: () => true,
+    chat: async () => textResponse('unused'),
+    chatStream: (_messages, _tools, emit, signal) => {
+      if (++calls === 1) {
+        emit('{"name":"read_document","arguments":');
+        return Promise.resolve(toolResponse('read', 'read_document', {}));
+      }
+      emit('Visible follow-up');
+      return new Promise((_resolve, reject) => {
+        fail = () => reject(signal?.reason);
+      });
+    },
+  };
+  const controller = new AgentChatController(provider, () => {}, {
+    onAgentDelta: (text) => deltas.push(text),
+    tools: { read_document: makeTool('read_document', async () => ({ text: 'source' })) },
+    storage: {
+      load: () => [],
+      save: (messages) => {
+        saved = structuredClone(messages);
+      },
+      clear: () => {},
+    },
+  });
+  const pending = controller.send('read');
+  await vi.waitFor(() => expect(fail).toBeTypeOf('function'));
+  controller.stop();
+  fail();
+  await pending;
+  expect(deltas).toEqual([]);
+  expect(saved.at(-1)).toEqual({ role: 'assistant', content: t('agentStopped'), hostGuidance: 'status' });
+  expect(saved).not.toContainEqual(expect.objectContaining({ content: 'Visible follow-up' }));
+});
+
+it('returns explicit turn outcomes including failed empty answers and tool errors', async () => {
+  const ok = collect(scripted([textResponse('answer')])).controller;
+  expect(await ok.send('go')).toMatchObject({ turnId: expect.any(String), status: 'success' });
+  expect(await collect(scripted([textResponse('')])).controller.send('go')).toMatchObject({ status: 'failed' });
+  const failed = collect(scripted([toolResponse('1', 'broken', {}), textResponse('')]), {
+    tools: {
+      broken: makeTool('broken', async () => {
+        throw new Error('tool failed');
+      }),
+    },
+  }).controller;
+  expect(await failed.send('go')).toMatchObject({ status: 'failed' });
+  const limited = collect(scripted([toolResponse('1', 'read', {})]), {
+    maxIterations: 1,
+    tools: { read: makeTool('read', async () => 'ok') },
+  }).controller;
+  expect(await limited.send('go')).toMatchObject({ status: 'limited' });
+});
+
+it('holds running through Stop settlement and suppresses late completion and repeated cancellation', async () => {
+  let finish!: (response: LLMResponse) => void;
+  let signal!: AbortSignal;
+  const abort = vi.fn(),
+    end = vi.fn(),
+    delta = vi.fn();
+  const provider: LLMProvider = {
+    name: 'held',
+    isReady: () => true,
+    chat: async () => textResponse('unused'),
+    chatStream: (_messages, _tools, onDelta, currentSignal) => {
+      signal = currentSignal!;
+      signal.addEventListener('abort', abort);
+      onDelta('partial');
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    },
+  };
+  const { controller, turns } = collect(provider, { onAgentDelta: delta, onAgentStreamEnd: end });
+  const pending = controller.send('go');
+  controller.stop();
+  controller.stop();
+  expect(controller.isRunning()).toBe(true);
+  expect(signal.aborted).toBe(true);
+  expect(abort).toHaveBeenCalledOnce();
+  expect(await controller.send('overlap')).toMatchObject({ status: 'superseded' });
+  finish(textResponse('late'));
+  expect(await pending).toMatchObject({ status: 'stopped' });
+  expect(end).not.toHaveBeenCalled();
+  expect(turns.at(-1)).toEqual({ role: 'status', text: t('agentStopped') });
+  expect(controller.isRunning()).toBe(false);
+});
+
+it('invalidates every stale run callback and finalizer while a new run owns the controller', async () => {
+  let finishOld!: (response: LLMResponse) => void, finishNew!: (response: LLMResponse) => void;
+  let calls = 0;
+  const provider: LLMProvider = {
+    name: 'held',
+    isReady: () => true,
+    chat: () =>
+      new Promise((resolve) => {
+        if (++calls === 1) finishOld = resolve;
+        else finishNew = resolve;
+      }),
+  };
+  const saved = vi.fn(),
+    context = vi.fn(),
+    usage = vi.fn();
+  const { controller, turns } = collect(provider, {
+    storage: { load: () => [], save: saved, clear: () => {} },
+    onContextTrimmed: context,
+    onUsage: usage,
+  });
+  const old = controller.send('old');
+  controller.reset();
+  const current = controller.send('new');
+  saved.mockClear();
+  finishOld({ ...textResponse('stale'), contextTrimmed: true, usage: { completionTokens: 9 } });
+  expect(await old).toMatchObject({ status: 'superseded' });
+  expect(controller.isRunning()).toBe(true);
+  expect(saved).not.toHaveBeenCalled();
+  expect(context).not.toHaveBeenCalled();
+  expect(usage).not.toHaveBeenCalled();
+  finishNew(textResponse('current'));
+  const result = await current;
+  expect(result).toMatchObject({ status: 'success' });
+  expect(controller.isRunning()).toBe(false);
+  expect(turns.at(-1)).toEqual({ role: 'agent', text: 'current' });
+  expect(saved.mock.calls.at(-1)![0]).toEqual([{ role: 'user', content: 'new' }, textResponse('current').assistant]);
+});
+
+it('fails an empty answer after ordinary read tools while accepting explicit concluding receipts', async () => {
+  const responses = [toolResponse('1', 'read', {}), textResponse('')];
+  const ordinary = collect(scripted(responses), {
+    tools: { read: { ...makeTool('read', async () => 'data'), readOnlyHint: true } },
+  }).controller;
+  expect(await ordinary.send('go')).toMatchObject({ status: 'failed' });
+  for (const [concludesTurn, expected] of [
+    [true, 'success'],
+    [vi.fn(() => true), 'success'],
+    [vi.fn(() => false), 'failed'],
+  ] as const) {
+    const controller = collect(scripted(responses), {
+      tools: { read: { ...makeTool('read', async () => 'data'), concludesTurn } },
+    }).controller;
+    expect(await controller.send('go')).toMatchObject({ status: expected });
+    if (typeof concludesTurn === 'function') expect(concludesTurn).toHaveBeenCalledOnce();
+  }
+});
+
+it('does not complete a stream when Stop is requested by its final flushed delta', async () => {
+  const end = vi.fn();
+  let saved: LLMMessage[] = [];
+  const provider: LLMProvider = {
+    name: 'held-prefix',
+    isReady: () => true,
+    chat: async () => textResponse('unused'),
+    chatStream: async (_messages, _tools, delta) => {
+      delta('[unfinished prose');
+      return textResponse('[unfinished prose');
+    },
+  };
+  const controller = new AgentChatController(provider, () => {}, {
+    onAgentDelta: () => controller.stop(),
+    onAgentStreamEnd: end,
+    storage: {
+      load: () => [],
+      save: (messages) => {
+        saved = structuredClone(messages);
+      },
+      clear: () => {},
+    },
+  });
+  expect(await controller.send('go')).toMatchObject({ status: 'stopped' });
+  expect(end).not.toHaveBeenCalled();
+  expect(saved).toContainEqual({ role: 'assistant', content: '[unfinished prose', interrupted: true });
+  expect(
+    saved.filter((message) => message.role === 'assistant' && message.content === '[unfinished prose'),
+  ).toHaveLength(1);
+});
+
+it.each(
+  (
+    [
+      { name: 'insert_text', kind: 'word', input: { text: 'body' } },
+      { name: 'add_pdf_comment', kind: 'pdf', input: { page: 1, text: 'note' } },
+      { name: 'create_slide', kind: 'slide', input: { title: 'Title', body: 'Body' } },
+    ] as const
+  ).flatMap((fixture) =>
+    (['cancelled', 'expired', 'failed', 'sent', 'verified'] as const).map((status) => ({ ...fixture, status })),
+  ),
+)('maps actual $name review $status without reporting false success', async ({ name, kind, input, status }) => {
+  const provider = scripted([toolResponse('write', name, input), textResponse('')]);
+  const tools = createDocumentAgentTools({
+    target: { context: { kind }, label: kind, selectedText: '', isCurrent: () => true },
+    readonly: false,
+    review: async (action) =>
+      status === 'failed' ? { status, action, error: new Error('failed') } : { status, action },
+    receipt: vi.fn(),
+  });
+  const { controller } = collect(provider, { tools });
+  expect(await controller.send('write')).toMatchObject({
+    status: status === 'verified' ? 'success' : status === 'cancelled' ? 'stopped' : 'failed',
+  });
+});
+
+it.each(
+  (
+    [
+      { kind: 'word', name: 'get_document_text' },
+      { kind: 'pdf', name: 'get_pdf_text' },
+    ] as const
+  ).flatMap((fixture) => [{ text: '' }, { unavailable: true }].map((result) => ({ ...fixture, result }))),
+)('fails an explicitly concluded unavailable or empty $name read $result', async ({ kind, name, result }) => {
+  const execute = vi.spyOn(agentTools[name], 'execute').mockResolvedValue(result);
+  try {
+    const tools = createDocumentAgentTools({
+      target: { context: { kind }, label: kind, selectedText: '', isCurrent: () => true },
+      readonly: false,
+      review: vi.fn(),
+      receipt: vi.fn(),
+    });
+    const controller = collect(scripted([toolResponse('read', name, {})]), { tools }).controller;
+    expect(await controller.send('read')).toMatchObject({ status: 'failed' });
+  } finally {
+    execute.mockRestore();
+  }
+});
+
+it('does not start host preflight after the user-turn callback invalidates its run', async () => {
+  const prepareRun = vi.fn(async () => ({ tools: {} }));
+  const controller = new AgentChatController(scripted([textResponse('unused')]), () => controller.reset(), {
+    prepareRun,
+  });
+  expect(await controller.send('old')).toMatchObject({ status: 'superseded' });
+  expect(prepareRun).not.toHaveBeenCalled();
+  expect(controller.isRunning()).toBe(false);
+});
+
+it('isolates read-only per-turn tools and context and bypasses native preflight', async () => {
+  const prepareRun = vi.fn(async () => ({ tools: {} }));
+  const chat = vi.fn(async (_messages: LLMMessage[], _tools: unknown[]) => textResponse('answer'));
+  const controller = new AgentChatController({ name: 'test', isReady: () => true, chat }, () => {}, {
+    prepareRun,
+    getRequestContext: () => 'ordinary context',
+  });
+  const assertCurrent = vi.fn();
+  await controller.send('read', { request: { tools: {}, getRequestContext: () => 'trusted source', assertCurrent } });
+  expect(prepareRun).not.toHaveBeenCalled();
+  expect(chat).toHaveBeenCalledOnce();
+  expect(chat.mock.calls[0][1]).toEqual([]);
+  expect(JSON.stringify(chat.mock.calls[0][0])).toContain('trusted source');
+  expect(assertCurrent).toHaveBeenCalled();
+  await controller.send('ordinary');
+  expect(prepareRun).toHaveBeenCalledOnce();
+  expect(JSON.stringify(chat.mock.calls[1][0])).toContain('ordinary context');
+  expect(JSON.stringify(chat.mock.calls[1][0])).not.toContain('trusted source');
 });

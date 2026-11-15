@@ -38,13 +38,16 @@ interface AnthropicResponse {
 export interface AnthropicStream {
   on(event: 'text', listener: (textDelta: string) => void): unknown;
   finalMessage(): Promise<AnthropicResponse>;
+  /** Optional SDK lifecycle methods; minimal injected clients need not implement them. */
+  abort?(): void;
+  off?(event: 'text', listener: (textDelta: string) => void): unknown;
 }
 
 /** The slice of the Anthropic client this provider uses (eases test mocking). */
 export interface AnthropicLike {
   messages: {
-    create(body: Record<string, unknown>): Promise<AnthropicResponse>;
-    stream?(body: Record<string, unknown>): AnthropicStream;
+    create(body: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<AnthropicResponse>;
+    stream?(body: Record<string, unknown>, options?: { signal?: AbortSignal }): AnthropicStream;
   };
 }
 
@@ -105,16 +108,20 @@ export interface AnthropicProviderOptions {
   model?: string;
   systemPrompt?: string;
   maxTokens?: number;
+  /** Total request deadline, including SDK response consumption. Defaults to five minutes. */
+  timeoutMs?: number;
   /** Inject a client (tests); otherwise one is built lazily from the API key. */
   client?: AnthropicLike;
 }
 
 export class AnthropicProvider implements LLMProvider {
+  readonly toolCallingMode = 'native' as const;
   readonly name = 'anthropic';
   private readonly apiKey?: string;
   private readonly model: string;
   private readonly systemPrompt: string;
   private readonly maxTokens: number;
+  private readonly timeoutMs: number;
   private client?: AnthropicLike;
 
   constructor(options: AnthropicProviderOptions = {}) {
@@ -122,6 +129,7 @@ export class AnthropicProvider implements LLMProvider {
     this.model = options.model ?? DEFAULT_MODEL;
     this.systemPrompt = options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
     this.maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
+    this.timeoutMs = options.timeoutMs ?? 300_000;
     this.client = options.client;
   }
 
@@ -148,24 +156,91 @@ export class AnthropicProvider implements LLMProvider {
     };
   }
 
-  async chat(messages: LLMMessage[], tools: LLMToolDef[]): Promise<LLMResponse> {
-    const response = await this.getClient().messages.create(this.requestBody(messages, tools));
-    return parseAnthropicResponse(response);
+  private async request(
+    messages: LLMMessage[],
+    tools: LLMToolDef[],
+    owner?: AbortSignal,
+    onDelta?: (textDelta: string) => void,
+  ): Promise<LLMResponse> {
+    owner?.throwIfAborted();
+    if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0 || this.timeoutMs > 2_147_483_647)
+      throw new RangeError('Provider timeout must be a positive timer duration');
+    const controller = new AbortController();
+    const forwardAbort = () => controller.abort(owner?.reason);
+    owner?.addEventListener('abort', forwardAbort, { once: true });
+    let stream: AnthropicStream | undefined;
+    let streamStopped = false;
+    let active = true;
+    const stopStream = () => {
+      if (!stream || streamStopped) return;
+      streamStopped = true;
+      // Host clients may throw during cleanup; retain the initiating failure.
+      try {
+        stream.abort?.();
+      } catch {}
+    };
+    let onAbort: () => void = () => {};
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => {
+        stopStream();
+        reject(controller.signal.reason);
+      };
+      controller.signal.addEventListener('abort', onAbort, { once: true });
+    });
+    const timer = setTimeout(
+      () => controller.abort(new DOMException('AI request timed out', 'TimeoutError')),
+      this.timeoutMs,
+    );
+    const listener = (delta: string) => {
+      if (!active || controller.signal.aborted) return;
+      try {
+        onDelta!(delta);
+      } catch (error) {
+        controller.abort(error);
+      }
+    };
+    try {
+      const pending = (async () => {
+        const client = this.getClient();
+        const body = this.requestBody(messages, tools);
+        if (!onDelta || !client.messages.stream) return client.messages.create(body, { signal: controller.signal });
+        // The SDK's own timeout covers headers, not finalMessage() consumption.
+        stream = client.messages.stream(body, { signal: controller.signal });
+        if (controller.signal.aborted) stopStream();
+        controller.signal.throwIfAborted();
+        // Observe rejection before attaching callbacks: minimal host clients may
+        // emit synchronously, and callbacks can stop or throw reentrantly.
+        const final = stream.finalMessage();
+        stream.on('text', listener);
+        return final;
+      })();
+      const response = await Promise.race([pending, aborted]);
+      controller.signal.throwIfAborted();
+      return parseAnthropicResponse(response);
+    } catch (error) {
+      if (!controller.signal.aborted) controller.abort(error);
+      throw controller.signal.reason;
+    } finally {
+      active = false;
+      clearTimeout(timer);
+      owner?.removeEventListener('abort', forwardAbort);
+      controller.signal.removeEventListener('abort', onAbort);
+      try {
+        stream?.off?.('text', listener);
+      } catch {}
+    }
+  }
+
+  async chat(messages: LLMMessage[], tools: LLMToolDef[], signal?: AbortSignal): Promise<LLMResponse> {
+    return this.request(messages, tools, signal);
   }
 
   async chatStream(
     messages: LLMMessage[],
     tools: LLMToolDef[],
     onDelta: (textDelta: string) => void,
+    signal?: AbortSignal,
   ): Promise<LLMResponse> {
-    const client = this.getClient();
-    // The SDK's messages.stream() emits incremental "text" events and resolves
-    // the full message via finalMessage(), which parses exactly like create().
-    if (!client.messages.stream) {
-      return this.chat(messages, tools);
-    }
-    const stream = client.messages.stream(this.requestBody(messages, tools));
-    stream.on('text', (delta) => onDelta(delta));
-    return parseAnthropicResponse(await stream.finalMessage());
+    return this.request(messages, tools, signal, onDelta);
   }
 }

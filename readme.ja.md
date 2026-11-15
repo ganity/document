@@ -14,6 +14,7 @@
     <img src="https://img.shields.io/badge/Live-edit.chaxus.com-brightgreen" alt="Live site">
   </a>
 </p>
+
 <p align="center">
   <a href="readme.md">English</a> |
   <a href="readme.zh.md">简体中文</a> |
@@ -25,47 +26,34 @@
   <a href="readme.fa.md">فارسی</a>
 </p>
 
-Word・Excel・PowerPoint のファイルを、ブラウザーのタブだけで開いて編集できます。サーバーはありません。OnlyOffice
-エンジンとその WASM コンバーターは訪問者自身の端末で動くので、ドキュメントがアップロードされることはなく、
-アカウントも不要です。
+**あなたと AI エージェントのための、オープンソースの文書ワークスペース。**
 
-**公開サイト: [edit.chaxus.com](https://edit.chaxus.com/)**
+ブラウザーで Word、Excel、PowerPoint を開き、編集・変換・保存し、PDF に注釈を追加。基本的な文書処理は端末内で行い、アカウントも Office のインストールも不要です。
+
+必要に応じて AI アシスタント（Experimental Beta）、WebMCP によるエージェントの文書ツール呼び出し、PWA インストールを利用できます。キャッシュ済みの編集リソースはオフラインでも使え、自分でホストしたりアプリに組み込んだりできます。
+
+**オンラインで試す：[edit.chaxus.com](https://edit.chaxus.com/)**
 
 ---
 
 ## ✨ 特長
 
-- 🔒 **何もアップロードしない** — 変換も編集も書き出しも、すべてタブの中で完結します
-- 📝 **プレビューではなく本物の編集** — DOCX・XLSX・PPTX・CSV に加え、ODF・RTF・TXT と旧来のバイナリ形式にも対応。PDF は開いて注釈を付けられます
-- 🕓 **タブを閉じても失われない** — 編集内容はお使いのブラウザーに自動保存され、7 日間保管、いつでも削除できます（[詳しく](#-データは端末から出ません)）
-- 📴 **オフラインでも動く** — PWA としてインストール可能。初回訪問のあとはネットワーク不要です
-- 🌍 **多言語** — サイトの表示言語は 8 種類、エディター自体は 45 種類
-- 🧩 **組み込める** — iframe 連携のための postMessage API を完備
-- 🤖 **エージェント対応** — WebMCP ツールを公開し、ブラウザー内の AI エージェントがドキュメントを開く・変換する・読むことができます
-- 🚀 **どこにでも配置できる** — 静的ビルド。任意の Web サーバーに置くファイル群です
-
----
+- **ローカルで編集・変換。** 文書を端末内で処理。編集や変換のためのアップロードは不要です。
+- **好きな方法で保存。** 対応ブラウザーでは選んだファイルに保存、それ以外はダウンロード。このブラウザーで最近の作業を再開できます。
+- **AI と作業（Experimental Beta）。** 文章の下書きや推敲、表のデータ操作、スライド作成、現在の PDF ページへの質問に。変更を確認してから適用できます。
+- **エージェントから文書ツールを呼び出し。** [WebMCP](docs/reference.md#webmcp-agent-tools) 対応ブラウザーでは、AI エージェントが文書を開き、変換・書き出しを行い、文字文書の本文を読めます。
+- **PWA としてインストール。** アプリのように使え、キャッシュ済みの編集リソースはオフラインでも利用できます。
+- **自分でホスト・組み込み。** 静的サイトとして配信するか、iframe API でアプリに組み込めます。
 
 ## 🚀 はじめかた
 
-**そのまま使う:** [edit.chaxus.com](https://edit.chaxus.com/) — インストール不要です。
+[文書を作成](https://edit.chaxus.com/editor?new=docx&locale=ja-JP) · [表計算を作成](https://edit.chaxus.com/editor?new=xlsx&locale=ja-JP) · [スライドを作成](https://edit.chaxus.com/editor?new=pptx&locale=ja-JP)
 
-**Docker で自分で動かす:**
+自分の環境で実行するには：
 
 ```bash
 docker run -d --name document -p 8080:80 ghcr.io/ranuts/document:latest
 ```
-
-**ソースから動かす:**
-
-```bash
-git clone https://github.com/ranuts/document.git
-cd document
-pnpm install
-pnpm run dev
-```
-
----
 
 ## 📄 対応形式
 
@@ -76,177 +64,63 @@ pnpm run dev
 | プレゼンテーション | `.pptx`              | `.ppt` `.odp`               |
 | PDF                | 注釈・入力・書き出し | `.pdf`                      |
 
-いずれも PDF に書き出せます。CSV は書き出し時も元の文字コードを保ちます（開くときに
-UTF-8・GB18030・Latin-1 を判別します）。
+対応文書は PDF に書き出せます。
 
----
+多言語 UI、ライト・ダークテーマ、読み取り専用プレビューにも対応しています。
 
-## 🔗 ルートと URL パラメーター
+## 🔐 ローカル編集とデータの扱い
 
-| ルート                | 内容                                                             |
-| --------------------- | ---------------------------------------------------------------- |
-| `/`                   | ランディングページ。何かを開くまでエディターは読み込まれません。 |
-| `/editor`             | エディター本体。                                                 |
-| `/history`            | このブラウザーが保持しているドキュメント（下記参照）。           |
-| `/help`, `/changelog` | `content/` 以下の Markdown から生成されます。                    |
+復元用コピーは最後の編集・閲覧から 7 日間、このブラウザーに保存されます。[保存済み文書](https://edit.chaxus.com/history)から削除できます。バックアップではないため、大切なファイルは書き出してください。
 
-`/editor` のパラメーター:
+外部 AI サービスにはリクエストに必要な内容が送信されます。端末内モデルはローカルで処理します。音声入力はオンライン音声サービスを使う場合があり、埋め込み時の書き出しはホストアプリが扱います。
 
-| パラメーター | 説明                                                                                                                                 |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `src=<url>`  | URL からドキュメントを開く（その URL が CORS を許可している必要があります）                                                          |
-| `file=<url>` | 同じ意味の旧表記。両方あるとこちらが優先されます                                                                                     |
-| `new=docx`   | 空のドキュメントを新規作成（`docx`・`xlsx`・`pptx`）                                                                                 |
-| `doc=<id>`   | このブラウザーの履歴からドキュメントを再度開く。エディターが自身の ID をここに入れるため、再読み込みしても同じドキュメントに戻ります |
-| `readonly=1` | 閲覧専用で開く。編集と書き出しは無効になります                                                                                       |
-| `embed=1`    | 埋め込みモード。親ページが postMessage でエディターを操作します                                                                      |
-| `locale=ja`  | 表示言語                                                                                                                             |
+ブラウザーの AI エージェントは、文書ツールから受け取った内容の処理方法を管理します。
 
----
+## ドキュメントと連携
 
-## 🔐 データは端末から出ません
+[使い方](https://edit.chaxus.com/ja/help) · [ホスティング・URL・連携](docs/reference.md) · [埋め込み API](docs/embed-api.md) · [フォント](docs/fonts.md)
 
-ドキュメントがどこかに送られることはありません。端末に残るのは次の 2 つだけで、
-どちらもご自身で削除できます。
+オフライン利用にはキャッシュ済みの編集リソースが必要です。未取得のリソースやリモートファイルには通信が必要です。
 
-- **編集したものの控え。** 作業中、エディターはドキュメントをこのブラウザー（IndexedDB）に
-  保存します。再読み込みしても、タブを閉じても、クラッシュしても作業が失われないためです。
-  次にエディターを開いたときに復元を提案します。これは作業を再開するためのものであり、
-  バックアップではありません。残したいものは書き出してください。
-- **7 日で消えます。** 各ドキュメントは、最後に編集または開いた日から 7 日後に、
-  あなたが戻ってこなくても自動的に削除されます。
+## AI 文書アシスタント (Experimental Beta)
 
-[`/history`](https://edit.chaxus.com/history) に保管中のものが一覧で表示されます。
-各行の削除、まとめて削除、自動保存を完全に切るスイッチがあります。ここでの削除は
-すぐに反映されます。共用のパソコンでは、まずこのページをご覧ください。
+文章の下書きや推敲、表のデータ操作、スライド作成、現在の PDF ページへの質問に。変更を確認してから適用し、必要なら元に戻せます。
 
----
+端末内モデルを選ぶか、自分の AI サービスに接続できます。対応ブラウザーでは音声入力も使えます。
 
-## 🧩 iframe への組み込み
+**Experimental Beta.** 初期状態では無効です。回答や変更が間違うことがあるため、重要な結果は確認してください。
 
-エディターを埋め込み、postMessage で操作します。よくある分担は、認証と保存は自社システム、
-編集は iframe、という形です。
+<details>
+<summary>4 つのデモを見る</summary>
 
-```html
-<iframe
-  id="documentEditor"
-  src="https://your-deployment/editor?embed=1"
-  style="width: 100%; height: 720px; border: 0"
-></iframe>
-```
+| Word                                                                                                                                              | Excel                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [![作成・挿入・要約・取り消し](docs/media/ai-demos/word-ai.jpg)](https://github.com/user-attachments/assets/8d1d6386-e33a-45f2-b968-b8695c8f7da9) | [![入力・計算・並べ替え・取り消し](docs/media/ai-demos/excel-ai.jpg)](https://github.com/user-attachments/assets/5bb253d7-3cc5-4f31-989e-0c88dcb1615c) |
+| **作成・挿入・要約・取り消し**                                                                                                                    | **入力・計算・並べ替え・取り消し**                                                                                                                     |
+| PowerPoint                                                                                                                                        | PDF                                                                                                                                                    |
+| [![作成・複製・取り消し](docs/media/ai-demos/pptx-ai.jpg)](https://github.com/user-attachments/assets/db3fc7a7-b54e-4147-a7ca-e7f16243618e)       | [![読み取り・質問・メモの確認](docs/media/ai-demos/pdf-ai.jpg)](https://github.com/user-attachments/assets/f01c2da6-0669-4111-87c1-c4440f4a60e9)       |
+| **作成・複製・取り消し**                                                                                                                          | **読み取り・質問・メモの確認**                                                                                                                         |
 
-```js
-// ドキュメントを開く
-iframe.contentWindow.postMessage(
-  { id: '1', type: 'document:open-url', payload: { url: 'https://example.com/doc.xlsx' } },
-  'https://your-deployment',
-);
+英語 UI、読み込み済みのローカル Qwen3 4B モデルで通常速度の全工程を収録。応答時間はモデルと端末によって異なります。
 
-// 結果を受け取る
-window.addEventListener('message', (e) => {
-  if (e.data?.type === 'document:opened') console.log('編集できます');
-  if (e.data?.type === 'document:saved') uploadFile(e.data.payload.file);
-});
-```
+[動画・字幕・説明](docs/media/ai-demos/README.md)
 
-埋め込みモードのエディターはローカルに履歴を残しません。ドキュメントは親ページのものだからです。
+PDF は選択可能な文字とページ注釈に対応。スキャン画像の文字認識や本文の書き換えには対応しません。
 
-→ **[API 仕様の全文](docs/embed-api.md)** — すべてのメッセージ種別、オリジンの許可リスト、
-読み取り専用モード、保存の流れ。
-
-コンポーネントとしても提供しています。このプロジェクトは
-[@ranui/preview](https://www.npmjs.com/package/@ranui/preview)
-（[ドキュメント](https://chaxus.github.io/ran/src/ranui/preview/)）のドキュメントプレビューを支えています。
-
----
-
-## 🤖 ブラウザー内 AI エージェント（WebMCP）
-
-ブラウザーが対応していれば、画面を操作する代わりにエージェントが直接呼び出せるツールを
-ページが登録します。`open_document_url`・`open_document_buffer`・`create_document`・
-`save_document`・`get_document_text`・`set_readonly`・`get_document_state` です。
-この場合もドキュメントは端末から出ません。取得も変換もブラウザー自身が行います。
-API がない環境では何も起きません。
-
----
-
-## 🚀 デプロイ
-
-静的ビルドです。ランタイムもデータベースもありません。
-
-```bash
-pnpm build   # dist/ に出力されます
-```
-
-### 静的ホスティング（Cloudflare Pages・Nginx・Vercel・Netlify など）
-
-`dist/` をアップロードしてください。`public/_headers` にサイトが前提とするキャッシュの
-取り決めが書かれています（ハッシュ付きアセットは不変、Service Worker は決してキャッシュしない）。
-これを読まないホストでも動作しますが、再検証の回数が増えます。
-
-Nginx では、未知のルートのフォールバックとして `index.html` を返してください。
-
-```nginx
-location / {
-  root /var/www/document;
-  try_files $uri $uri/ /index.html;
-}
-```
-
-### GitHub Pages
-
-`.github/workflows/pages-build-site.yml` が `main` への push でビルドとデプロイを行います。
-リポジトリの設定で Pages を有効にし、ソースに **GitHub Actions** を選んでください。
-
-### Docker
-
-```bash
-# 基本
-docker run -d --name document -p 8080:80 ghcr.io/ranuts/document:latest
-
-# HTTPS と Basic 認証つき
-docker run -d --name document -p 443:443 \
-  -v /path/to/certs:/ssl \
-  -e SERVER_BASIC_AUTH='user:$2y$...' \
-  -e SERVER_HTTP2_TLS=true \
-  -e SERVER_HTTP2_TLS_CERT=/ssl/cert.pem \
-  -e SERVER_HTTP2_TLS_KEY=/ssl/key.pem \
-  ghcr.io/ranuts/document:latest
-```
-
-`SERVER_BASIC_AUTH` には BCrypt ハッシュを渡します。シェルのエスケープのため `$` は
-二重にしてください。イメージのキャッシュ設定は `sws.toml` にあります。
-
----
-
-## 🔤 フォント
-
-同梱の OnlyOffice ビルドは、フォントライブラリを `public/fonts/` に置き、
-`public/sdkjs/common/AllFonts.js` で索引しています。フォントは必要になった時点で
-取得されるため、ドキュメントが実際に使うものだけが読み込まれます。
-
-→ **[フォント管理ガイド](docs/fonts.md)** — 索引付きカタログのワイヤ形式、各レジストリ、
-`bin/font-catalog.mjs` を使ったフォントの追加方法。
-
----
+</details>
 
 ## 🛠 開発
 
+ソースから実行：
+
 ```bash
+git clone https://github.com/ranuts/document.git
+cd document
 pnpm install --frozen-lockfile
-pnpm run dev            # 開発サーバー
-pnpm run build          # 本番ビルド（bin/build.sh）
-pnpm run lint           # oxlint + tsc + docker の設定確認
-pnpm run test           # ユニットテスト（Vitest）
-pnpm run test:e2e       # エンドツーエンドテスト（Playwright、実際のエディターと実際の WASM）
+pnpm run dev
 ```
 
-エンドツーエンドのテストはモックではなく本物のエディターとコンバーターを動かします。
-ドキュメントの往復、埋め込みプロトコル、復元の流れまで含みます。`docs/explorations/` には、
-一見不可解な実装がなぜそうなっているのかが記録されています。エディター連携に手を入れる前に
-目を通す価値があります。
-
----
+フィードバックや貢献を歓迎します： [Issues](https://github.com/ranuts/document/issues) · [Pull requests](https://github.com/ranuts/document/pulls)
 
 ## 📚 土台にしているもの
 
@@ -255,21 +129,27 @@ pnpm run test:e2e       # エンドツーエンドテスト（Playwright、実�
 - [ranui / ranuts](https://github.com/chaxus/ran) — このサイトを組み立てているデザインシステムとユーティリティ
 - [se-office](https://github.com/Qihoo360/se-office)、[onlyoffice-web-local](https://github.com/sweetwisdom/onlyoffice-web-local) — ドキュメントサーバーなしで OnlyOffice を動かす先行事例
 
-## 🤝 コントリビューション
-
-Issue と Pull Request を歓迎します。`main` は保護されています。ブランチで作業して
-PR を作成してください。lint、ユニットテスト、3 種類のエンドツーエンドテスト（開発サーバー、
-Cloudflare Pages の挙動、本番 Docker イメージ）が実行されます。
-
 ## 📄 ライセンス
 
-[AGPL-3.0](LICENSE)。
+[AGPL-3.0](LICENSE) · [NOTICE](NOTICE)
 
-本プロジェクトは ONLYOFFICE（sdkjs と web-apps、(c) Ascensio System SIA）の二次的著作物です。
-上流は AGPL に第 7 条の追加条項を付して配布されており、元の製品ロゴを保持すること、そして
-商標に関する権利は許諾されないことが定められています。そのためエディタのヘッダーにある
-ONLYOFFICE ロゴと「バージョン情報」パネルはそのまま残しています。条項の全文、使用している
-vendor のバージョン、加えた変更の一覧は [NOTICE](NOTICE) を参照してください。
+<details>
+<summary>上流の告知と商標</summary>
 
-ONLYOFFICE は Ascensio System SIA の商標です。本プロジェクトは公式の ONLYOFFICE 製品では
-なく、Ascensio System SIA との提携も推奨関係もありません。
+本プロジェクトは ONLYOFFICE エディター（sdkjs と web-apps、著作権者 Ascensio
+System SIA）の変更版です。画面には中立的な機能名を使用し、製品ロゴやブランドの
+宣伝を表示しません。著作権、ライセンス、変更内容、ソースコードへのリンクは
+「バージョン情報」と [NOTICE](NOTICE) に残しています。第三者の GUI 素材と
+フォントには引き続きそれぞれのライセンスが適用されます。
+
+ロゴを表示しない判断は、AGPLv3 第 7 条に関する FSF の公開解釈を参考にしています。
+裁判所の判決や完全な適法性の保証ではありません。上流の立場と判断の根拠は NOTICE
+を参照してください。
+
+ONLYOFFICE は Ascensio System SIA の商標です。本プロジェクトは公式製品ではなく、
+同社との提携、スポンサー関係、推奨関係はありません。法律上の表示とソースへの参照に
+含まれる名称は上流の技術を示すもので、本プロジェクトのブランドではありません。
+
+PWA とブラウザーのタブには、独自に描いた中立的な文書アイコンを使用します。上流のロゴ、商標、プロジェクトの頭文字は含みません。
+
+</details>

@@ -40,6 +40,11 @@
  */
 
 import { waitForFontSystem, type FontSystemWindow } from '../font-system';
+import { installEastAsianPunctuationGuard } from './east-asian-punctuation';
+import { installMixedScriptLineMetricsGuard } from './mixed-script-line-metrics';
+import { installImageColorKeyGuard } from './image-color-key';
+import { installEastAsianVerticalGuard } from './east-asian-vertical';
+import { installImageSoftEdgeGuard } from './image-soft-edge';
 
 /** How long an idle worker is kept before its heap is handed back. */
 const IDLE_TERMINATE_MS = 30_000;
@@ -59,7 +64,7 @@ const FONT_STYLE_SUFFIX: Record<string, string> = {
   indexI: '_Italic',
 };
 
-type FontSource = { fileName: string; url: string };
+type FontSource = { fileName: string; url: string; bytes?: Uint8Array };
 type MediaPayload = { bytes: Uint8Array; mime: string };
 
 type X2TConverterLike = {
@@ -71,9 +76,12 @@ type X2TConverterLike = {
 type FrameScope = Window & {
   AscCommon?: {
     x2t?: X2TConverterLike;
-    g_font_loader?: { fontFilesPath?: string; fontFiles?: Array<{ Id?: string }> };
+    g_font_loader?: { fontFilesPath?: string; fontFiles?: Array<{ Id?: string; GetStreamIndex?: () => number }> };
   };
-  AscFonts?: { g_font_infos?: Array<Record<string, unknown>> };
+  AscFonts?: {
+    g_font_infos?: Array<Record<string, unknown>>;
+    getFontStream?: (index: number) => { data?: Uint8Array; size?: number };
+  };
   Worker?: typeof Worker;
   __ooX2tWorkerGuard?: boolean;
 };
@@ -177,7 +185,7 @@ async function fontSourcesWhenReady(win: FrameScope): Promise<FontSource[]> {
   return fontSources(win);
 }
 
-function fontSources(win: FrameScope): FontSource[] {
+export function fontSources(win: FrameScope): FontSource[] {
   const infos = win.AscFonts?.g_font_infos;
   const loader = win.AscCommon?.g_font_loader;
   if (!infos || !loader?.fontFiles) return [];
@@ -193,10 +201,32 @@ function fontSources(win: FrameScope): FontSource[] {
       if (typeof index !== 'number' || index === -1) continue;
       const file = loader.fontFiles[index];
       if (!file?.Id) continue;
-      sources.push({
+      const source: FontSource = {
         fileName: `${String(info.Name)}${FONT_STYLE_SUFFIX[field]}.ttf`,
         url: new URL(base + file.Id, win.location.href).href,
-      });
+      };
+      // ASCW3 is already embedded in the SDK; copying its small decoded
+      // stream avoids an otherwise first-use network request during Save.
+      // Ordinary font streams remain URLs rather than copying their heaps.
+      if (info.Name === 'ASCW3' && file.GetStreamIndex && win.AscFonts?.getFontStream) {
+        try {
+          const stream = win.AscFonts.getFontStream(file.GetStreamIndex());
+          const { data, size } = stream;
+          if (
+            data &&
+            ArrayBuffer.isView(data) &&
+            Number.isInteger(size) &&
+            size! > 0 &&
+            size! <= 65536 &&
+            size! <= data.byteLength
+          ) {
+            source.bytes = new Uint8Array(data.buffer, data.byteOffset, size).slice();
+          }
+        } catch {
+          // A missing/stale vendor stream retains the existing URL fallback.
+        }
+      }
+      sources.push(source);
     }
   }
   return sources;
@@ -314,6 +344,15 @@ export function installX2tWorkerProxy(win: Window): boolean {
 
   converter.convertToBin = async (data: unknown, fileName?: string, fileExt?: string) => {
     if (data == null) throw new Error('Document conversion failed: nothing to convert');
+    // Font-slot selection must be installed before the SDK shapes imported
+    // text; onDocumentReady is too late because the first layout is cached.
+    if (frame.location.pathname.includes('/presentationeditor/')) {
+      installEastAsianPunctuationGuard(frame);
+      installMixedScriptLineMetricsGuard(frame);
+      installImageColorKeyGuard(frame);
+      installEastAsianVerticalGuard(frame);
+      installImageSoftEdgeGuard(frame);
+    }
     // Whatever could not be resolved here crosses as it came: the worker runs
     // the same handleFileData, so a form this does not know is still the
     // vendor's to interpret rather than ours to reject.

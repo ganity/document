@@ -25,13 +25,20 @@
 <iframe src="https://your-deployment/editor?embed=1&deckwise=1&embedOrigin=https://your-system.example.com"></iframe>
 ```
 
-该模式只接受带 `.pptx` 文件的 `document:open-buffer`，并且只允许保存为 PPTX。用户点击
+该模式接受所有已支持格式的 `document:open-buffer`：Word（`docx`、`doc`、`odt`、`rtf`、`txt`）、
+Excel（`xlsx`、`xls`、`ods`、`csv`）、PowerPoint（`pptx`、`ppt`、`odp`）及 PDF（`pdf`）。
+设置 `readonly: true` 即可预览。不支持的格式返回 `document:error`，由宿主提供系统默认应用打开入口。
+格式识别不保证所有文件都能转换；部分较大的 PPT、ODP 文件仍可能被底层转换引擎拒绝。
+URL 输入仍被禁止。保存使用文档自身格式，旧版 `doc`、`xls`、`ppt` 分别保存为 `docx`、`xlsx`、`pptx`，
+禁止导出成其他格式。用户点击
 内部保存按钮时，编辑器会向宿主发送 `document:save-requested`；宿主随后发送正常的
-`document:save` 命令，编辑后的 PPTX 最终通过 `document:saved` 返回。
+`document:save` 命令，编辑后的文件最终通过 `document:saved` 返回。
 
 > 编辑器位于 `/editor`，首页 `/` 是纯静态落地页。旧链接 `/?embed=1`、`/?src=`、`/?file=`、`/?new=` 仍然有效——`/` 会带同样的参数跳转到 `/editor`。
 
-如需限制只接受指定来源的消息，增加 `embedOrigin`：
+控制命令只接受直接父窗口发送的消息。未设置 `embedOrigin` 时，首次接受的父窗口命令会
+固定本次编辑器页面的来源，之后来自其他来源的命令会被忽略。
+如需从启动时就限制只接受指定来源的消息，增加 `embedOrigin`：
 
 ```html
 <iframe
@@ -159,6 +166,8 @@ sendEditorCommand('document:save', { targetExt: 'XLSX' }); // XLSX、DOCX、PPTX
 sendEditorCommand('document:save', { targetExt: 'XLSX', returnOriginalOnTimeout: true });
 ```
 
+DeckWise 模式下，SDK 正在导出时会拒绝编辑工具的上下文查询/命令、打开另一文档和第二次保存，即使未设置 `requireHostCommit`。普通导出成功后解除限制；设置 `requireHostCommit: true` 的保存仍需同 ID 的 `document:commit-save` 确认持久化。导出期间的手工修改仍保留为未保存。
+
 父页面拿到文件后上传：
 
 ```js
@@ -227,3 +236,107 @@ window.addEventListener('message', (event) => {
 | iframe → 父页面 | `document:dirty-changed`    | 未保存标志翻转（`{ dirty }`）              |
 | iframe → 父页面 | `document:state`            | 当前状态响应                               |
 | iframe → 父页面 | `document:error`            | 操作失败                                   |
+
+## DeckWise 页面保存凭据（可选）
+
+绑定 PPTX 的 `document:open-buffer` 可传 `trackPageLineage: true`。
+本次打开的内容就绪回调为真实页面对象建立会话 token，计算打开文件 hash。
+`document:context.pageLineage` 返回 `sourceSha256`、打开时 `openedPageTokens`
+和当前顺序 `pageTokens`；重排保留 token，复制/新增得到新 token，重开全部失效。
+它们不是逻辑 pageId；源 hash 始终指会话打开字节，不随后续保存前移。
+
+Host 确认式保存的 `document:saved.pageLineage` 另含协议
+`deckwise-office-page-lineage/1`、绑定、`saveRequestId` 和实际导出文件
+`outputSha256`。导出或 hash 期间历史、页面或会话变化时不发凭据。
+无凭据仍保护保存文件，禁止按页码迁移教学。
+
+仅可信 Host 可从绑定 Office view 直接消费凭据；必须独立核对会话、保存请求、
+源/输出 hash 和绑定打开源的完整 mapping，并与保存 revision 一起持久化。
+renderer/模型 JSON 不是可信凭据。新增/删除/复制页需显式身份审核，当前 helper
+拒绝自动关联；页级凭据不能继承对象 ID。改稿后的教学/音频仍走 review/CAS。
+页级凭据本身不扩展工具能力，也不代表 A 的持久化已接入。
+
+另增有限原生能力 `set_slide_font_size`：仅在当前页一个普通文本对象有非空
+文字选区、可写且 SDK 设置/回读接口可用时通告。输入只接受
+`{ fontSizePt }`，范围 1–96 pt、步长 0.5；仍须携带最新绑定和编辑代次。
+返回 `{ fontSizePt, page, verified: true }`，并核验选区/文字未变和准确字号。
+母版、放映、忙碌、只读、缺接口或多对象选区不开放。结果不确定时检查原稿并
+使用原生撤销，不自动重试。该命令不保存；只有原三工具的旧 Office 仍可使用。
+
+`set_slide_text_color` is an optional native selection capability with input
+`{ "colorHex": "336699" }` (six uppercase RGB digits, no prefix). It uses the
+same current-slide plain-text and writable-state guards as font size. Native
+solid sRGB fill, exact text/selection and page are verified before returning
+`{ "colorHex": "336699", "page": 2, "verified": true }`. Legacy `get_Color()`
+does not reflect PPT Unifill; verification reads the calculated native text fill.
+No automatic save/retry, alpha, theme color, gradient or shape fill is supported.
+
+`set_slide_font_family` 沿用单个普通文本对象的非空文字选区限制。输入
+`{ fontFamily }`，只能选择最新 capability 的
+`inputSchema.properties.fontFamily.enum` 中准确的字体名（最多 100 个，每个
+1–128 字符）。仅通告常规、斜体、粗体、粗斜体四种字形均已加载、且原生字体
+加载器空闲时的字体，防止 SDK 异步下载结束后改到另一个选区。执行后核对准确
+字体名、文字、选区和页码，返回 `{ fontFamily, page, verified: true }`。
+字体别名可能使用已安装替代字形；此工具不下载字体、不自动保存或重试。
+
+## 原生 PNG 换图完整性
+
+现有已审核素材换图路径在原生注册前核对每个 PNG chunk 的 CRC，并要求完整且有界的 chunk、唯一 IHDR、图像数据及末尾 IEND。截断、尾随数据或校验错误会直接拒绝，不改动选中图片；不能只凭浏览器解码成功认定有效。assetId、hash 与明确保存边界保持不变。
+
+## 已审核图片传输
+
+绑定的 DeckWise 父宿主可发 `document:review-image`，载荷为 `{binding, asset}`。
+`asset` 仅含已审核 PNG 的 `assetId/sha256/mime/byteLength/width/height`；传 `null`
+撤销。响应为当前 `document:context`。这只是本会话图片选择，不授予服务端权限；
+父宿主 Main 仍须在每次执行前核对当前用户、项目成员权限、源文件和会话。
+
+`document:execute-image` 接受 `{command, bytes}`；消息 ID 必须等于既有有限
+`replace_slide_image_from_asset` 命令的 requestId，`bytes` 为当次授权取得的
+Uint8Array。普通 `document:execute` 不能复用这些字节；成功、失败和 reset 都会清理。
+最新编辑代次、支持的单图选区、只读/保存/会话、PNG 完整性和原生回读守卫仍然生效。
+响应 `document:command-result` 不代表已保存；载荷不接受凭据、URL 或本地路径。
+
+## 当前页预览
+
+当前页由原生绘制器直接绘到长边 1600 像素、保持原始比例的画布，不使用缓存低清
+缩略图。不支持的页面尺寸或缺失绘制接口会拒绝；绘制失败也恢复渲染标志、清理原生
+共享字体缓存，返回前释放临时画布。
+
+`document:render-page-preview` 接受 `{ binding, editGeneration, omitNativeText?, page? }`（可选标志必须为 boolean）。可选 `page` 为从 1 开始、最多 5000 且在源文档范围内的安全整数；直接渲染指定页，不切换当前显示页。省略时仍渲染当前页，返回 token 始终对应实际渲染页。
+`document:page-preview` 返回源 SHA-256、打开会话内的页令牌、从 1
+开始的页码、`image/png` MIME 和有界 PNG `Uint8Array`。请求必须使用最新代次及会话
+绑定的源/页面 lineage；过时代次或页面、保存进行中、未知字段、原生渲染器不可用、
+非 PNG 或超预算都会拒绝。此操作不编辑也不保存源文件。Host 可将图像作为独立单页
+候选的已审阅视觉输入，并须把源和页面身份绑定到候选。
+
+预览仅允许新打开的只读 PPTX 副本：原生撤销历史必须为空且无未保存更改。即便全部撤销也会拒绝，防止将改后的画面绑定到旧源 hash。编辑或保存后须以独立只读会话重新打开最新 clean PPTX，再获取源绑定预览。
+
+设置 `omitNativeText:true` 后，仅临时绘制器跳过原生文本，返回额外的
+`nativeTextOmitted:true`。仅支持指定页、版式和母版中的普通不透明形状及图片；
+组合、图表、表格、变形文字、签名、透明填充及外阴影在绘制前拒绝。普通预览行为不变。
+此操作不能去掉位图内嵌文字，**不自动证明清底图合格**；Host 采用为候选背景前
+仍须审阅，不支持的页面须使用另外审阅的清底图。所有源/页面/代次/只读/保存
+守卫及 1600 像素/8 MiB 限制保持不变。
+
+### 讲解与动画关联
+
+教学流程保留“添加动画”（淡入/淡出），新增卡片内“关联动画”多选下拉。
+两者均支持本句开始、本句结束、所选文字“同时”和“之后”。TTS 尚不提供字词
+时间戳，选词通过“试听定位”在真实音频进度标记开始或结束；修改讲解词后保留
+绑定并提示重新定位。取消关联不删除原生动画。当前支持单个对象只有一个有限
+原生效果的关联；多效果、循环、分组或不支持的预设在列表说明并禁用。
+临时教学放映执行完动画后才进入讲后停顿，退出恢复原 PPT 动画与历史。
+
+教学侧栏的状态行集中显示整课教学、当前页幻灯片放映、画布预览和本页教学说明
+图标，均带名称与悬停提示；说明可点击展开。讲解输入框随内容高度变化，最大
+240 像素后内部滚动。动画表单以“什么时候播放动画”说明讲解与动画先后关系，
+操作按钮采用图标和短文字，保留完整可访问名称及悬停说明；窄面板下按按钮换行，避免中文逐字竖排。
+摘要分行显示播放时机、可读对象名、中文效果与秒数。对象选择共用原生图层缩略图、已有中文别名和画布定位；无中文别名时显示实际文字或中文类型编号，英文语义描述仅保留在提示中，不猜测翻译。
+
+### 教学放映控制
+
+原生教学放映底部使用独立的深色控制条，按钮保持清晰的文字对比度。
+提供播放/暂停切换、上一页、下一页、重播本页、教师继续、退出和当前媒体进度。
+进度条可拖动，快进按钮前进 5 秒并限制在当前媒体范围内。
+有同步原生动画的讲解仅允许向前调整进度，回看使用重播本页，以保持动画状态一致。
+翻页会释放旧页媒体与动画再读取目标页；首尾页分别禁用上一页和下一页。
