@@ -24,6 +24,7 @@ concurrency:
 
 jobs:
   smoke:
+    if: github.repository == 'ranuts/document'
     name: Core E2E against production
     runs-on: ubuntu-latest
     timeout-minutes: 60

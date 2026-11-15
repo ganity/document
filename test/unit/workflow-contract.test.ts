@@ -268,6 +268,13 @@ describe('.github/workflows/prod-smoke.yml', () => {
   const editorHtml = readFileSync(resolve(ROOT, 'editor.html'), 'utf8');
   const landingHtml = readFileSync(resolve(ROOT, 'index.html'), 'utf8');
 
+  it('limits upstream site deployments and production probes to their owning repository', () => {
+    expect(src).toContain("if: github.repository == 'ranuts/document'");
+    const pages = readFileSync(resolve(WORKFLOW_DIR, 'pages-build-site.yml'), 'utf8');
+    expect(pages).toMatch(/build:\s+if: github.repository == 'ranuts\/document'/);
+    expect(pages).toMatch(/deploy:[\s\S]*needs: build/);
+  });
+
   /**
    * The deploy gate has to watch a file that CARRIES the build.
    *
