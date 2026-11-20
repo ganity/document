@@ -3,7 +3,7 @@ import { readPresentationShapeText } from './agent-plugin/slide-text-read';
 import { trackTeachingSlideCopy } from './onlyoffice/guards/slide-teaching-copy';
 import { importedSlideShapeId } from './onlyoffice/guards/slide-source-identity';
 import { getEditorApi } from './agent-plugin/editor-bridge';
-import { prepareNativeTeachingMotions } from './deckwise-native-teaching-motions';
+import { prepareNativeTeachingMotions, type SpeechMotionOwners } from './deckwise-native-teaching-motions';
 import { getReadonlyMode } from './onlyoffice/readonly';
 import { markDocumentDirty } from './unsaved-guard';
 
@@ -222,7 +222,7 @@ export function replaceNativeTeachingPage(input: {
   changed.actions = actions;
   changed.reviewState = 'review';
   return commitNativeTeaching(next, true, undefined, () =>
-    prepareNativeTeachingMotions(current.pages.findIndex((p) => p.pageId === input.pageId) + 1, actions, page.actions),
+    prepareNativeTeachingMotions(current.pages.findIndex((p) => p.pageId === input.pageId) + 1, actions, page.actions, nativeTeachingTarget, pageMotionOwners(next, input.pageId)),
   );
 }
 
@@ -319,7 +319,7 @@ export function replaceNativeTeachingRegion(input: {
   };
   input.change.assertCurrent();
   const timing = prepareNativeTeachingMotions(index + 1, changed.actions, page.actions, (id) =>
-    id === objectId ? nativeShape : nativeTeachingTarget(id),
+    id === objectId ? nativeShape : nativeTeachingTarget(id), pageMotionOwners(next, input.pageId),
   );
   return commitNativeTeaching(next, true, undefined, () => ({
     apply() {
@@ -545,6 +545,12 @@ export function replaceNativeAssessments(input: {
   return commitNativeTeaching(next, true, undefined, input.change ? () => input.change! : undefined);
 }
 
+function pageMotionOwners(next: NativeTeaching, pageId: string) {
+  const pages = (next.speechMotionOwners ?? {}) as Record<string, SpeechMotionOwners>;
+  return { legacyGenerated: !!next.generation, previous: Object.hasOwn(pages, pageId) ? pages[pageId] : undefined,
+    save: (owners: SpeechMotionOwners) => { next.speechMotionOwners = {...pages, [pageId]: owners}; } };
+}
+
 function commitNativeTeaching(
   next: NativeTeaching,
   revise = true,
@@ -566,10 +572,6 @@ function commitNativeTeaching(
   const anchor = motions[0]?.sourceSha256;
   for (const motion of motions) motion.sourceSha256 = anchor;
   if (revise) next.revision = crypto.randomUUID();
-  const xml = document.implementation.createDocument(NATIVE_TEACHING_NAMESPACE, 'teaching');
-  xml.documentElement.textContent = JSON.stringify(next);
-  const encoded = new XMLSerializer().serializeToString(xml);
-  if (encoded.length > 80 * 1024 * 1024) throw new Error('Teaching exceeds package budget');
   const { parts, logic, description, history } = session();
   const previous = parts.GetByNamespace(NATIVE_TEACHING_NAMESPACE).filter((p) => decode(p));
   const before = previous.map((part) => part.GetXml());
@@ -579,6 +581,10 @@ function commitNativeTeaching(
   if (revise) logic.StartAction(description);
   else history?.TurnOff();
   try {
+    const xml = document.implementation.createDocument(NATIVE_TEACHING_NAMESPACE, 'teaching');
+    xml.documentElement.textContent = JSON.stringify(next);
+    const encoded = new XMLSerializer().serializeToString(xml);
+    if (encoded.length > 80 * 1024 * 1024) throw new Error('Teaching exceeds package budget');
     if (mediaXml) added.push(parts.Add(mediaXml));
     added.push(parts.Add(encoded));
     previous.forEach((p) => p.Delete());
@@ -671,21 +677,24 @@ function resolveNativeSpeechAttention(current: NativeTeaching, pageId: string, a
       ids.some((id) => typeof id !== 'string' || !objects.some((o) => o.objectId === id && o.effectTargetEligible)) ||
       Object.keys(intent).some((key) => !['type', 'objectIds', 'animation'].includes(key)) ||
       (intent.animation !== undefined &&
-        !['fadeIn', 'pulse', 'zoomIn', 'slideInLeft', 'slideInRight', 'gentleRotate'].includes(
+        !['fadeIn', 'fadeOut', 'pulse', 'zoomIn', 'slideInLeft', 'slideInRight', 'gentleRotate'].includes(
           String(intent.animation),
         )) ||
       durationMs > 3600000
     )
       throw new Error('Native speech attention target or timing changed');
     const duration = Math.min(durationMs, 600);
+    const exit = intent.animation === 'fadeOut';
+    const atMs = exit ? durationMs : 0;
+    if (atMs + duration > 3600000) throw new Error('Speech animation exceeds the supported timeline');
     const reveal = ['fadeIn', 'zoomIn', 'slideInLeft', 'slideInRight'].includes(String(intent.animation));
     const added = [
       ...(intent.animation
         ? ids.map((id, index) => ({
             id: `motion-${action!.id}-${index}`,
-            atMs: 0,
-            endMs: duration,
-            trigger: { version: 1, kind: 'start' },
+            atMs,
+            endMs: atMs + duration,
+            trigger: { version: 1, kind: exit ? 'end' : 'start' },
             effect: { type: 'element_animation', elementId: id, effect: intent.animation },
           }))
         : []),
@@ -792,6 +801,7 @@ export async function adoptNativeTeachingAudio(input: {
             current.pages.findIndex((p) => p.pageId === input.pageId) + 1,
             page.actions,
             current.pages.find((p) => p.pageId === input.pageId)!.actions,
+            nativeTeachingTarget, pageMotionOwners(next, input.pageId),
           )
       : undefined;
   return commitNativeTeaching(next, true, existing ? undefined : new XMLSerializer().serializeToString(part), motions);

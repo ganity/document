@@ -82,7 +82,7 @@ export function inspectTeachingAnimations(page: number, grouped = false, mode: '
             effect.asc_getDuration() < 1 ||
             effect.asc_getDuration() > 5000 ||
             (native
-              ? !Number.isInteger(effect.asc_getDelay?.()) || effect.asc_getDelay() < 0 || effect.asc_getDelay() > 5000
+              ? !Number.isInteger(effect.asc_getDelay?.()) || effect.asc_getDelay() < 0 || effect.asc_getDelay() + effect.asc_getDuration() > 3_600_000
               : effect.asc_getDelay?.() !== 0) ||
             (effect.asc_getRepeatCount?.() ?? 1000) !== 1000 ||
             effect.asc_getRewind?.(),

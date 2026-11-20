@@ -52,7 +52,7 @@ class Timing {
     return this.effects;
   }
   createEffect(id: string, kind: number, preset: number, subtype: number) {
-    let duration = 0;
+    let duration = 0, delay = 0;
     return {
       getObjectId: () => id,
       cTn: { presetClass: kind, presetID: preset, presetSubtype: subtype, setNodeType() {} },
@@ -60,7 +60,8 @@ class Timing {
       asc_putDuration: (value: number) => {
         duration = value;
       },
-      asc_putDelay() {},
+      asc_getDelay: () => delay,
+      asc_putDelay(value: number) { delay = value; },
     };
   }
   addEffectsToMainSequence(effects: any[]) {
@@ -1101,12 +1102,14 @@ it('replaces and removes mirrored speech motions without accumulating old native
   });
   const repaired = structuredClone(actions);
   repaired[0].visualCues[0].effect.effect = 'fadeIn';
+  repaired[0].visualCues[0].atMs = 300; repaired[0].visualCues[0].endMs = 900;
   const second = replaceNativeTeachingPage({
     documentId: 'document',
     expectedRevision: first.revision,
     pageId: 'page',
     actions: repaired,
   });
+  expect(slide.timing.getAllAnimEffects().at(-1)?.asc_getDelay()).toBe(300);
   expect(slide.timing.getAllAnimEffects().map((effect) => [effect.getObjectId(), effect.cTn.presetID])).toEqual([
     ['unrelated', 10],
     ['shape-4', 10],
@@ -1121,6 +1124,25 @@ it('replaces and removes mirrored speech motions without accumulating old native
   expect(third.pages[0].actions[0].text).toBe('Before');
 });
 
+
+it('reuses a matching teacher effect without acquiring it when the speech cue is removed', () => {
+  const timing = new Timing();
+  const manual = timing.createEffect('shape-4', 1, 10, 0);
+  manual.asc_putDuration(600);
+  manual.asc_putDelay(300);
+  timing.effects.push(manual);
+  const slide = { cSld: { spTree: [{ sourceId: '4', Id: 'shape-4' }] }, timing, setTiming(value: Timing) { this.timing = value; } };
+  mount(false, [slide]);
+  const speech = { id: 'speech', type: 'speech', text: 'Before', visualCues: [{
+    id: 'cue', atMs: 300, endMs: 900, effect: { type: 'element_animation', elementId: 'object', effect: 'fadeIn' },
+  }] };
+  const update = (expectedRevision: string, actions: typeof speech[]) => replaceNativeTeachingPage({
+    documentId: 'document', expectedRevision, pageId: 'page', actions,
+  });
+  const first = update('revision', [speech]);
+  update(first.revision, [{ ...speech, visualCues: [] }]);
+  expect(slide.timing.effects).toEqual([manual]);
+});
 
 it('adopts existing audio with an eleven-part diagram focus and persists all entrance effects', async () => {
   vi.stubGlobal('crypto', webcrypto);

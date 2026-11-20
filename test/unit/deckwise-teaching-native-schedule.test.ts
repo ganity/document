@@ -10,17 +10,18 @@ function fixture(kinds: number[]) {
   const createEffect = vi.fn(() => {
     throw new Error('Playback must never invent an animation');
   });
-  const effect = (kind: number, Id: string): any => ({
+  const effect = (kind: number, Id: string, delay: number): any => ({
     Id,
     cTn: { presetClass: kind, presetID: 10, presetSubtype: 0, setNodeType() {} },
     getObjectId: () => 'shape',
     asc_getDuration: () => 600,
+    asc_getDelay: () => delay,
     asc_putDelay() {},
     isIdle: () => true,
     isAtEnd: () => false,
-    createDuplicate: () => effect(kind, `${Id}-copy`),
+    createDuplicate: () => effect(kind, `${Id}-copy`, delay),
   });
-  const effects = kinds.map((kind, index) => effect(kind, `effect-${index}`));
+  const effects = kinds.map((kind, index) => effect(kind, `effect-${index}`, index * 1000));
   const saved = { getAllAnimEffects: () => effects };
   const slide = {
     timing: saved,
@@ -95,5 +96,12 @@ it('binds entrance and exit on the same object to their actual saved native effe
   schedule.install();
   expect(f.slide.timing).toBe(schedule.timing);
   schedule.restore();
+  expect(f.slide.timing).toBe(f.saved);
+});
+
+it('identifies a stale native delay before starting the speech', () => {
+  const f = fixture([1, 2]);
+  f.saved.getAllAnimEffects()[1].asc_getDelay = () => 0;
+  expect(f.run).toThrow('与讲解时间不一致');
   expect(f.slide.timing).toBe(f.saved);
 });

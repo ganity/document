@@ -3,9 +3,16 @@ import { nativeTeachingTarget } from './deckwise-native-teaching';
 import { nativeTeachingMotionPreset, type AnimationCue } from './deckwise-teaching-animation-bindings';
 
 type Effect = {
-  cTn: { presetClass: number; presetID: number; presetSubtype?: number; setNodeType(value: number): void };
+  cTn: {
+    presetClass: number;
+    presetID: number;
+    presetSubtype?: number;
+    nodeType?: number;
+    setNodeType(value: number): void;
+  };
   getObjectId(): string;
   asc_getDuration(): number;
+  asc_getDelay(): number;
   asc_putDuration(value: number): void;
   asc_putDelay(value: number): void;
 };
@@ -19,7 +26,8 @@ type Timing = {
 };
 type Slide = { timing?: Timing | null; setTiming(value: Timing | null): void };
 
-type MotionAction = { type: string; visualCues?: unknown };
+type MotionAction = { id?: string; type: string; visualCues?: unknown };
+export type SpeechMotionOwners = { count: number; indices: Record<string, number> };
 
 /** Stage a detached timing tree; publish it with media and metadata in one native Undo action. */
 export function prepareNativeTeachingMotions(
@@ -27,6 +35,7 @@ export function prepareNativeTeachingMotions(
   actions: MotionAction[],
   previousActions: MotionAction[],
   resolveTarget: (objectId: string) => unknown = nativeTeachingTarget,
+  ownership?: { legacyGenerated?: boolean; previous?: SpeechMotionOwners; save(value: SpeechMotionOwners): void },
 ) {
   const motionGroups = (values: MotionAction[]) =>
     values
@@ -67,24 +76,60 @@ export function prepareNativeTeachingMotions(
       duration > 5000
     )
       throw new Error('Invalid native speech animation target or duration');
-    return { shapeId: shape.Id, preset, duration };
+    return { shapeId: shape.Id, preset, duration, delay: cue.atMs, cueId: cue.id };
   };
   const matches = (effect: Effect, motion: ReturnType<typeof describe>) =>
     effect.getObjectId() === motion.shapeId &&
     effect.cTn.presetClass === motion.preset.presetClass &&
     effect.cTn.presetID === motion.preset.presetId &&
     (effect.cTn.presetSubtype ?? 0) === motion.preset.subtype &&
-    effect.asc_getDuration() === motion.duration;
-  // Only previous speech mirrors can be removed; unrelated native effects stay intact.
-  for (const cue of previousGroups.flat()) {
-    const motion = describe(cue);
-    const match = existing.find((effect) => !owned.has(effect) && matches(effect, motion));
-    if (match) owned.add(match);
+    effect.asc_getDuration() === motion.duration &&
+    effect.asc_getDelay() === motion.delay;
+  const before = ownership?.previous;
+  if (before?.count === existing.length && before.indices && typeof before.indices === 'object') {
+    for (const cue of previousGroups.flat()) {
+      const index = Object.hasOwn(before.indices, cue.id) ? before.indices[cue.id] : -1;
+      if (Number.isSafeInteger(index) && existing[index] && matches(existing[index], describe(cue)))
+        owned.add(existing[index]);
+    }
+  } else if (!before && ownership && ownership.legacyGenerated) {
+    // Legacy generated lessons have no owner ledger. Require the complete original click sequence.
+    const old = previousActions
+      .filter((a) => a.type === 'speech')
+      .flatMap((a, i) =>
+        previousGroups[i].map((cue, j) => ({ cue, generated: cue.id === `motion-${a.id}-${j}`, nodeType: j ? 7 : 2 })),
+      );
+    if (
+      old.length === existing.length &&
+      old.every(
+        ({ cue, generated, nodeType }, i) =>
+          generated && existing[i].cTn.nodeType === nodeType && matches(existing[i], describe(cue)),
+      )
+    )
+      existing.forEach((effect) => owned.add(effect));
+  }
+  const layout = (list: AnimationCue[][]) =>
+    JSON.stringify(
+      list
+        .filter((g) => g.length)
+        .map((g) => g.map((c) => [c.id, c.effect.elementId, c.effect.effect, c.atMs, c.endMs])),
+    );
+  if (layout(groups) === layout(previousGroups)) {
+    const remaining = [...existing];
+    if (
+      groups.flat().every((cue) => {
+        const index = remaining.findIndex((effect) => matches(effect, describe(cue)));
+        if (index < 0) return false;
+        remaining.splice(index, 1);
+        return true;
+      })
+    )
+      return;
   }
   const additions = groups.map((group) =>
     group.flatMap((cue) => {
       const motion = describe(cue);
-      const match = existing.find((effect) => !claimed.has(effect) && matches(effect, motion));
+      const match = existing.find((effect) => !owned.has(effect) && !claimed.has(effect) && matches(effect, motion));
       if (match) {
         claimed.add(match);
         return [];
@@ -92,8 +137,11 @@ export function prepareNativeTeachingMotions(
       return [motion];
     }),
   );
-  const removals = existing.flatMap((effect, index) => (owned.has(effect) && !claimed.has(effect) ? [index] : []));
-  if (!additions.some((group) => group.length) && !removals.length) return;
+  const removals = existing.flatMap((effect, index) => (owned.has(effect) ? [index] : []));
+  if (!additions.some((group) => group.length) && !removals.length) {
+    ownership?.save({ count: existing.length, indices: {} });
+    return;
+  }
   if (actions.some((action) => action.type === 'native_animation'))
     throw new Error('Rebind legacy native animation steps before changing speech animations');
   const expectedCount = existing.length - removals.length + additions.flat().length;
@@ -101,6 +149,7 @@ export function prepareNativeTeachingMotions(
   const table = Reflect.get(context.AscCommon ?? {}, 'g_oTableId') as
     { m_aPairs?: Record<string, unknown> } | undefined;
   const previousIds = new Set(Object.keys(table?.m_aPairs ?? {}));
+  const created = new Map<string, Effect>();
   let failure: unknown;
   const timing = format.ExecuteNoHistory(
     () => {
@@ -112,11 +161,12 @@ export function prepareNativeTeachingMotions(
           next.removeEffects(removals.map((index) => copied[index]));
         }
         for (const group of additions) {
-          const effects = group.map(({ shapeId, preset, duration }, index) => {
+          const effects = group.map(({ shapeId, preset, duration, delay, cueId }, index) => {
             const effect = next.createEffect(shapeId, preset.presetClass, preset.presetId, preset.subtype, null);
             if (!effect) throw new Error('Native speech animation preset is unavailable');
             effect.asc_putDuration(duration);
-            effect.asc_putDelay(0);
+            effect.asc_putDelay(delay);
+            created.set(cueId, effect);
             effect.cTn.setNodeType(index ? 7 : 2);
             return effect;
           });
@@ -152,6 +202,17 @@ export function prepareNativeTeachingMotions(
     cleanup();
     throw failure ?? new Error('Native speech animation persistence failed');
   }
+  const finalEffects = timing.getAllAnimEffects();
+  const indices: Record<string, number> = Object.create(null);
+  for (const [cueId, effect] of created) {
+    const index = finalEffects.findIndex((e) => e === effect || e.cTn === effect.cTn);
+    if (index < 0) {
+      cleanup();
+      throw new Error('Cannot identify the saved native speech animation');
+    }
+    indices[cueId] = index;
+  }
+  ownership?.save({ count: finalEffects.length, indices });
   let applied = false;
   return {
     apply() {
