@@ -26,6 +26,7 @@ export function prepareNativeTeachingMotions(
   pageNumber: number,
   actions: MotionAction[],
   previousActions: MotionAction[],
+  resolveTarget: (objectId: string) => unknown = nativeTeachingTarget,
 ) {
   const motionGroups = (values: MotionAction[]) =>
     values
@@ -54,7 +55,7 @@ export function prepareNativeTeachingMotions(
     owned = new Set<Effect>();
   const describe = (cue: AnimationCue) => {
     const preset = nativeTeachingMotionPreset(cue.effect.effect);
-    const shape = nativeTeachingTarget(cue.effect.elementId) as { Id?: string };
+    const shape = resolveTarget(cue.effect.elementId) as { Id?: string };
     const duration = cue.endMs - cue.atMs;
     if (
       !preset ||

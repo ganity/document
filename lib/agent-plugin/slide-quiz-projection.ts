@@ -74,7 +74,9 @@ export async function prepareQuizProjection({ page, previous, next, assets }: Pr
     (e: any) =>
       group ||
       JSON.stringify(e) !== JSON.stringify(previous.elements.find((p: any) => p.id === e.id)) ||
-      e.type === 'image_layer',
+      e.type === 'image_layer' ||
+      (e.type === 'native_text' &&
+        anchorText(readSlideShapeText(byName.get(actualName(e.id)))) !== anchorText(e.content)),
   );
   const replace = new Set([
     ...changed.map((e: any) => actualName(e.id)),

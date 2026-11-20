@@ -152,26 +152,70 @@ export function createTeachingSlideshow(input: {
   canvas.id = `deckwise-teaching-show-${crypto.randomUUID()}`;
   canvas.dataset.deckwiseTeachingCanvas = '';
   // The native controller keeps this explicit canvas instead of opening its default preview.
-  canvas.style.cssText = 'position:absolute;inset:0 0 var(--teaching-controls-height,112px);';
+  canvas.style.cssText = 'position:absolute;inset:0 0 var(--teaching-controls-height,57px);';
   const controls = input.doc.createElement('nav');
   controls.setAttribute('aria-label', '教学放映控制');
   controls.style.cssText =
-    'z-index:50;position:absolute;bottom:0;left:0;right:0;min-height:112px;box-sizing:border-box;display:flex;flex-wrap:wrap;align-content:center;align-items:center;gap:8px;padding:10px 16px;background:#171c25;color:#f8fafc;font:14px/1.4 sans-serif;';
+    'z-index:50;position:absolute;bottom:0;left:0;right:0;box-sizing:border-box;background:#14171c;border-top:1px solid #30343b;color:#e8ebef;font:13px/1.4 sans-serif;';
   const style = input.doc.createElement('style');
-  style.textContent = `[data-teaching-slideshow] nav button { appearance:none;box-sizing:border-box;min-height:36px;padding:7px 12px;border:1px solid #64748b;border-radius:6px;background:#283548;color:#f8fafc;font:600 14px/20px sans-serif;cursor:pointer;white-space:nowrap; }
-    [data-teaching-slideshow] nav button:hover:not(:disabled) { background:#3c4f68; }
-    [data-teaching-slideshow] nav button:disabled { background:#202734;color:#94a3b8;border-color:#3f4b5e;cursor:default; }
-    [data-teaching-slideshow] nav button:focus-visible,[data-teaching-slideshow] nav input:focus-visible { outline:2px solid #7dd3fc;outline-offset:2px; }
+  style.textContent = `[data-teaching-slideshow] nav button { appearance:none;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:36px;padding:0 9px;border:1px solid transparent;border-radius:7px;background:transparent;color:inherit;font:500 13px/1.4 sans-serif;cursor:pointer;white-space:nowrap; }
+    [data-teaching-slideshow] nav .teaching-icon-button { width:36px;padding:0; }
+    [data-teaching-slideshow] nav button svg { width:18px;height:18px;flex:none; }
+    [data-teaching-slideshow] nav button:hover:enabled { background:#2b3039; }
+    [data-teaching-slideshow] nav [data-preview-command=skip]:enabled { background:#1c3935;color:#99e6d8; }
+    [data-teaching-slideshow] nav [data-preview-command=skip]:hover:enabled { background:#27514b; }
+    [data-teaching-slideshow] nav button:disabled { opacity:.38;cursor:default; }
+    [data-teaching-slideshow] nav button:focus-visible,[data-teaching-slideshow] nav input:focus-visible { outline:2px solid #99e6d8;outline-offset:2px; }
     [data-teaching-slideshow] nav [hidden] { display:none!important; }
-    [data-teaching-slideshow] [data-playback-seek] { display:flex;align-items:center;gap:10px;flex:1 1 100%;margin:0;color:#f8fafc;font:14px/20px sans-serif; }
-    [data-teaching-slideshow] input[type=range] { flex:1;min-width:60px;accent-color:#7dd3fc; }
-    [data-teaching-slideshow] output { color:#f8fafc;white-space:nowrap;font-variant-numeric:tabular-nums; }
-    [data-teaching-slideshow] [data-show-status] { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:80px; }`;
+    [data-teaching-slideshow] nav { display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:6px 14px;padding:6px 14px; }
+    [data-teaching-slideshow] [data-playback-transport],[data-teaching-slideshow] [data-playback-pages] { display:flex;align-items:center;gap:2px; }
+    [data-teaching-slideshow] [data-playback-transport] { grid-area:1 / 1;gap:4px; }
+    [data-teaching-slideshow] [data-playback-transport] button,[data-teaching-slideshow] nav [data-preview-command=forward] { min-height:44px; }
+    [data-teaching-slideshow] [data-playback-transport] .teaching-icon-button,[data-teaching-slideshow] nav [data-preview-command=forward] { width:44px; }
+    [data-teaching-slideshow] [data-playback-transport] svg,[data-teaching-slideshow] [data-preview-command=forward] svg { width:22px;height:22px; }
+    [data-teaching-slideshow] [data-playback-pages] { grid-area:1 / 3;justify-self:end;color:#c5cbd4;font-variant-numeric:tabular-nums;white-space:nowrap; }
+    [data-teaching-slideshow] [data-playback-pages] span { min-width:42px;text-align:center; }
+    [data-teaching-slideshow] [data-playback-seek] { grid-area:1 / 2;display:flex;align-items:center;gap:8px;min-width:0; }
+    [data-teaching-slideshow] [data-playback-speech] { color:#99e6d8;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap; }
+    [data-teaching-slideshow] nav input[type=range] { flex:1;min-width:40px;height:16px;margin:0;accent-color:#81d6c6;color-scheme:dark; }
+    [data-teaching-slideshow] nav output { color:#c5cbd4;white-space:nowrap;font:12px/1.4 ui-monospace,monospace;font-variant-numeric:tabular-nums; }
+    [data-teaching-slideshow] nav [data-preview-command=exit] { position:fixed;top:10px;right:10px;border-color:#a6afbe55;background:#14171cd9;color:#fff; }
+    [data-teaching-slideshow][data-exit-hidden] [data-preview-command=exit]:not(:focus-visible) { opacity:0;pointer-events:none; }
+    [data-teaching-slideshow] [data-native-animation-controls] { grid-row:2;grid-column:1 / -1;justify-content:center;flex-wrap:wrap; }
+    [data-teaching-slideshow] .teaching-sr-only,[data-teaching-slideshow] [data-show-status][role=status] { position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap; }
+    [data-teaching-slideshow] [data-show-status][role=alert] { position:absolute;left:12px;bottom:calc(100% + 8px);max-width:calc(100% - 24px);padding:8px 12px;border-radius:7px;background:#3a2022;color:#ffe1df; }
+    @media(max-width:600px) {
+      [data-teaching-slideshow] nav { column-gap:6px;padding-inline:8px; }
+      [data-teaching-slideshow] [data-playback-seek] { gap:5px; }
+      [data-teaching-slideshow] [data-playback-pages] .teaching-icon-button { width:24px; }
+      [data-teaching-slideshow] [data-playback-pages] span { min-width:30px; }
+    }
+    @media(max-width:480px) {
+      [data-teaching-slideshow] [data-playback-transport] { gap:2px; }
+      [data-teaching-slideshow] [data-playback-transport] .teaching-icon-button,[data-teaching-slideshow] nav [data-preview-command=teacher],[data-teaching-slideshow] nav [data-preview-command=forward] { width:34px;padding:0; }
+      [data-teaching-slideshow] nav input[type=range] { min-width:0; }
+      [data-teaching-slideshow] nav output,[data-teaching-slideshow] [data-preview-command=teacher] span { position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap; }
+    }`;
   surface.append(style);
   for (const type of ['keydown', 'keyup', 'keypress', 'pointerdown', 'mousedown', 'wheel'])
     controls.addEventListener(type, (event) => event.stopPropagation());
   surface.append(canvas, controls);
   input.doc.body.append(surface);
+  let playing = false;
+  let exitTimer: ReturnType<typeof setTimeout> | undefined;
+  const setPlaying = (active: boolean) => {
+    if (playing === active) return;
+    playing = active;
+    clearTimeout(exitTimer);
+    surface.toggleAttribute('data-exit-hidden', active);
+  };
+  const revealExit = () => {
+    if (!playing) return;
+    surface.removeAttribute('data-exit-hidden');
+    clearTimeout(exitTimer);
+    exitTimer = setTimeout(() => surface.setAttribute('data-exit-hidden', ''), 1500);
+  };
+  surface.addEventListener('pointermove', revealExit, true);
   let layoutFrame = 0;
   const Observer = input.doc.defaultView?.ResizeObserver;
   const layout = Observer
@@ -342,6 +386,8 @@ export function createTeachingSlideshow(input: {
   const dispose = () => {
     if (disposed) return;
     disposed = true;
+    clearTimeout(exitTimer);
+    surface.removeEventListener('pointermove', revealExit, true);
     layout?.disconnect();
     cancelAnimationFrame(layoutFrame);
     failPending(new Error('原生动画放映已停止'));
@@ -461,6 +507,7 @@ export function createTeachingSlideshow(input: {
     surface,
     canvas,
     controls,
+    setPlaying,
     next,
     pause,
     resume,

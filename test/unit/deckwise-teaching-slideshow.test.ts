@@ -92,6 +92,32 @@ it('starts teaching exactly once when the native canvas is ready', () => {
   expect(manager.Mode).toBe(false);
   expect(document.querySelector('[data-teaching-slideshow]')).toBeNull();
 });
+
+it('reveals the exit on pointer movement and hides it after 1.5 idle seconds during playback', () => {
+  show = createTeachingSlideshow({ doc: document, page: 1, onReady: vi.fn(), onExit: vi.fn(), onError: vi.fn() });
+  const hidden = () => show!.surface.hasAttribute('data-exit-hidden');
+  const move = () => show!.canvas.dispatchEvent(new Event('pointermove', { bubbles: true }));
+  expect(hidden()).toBe(false);
+  show.setPlaying(true);
+  expect(hidden()).toBe(true);
+  move();
+  expect(hidden()).toBe(false);
+  vi.advanceTimersByTime(1000);
+  move();
+  vi.advanceTimersByTime(1499);
+  expect(hidden()).toBe(false);
+  vi.advanceTimersByTime(1);
+  expect(hidden()).toBe(true);
+  move();
+  show.setPlaying(false);
+  vi.advanceTimersByTime(1500);
+  expect(hidden()).toBe(false);
+  show.setPlaying(true);
+  move();
+  show.dispose();
+  vi.advanceTimersByTime(1500);
+  expect(hidden()).toBe(false);
+});
 it('freezes native preparation and exits on manual page navigation', async () => {
   const ready = vi.fn(),
     exit = vi.fn(() => show?.dispose());

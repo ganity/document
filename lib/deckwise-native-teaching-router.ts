@@ -1,7 +1,9 @@
+import { canExtractBackgroundRegion, prepareBackgroundRegion } from './agent-plugin/slide-background-region';
 import { prepareAssessmentInsertion, type AssessmentProjection } from './agent-plugin/slide-assessment-insertion';
 import { prepareQuizProjection } from './agent-plugin/slide-quiz-projection';
 import { prepareAssessmentText } from './agent-plugin/slide-assessment-text';
 import { renderNativeSlide } from './deckwise-slide-preview';
+import { nativeLayerEvidence } from './agent-plugin/slide-layer-evidence';
 import { requireEditorContext } from './agent-plugin/editor-bridge';
 import { readPresentationShapeText } from './agent-plugin/slide-text-read';
 import { getReadonlyMode } from './onlyoffice/readonly';
@@ -13,6 +15,7 @@ import {
   assertNativeTeachingAnimations,
   readNativeTeaching,
   replaceNativeTeachingPage,
+  replaceNativeTeachingRegion,
   nativeTeachingAudio,
   setNativeTeachingLock,
   nativeTeachingObjects,
@@ -234,6 +237,17 @@ export async function routeNativeTeaching(
     return {
       nativeTeaching: true,
       enrichmentCapabilities: { version: 1 },
+      backgroundRegionRepair:
+        !page.locked &&
+        !teaching.enrichment?.originalPages.some((p) => p.pageId === page.pageId) &&
+        !(teaching.backgroundRegions as Record<string, unknown> | undefined)?.[page.pageId] &&
+        requirements.some(
+          (p) =>
+            p.pageId === page.pageId &&
+            (p.teaching as any)?.pageType === 'slide' &&
+            ['animation', 'spotlight'].every((effect) => (p.teaching as any).requiredEffects?.includes(effect)),
+        ) &&
+        canExtractBackgroundRegion(pageNumber),
       ...(teaching.enrichment ? { enrichment: teaching.enrichment } : {}),
       readOnly: getReadonlyMode(),
       teaching: requirements.find((p) => p.pageId === page.pageId)?.teaching,
@@ -347,7 +361,11 @@ export async function routeNativeTeaching(
     const logic = (getEditorApi() as any)?.WordControl?.m_oLogicDocument;
     const slide = logic?.Slides?.[pageNumber - 1];
     if (!slide) throw new Error('Native page unavailable');
-    return { value: { dataUrl: renderNativeSlide(slide, logic, requireEditorContext().AscCommon as any) } };
+    const layers = (await Promise.all(nativeTeachingObjects(pageNumber).map(async ({ objectId, nativeShape }) => {
+      const evidence = await nativeLayerEvidence(nativeShape);
+      return evidence ? { objectId, dataUrl: evidence.dataUrl } : undefined;
+    }))).filter(Boolean);
+    return { value: { dataUrl: renderNativeSlide(slide, logic, requireEditorContext().AscCommon as any), layers } };
   }
   if (operation === 'narration-context') {
     const api = getEditorApi() as any;
@@ -366,7 +384,7 @@ export async function routeNativeTeaching(
           height: api?.WordControl?.m_oLogicDocument?.GetHeightMM?.() ?? 0,
           notes: notes || (typeof plannedPage?.narration === 'string' ? plannedPage.narration : ''),
           visualSummary: text,
-          objects: nativeTeachingObjects(pageNumber).map(({ nativeShape, objectId, name }) => {
+          objects: await Promise.all(nativeTeachingObjects(pageNumber).map(async ({ nativeShape, objectId, name }) => {
             const shape = nativeShape as unknown as {
               x?: number;
               y?: number;
@@ -376,15 +394,17 @@ export async function routeNativeTeaching(
               isImage?(): boolean;
             };
             const text = readPresentationShapeText(nativeShape);
+            const layer = await nativeLayerEvidence(nativeShape);
             return {
               objectId,
               name,
               aliases: [name],
+              ...(layer ? { layerMetadata: layer.layerMetadata } : {}),
               text,
               kind: shape.spTree?.length ? 'group' : text.trim() ? 'text' : shape.isImage?.() ? 'image' : 'shape',
               bbox: [shape.x ?? 0, shape.y ?? 0, shape.extX ?? 0, shape.extY ?? 0],
             };
-          }),
+          })),
         },
       },
     };
@@ -454,6 +474,43 @@ export async function routeNativeTeaching(
       change,
     });
     return routeNativeTeaching('open', {}, pageNumber + 1);
+  }
+  if (operation === 'repair-background-region') {
+    if (
+      !view().backgroundRegionRepair ||
+      typeof args.actionId !== 'string' ||
+      typeof args.description !== 'string' ||
+      !Array.isArray(args.bounds) ||
+      args.bounds.length !== 4 ||
+      !args.bounds.every((n) => typeof n === 'number' && Number.isFinite(n))
+    )
+      throw new Error('Background region repair is unavailable or invalid');
+    if (typeof args.expectedVisualSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(args.expectedVisualSha256))
+      throw new Error('Region repair requires reviewed page pixels');
+    const logic = (getEditorApi() as any)?.WordControl?.m_oLogicDocument;
+    const png = renderNativeSlide(logic.Slides[pageNumber - 1], logic, requireEditorContext().AscCommon as any);
+    const bytes = Uint8Array.from(atob(png.split(',')[1]), (c) => c.charCodeAt(0));
+    const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+      .map((v) => v.toString(16).padStart(2, '0'))
+      .join('');
+    if (
+      digest !== args.expectedVisualSha256 ||
+      readNativeTeaching()?.revision !== teaching.revision ||
+      renderNativeSlide(logic.Slides[pageNumber - 1], logic, requireEditorContext().AscCommon as any) !== png
+    )
+      throw new Error('Reviewed region pixels changed');
+    const change = await prepareBackgroundRegion(pageNumber, args.bounds as number[], `region-${crypto.randomUUID()}`);
+    if (readNativeTeaching()?.revision !== teaching.revision || getReadonlyMode())
+      throw new Error('Teaching changed during region preparation');
+    replaceNativeTeachingRegion({
+      documentId: teaching.documentId,
+      expectedRevision: teaching.revision,
+      pageId: page.pageId,
+      actionId: args.actionId,
+      description: args.description,
+      change,
+    });
+    return routeNativeTeaching('open', {}, pageNumber);
   }
   if (operation === 'write') {
     if (args.viewId !== teaching.documentId + '.' + page.pageId) throw new Error('Native teaching view changed');
