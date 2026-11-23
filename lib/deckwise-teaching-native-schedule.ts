@@ -112,7 +112,20 @@ export function prepareSpeechNativeSchedule(
       })
       .map((entry, stepIndex) => ({ ...entry, stepIndex }));
     // Independent interactive sequences reuse the native renderer without advancing unrelated effects.
-    const unbound = existing.filter((effect) => !claimed.has(effect)).map((effect) => effect.createDuplicate());
+    // A native effect on a group can hide a speech-owned child and vice versa.
+    const owners = new Set([...claimed].map((effect) => effect.getObjectId()));
+    const speechTargets = new Set<string>();
+    for (const shape of shapes.filter((shape) => shape.Id && owners.has(shape.Id))) {
+      for (const child of teachingShapes([shape], shape.group as Shape | undefined)) {
+        if (child.Id) speechTargets.add(child.Id);
+      }
+      for (let parent = shape.group as Shape | undefined; parent; parent = parent.group as Shape | undefined) {
+        if (parent.Id) speechTargets.add(parent.Id);
+      }
+    }
+    const unbound = existing
+      .filter((effect) => !claimed.has(effect) && !speechTargets.has(effect.getObjectId()))
+      .map((effect) => effect.createDuplicate());
     timing.buildTree([
       ...(unbound.length ? [[null, ...unbound]] : []),
       ...scheduled.map((entry) => [entry.token, entry.effect]),

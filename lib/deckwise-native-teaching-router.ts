@@ -521,7 +521,7 @@ export async function routeNativeTeaching(
       enrichment: args.enrichment as Parameters<typeof replaceNativeTeachingPage>[0]['enrichment'],
       semantics: args.semantics as Parameters<typeof replaceNativeTeachingPage>[0]['semantics'],
       actions: args.actions as Parameters<typeof replaceNativeTeachingPage>[0]['actions'],
-    });
+    }, true);
     return routeNativeTeaching('open', {}, next.pages.findIndex((p) => p.pageId === page.pageId) + 1);
   }
   if (operation === 'tts:preview' || operation === 'media:preview') {

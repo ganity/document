@@ -569,7 +569,8 @@ it('resolves newly repaired attention using retained embedded audio without re-a
       actions: [
         {
           ...adopted.pages[0].actions[0],
-          attention: { type: 'spotlight', objectIds: ['object'], animation: 'fadeIn' },
+          visualCues: [{ id: 'old', atMs: 0, endMs: 1200, effect: { type: 'highlight', elementIds: ['object'] } }],
+          attention: { type: 'spotlight', objectIds: ['object'], animation: 'pulse' },
         },
       ],
     });
@@ -579,7 +580,10 @@ it('resolves newly repaired attention using retained embedded audio without re-a
       audioAssetId: 'tts-existing',
       durationMs: 1200,
     });
-    expect(repaired.pages[0].actions[0].visualCues).toHaveLength(2);
+    expect(repaired.pages[0].actions[0].visualCues).toMatchObject([
+      { atMs: 0, endMs: 600, effect: { type: 'element_animation', effect: 'pulse' } },
+      { atMs: 600, endMs: 1200, effect: { type: 'spotlight' } },
+    ]);
     expect(repaired.media).toEqual(adopted.media);
   } finally {
     vi.unstubAllGlobals();
@@ -1124,6 +1128,38 @@ it('replaces and removes mirrored speech motions without accumulating old native
   expect(third.pages[0].actions[0].text).toBe('Before');
 });
 
+
+it('adopts end-of-speech audio after an earlier speech already owns a motion on the same page', async () => {
+  vi.stubGlobal('crypto', webcrypto);
+  class NativeTiming extends Timing {
+    createDuplicate() {
+      const copy = new NativeTiming();
+      copy.effects = [...this.effects];
+      return copy;
+    }
+    addEffectsToMainSequence(effects: any[]) {
+      // The SDK rebuilds its tree and duplicates effects that already have a parent.
+      this.effects = [...this.effects.map(e => ({ ...e, cTn: { ...e.cTn } })), ...effects];
+    }
+  }
+  try {
+    const slide = { cSld: { spTree: [{ sourceId: '4', Id: 'shape-4' }] }, timing: new NativeTiming(),
+      setTiming(value: NativeTiming) { this.timing = value; } };
+    mount(false, [slide]);
+    const first = { id: 'first', type: 'speech', text: 'Show', visualCues: [{ id: 'reveal', atMs: 0, endMs: 600,
+      effect: { type: 'element_animation', elementId: 'object', effect: 'fadeIn' } }] };
+    const last = { id: 'last', type: 'speech', text: 'Finish', attention: { type: 'highlight', objectIds: ['object'], animation: 'fadeOut' } };
+    const plan = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions: [first, last] });
+    const bytes = new TextEncoder().encode('original speech audio').buffer;
+    const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
+    const adopted = await adoptNativeTeachingAudio({ documentId: 'document', pageId: 'page', expectedRevision: plan.revision,
+      actionId: 'last', assetId: 'original', sha256, durationMs: 1800, mimeType: 'audio/mpeg', bytes });
+    expect(slide.timing.effects.map(e => [e.cTn.presetClass, e.asc_getDelay()])).toEqual([[1, 0], [2, 1800]]);
+    expect(adopted.pages[0].actions[1]).toMatchObject({ audioAssetId: 'original', durationMs: 1800 });
+    replaceNativeTeachingPage({ documentId: 'document', pageId: 'page', expectedRevision: adopted.revision, actions: [first] });
+    expect(slide.timing.effects.map(e => e.cTn.presetClass)).toEqual([1]);
+  } finally { vi.unstubAllGlobals(); }
+});
 
 it('reuses a matching teacher effect without acquiring it when the speech cue is removed', () => {
   const timing = new Timing();

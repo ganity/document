@@ -160,8 +160,9 @@ export function prepareNativeTeachingMotions(
           const copied = next.getAllAnimEffects();
           next.removeEffects(removals.map((index) => copied[index]));
         }
-        for (const group of additions) {
-          const effects = group.map(({ shapeId, preset, duration, delay, cueId }, index) => {
+        // Each SDK append rebuilds the tree, replacing the objects from previous appends.
+        const effects = additions.flatMap(group =>
+          group.map(({ shapeId, preset, duration, delay, cueId }, index) => {
             const effect = next.createEffect(shapeId, preset.presetClass, preset.presetId, preset.subtype, null);
             if (!effect) throw new Error('Native speech animation preset is unavailable');
             effect.asc_putDuration(duration);
@@ -169,9 +170,9 @@ export function prepareNativeTeachingMotions(
             created.set(cueId, effect);
             effect.cTn.setNodeType(index ? 7 : 2);
             return effect;
-          });
-          if (effects.length) next.addEffectsToMainSequence(effects);
-        }
+          }),
+        );
+        if (effects.length) next.addEffectsToMainSequence(effects);
         const remaining = [...next.getAllAnimEffects()];
         if (
           remaining.length !== expectedCount ||

@@ -3,6 +3,7 @@ import { readPresentationShapeText } from './agent-plugin/slide-text-read';
 import { trackTeachingSlideCopy } from './onlyoffice/guards/slide-teaching-copy';
 import { importedSlideShapeId } from './onlyoffice/guards/slide-source-identity';
 import { getEditorApi } from './agent-plugin/editor-bridge';
+import { sequenceSpeechFocus } from './deckwise-speech-focus-timeline';
 import { prepareNativeTeachingMotions, type SpeechMotionOwners } from './deckwise-native-teaching-motions';
 import { getReadonlyMode } from './onlyoffice/readonly';
 import { markDocumentDirty } from './unsaved-guard';
@@ -152,7 +153,7 @@ export function replaceNativeTeachingPage(input: {
   actions: Action[];
   enrichment?: CoursewareEnrichment;
   semantics?: Array<{ objectId: string; role: string; aliases: string[]; text: string; teachingTarget: boolean }>;
-}) {
+}, generatedTimeline = false) {
   if (getReadonlyMode()) throw new Error('Teaching is read-only');
   const current = readNativeTeaching();
   if (!current || current.documentId !== input.documentId || current.revision !== input.expectedRevision)
@@ -191,6 +192,10 @@ export function replaceNativeTeachingPage(input: {
   for (const action of actions) {
     const media = current.media.find((m) => m.id === action.audioAssetId && m.mimeType.startsWith('audio/'));
     if (media) resolveNativeSpeechAttention(current, input.pageId, action, media.durationMs);
+    const cues = action.visualCues;
+    if (generatedTimeline && action.type === 'speech' && Array.isArray(cues) && cues.every(c =>
+      c && typeof c.id === 'string' && Number.isInteger(c.atMs) && Number.isInteger(c.endMs) && c.atMs >= 0 && c.endMs > c.atMs &&
+      ['element_animation', 'spotlight', 'highlight'].includes(c.effect?.type))) action.visualCues = sequenceSpeechFocus(cues);
   }
   const changed = next.pages.find((p) => p.pageId === input.pageId)!;
   if (input.semantics) {
@@ -683,11 +688,10 @@ function resolveNativeSpeechAttention(current: NativeTeaching, pageId: string, a
       durationMs > 3600000
     )
       throw new Error('Native speech attention target or timing changed');
-    const duration = Math.min(durationMs, 600);
     const exit = intent.animation === 'fadeOut';
+    const duration = durationMs <= 600 && !exit ? Math.max(1, Math.floor(durationMs / 2)) : Math.min(durationMs, 600);
     const atMs = exit ? durationMs : 0;
     if (atMs + duration > 3600000) throw new Error('Speech animation exceeds the supported timeline');
-    const reveal = ['fadeIn', 'zoomIn', 'slideInLeft', 'slideInRight'].includes(String(intent.animation));
     const added = [
       ...(intent.animation
         ? ids.map((id, index) => ({
@@ -700,7 +704,7 @@ function resolveNativeSpeechAttention(current: NativeTeaching, pageId: string, a
         : []),
       {
         id: `focus-${action.id}`,
-        atMs: reveal ? Math.min(duration, durationMs - 1) : 0,
+        atMs: intent.animation && !exit ? Math.min(duration, durationMs - 1) : 0,
         endMs: durationMs,
         effect:
           intent.type === 'highlight'
@@ -709,7 +713,8 @@ function resolveNativeSpeechAttention(current: NativeTeaching, pageId: string, a
       },
     ];
     const existing = Array.isArray(action.visualCues) ? action.visualCues : [];
-    action.visualCues = [...existing.filter((cue) => !added.some((next) => next.id === cue.id)), ...added];
+    const retained = existing.filter((cue) => !added.some((next) => next.id === cue.id));
+    action.visualCues = sequenceSpeechFocus([...retained, ...added]);
     delete action.attention;
   }
 }

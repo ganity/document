@@ -134,6 +134,13 @@ export function createTeachingSlideshow(input: {
     bound && !schedule ? 'bound' : 'native',
   );
   if (schedule && schedule.slide !== slide) throw new Error('Scheduled animation slide changed');
+  const animatedIds = new Set((schedule?.timing.getAllAnimEffects() ?? effects).map((effect: { getObjectId(): string }) => effect.getObjectId()));
+  const liveGroups = new Set();
+  for (const shape of teachingShapes<{ Id: string; group?: any; spTree?: any[] }>(slide.cSld.spTree)) {
+    if (!animatedIds.has(shape.Id)) continue;
+    for (let group = shape.group; group && !animatedIds.has(group.Id); group = group.group) liveGroups.add(group);
+  }
+  let restoreDrawer: (() => void) | undefined;
   const unboundEffects = schedule
     ? schedule.timing
         .getAllAnimEffects()
@@ -397,6 +404,7 @@ export function createTeachingSlideshow(input: {
     try {
       if (manager.Mode && manager.DemonstrationDiv === canvas) api.EndDemonstration();
     } finally {
+      restoreDrawer?.();
       schedule?.restore();
       surface.remove();
     }
@@ -414,6 +422,27 @@ export function createTeachingSlideshow(input: {
       ) {
         input.onExit();
         return;
+      }
+      if (liveGroups.size && !restoreDrawer) {
+        const player = slide.getAnimationPlayer();
+        const drawer = player?.animationDrawer;
+        if (drawer && player.isStarted() && !manager.Transition.IsPlaying()) {
+          const draw = drawer.drawObject;
+          // The SDK caches an unanimated group as one bitmap, bypassing its children's animations.
+          drawer.drawObject = (shape: any, graphics: any) => {
+            if (!liveGroups.has(shape)) return draw.call(drawer, shape, graphics);
+            const clip = shape.getClipRect();
+            graphics.SaveGrState();
+            try {
+              if (clip) graphics.AddClipRect(clip.x, clip.y, clip.w, clip.h);
+              for (const child of shape.spTree) child.draw(graphics);
+            } finally {
+              graphics.RestoreGrState();
+            }
+          };
+          restoreDrawer = () => { drawer.drawObject = draw; };
+          player.onRecalculateFrame();
+        }
       }
       if (schedule) {
         if (slide.timing !== schedule.timing) throw new Error('Scheduled native animation changed');

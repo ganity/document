@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { buildPptx, toBase64, makeStoredZip, zipEntryNames, zipEntryText } from './lib/ooxml';
 import { test, expect } from './lib/l0';
 
-for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
+for (const mode of ['legacy', 'generated', 'linked', 'emphasis', 'child'] as const)
   test(`speech schedule (${mode}) retains group animations, autoplays unlinked effects and restores timing`, async ({
     page,
   }, info) => {
@@ -55,7 +55,7 @@ for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
     source.data = source.data.replace(
       '</p:sld>',
       `${(await readFile(resolve('test/e2e/fixtures/speech-native-fade.xml'), 'utf8'))
-        .replace('spid="3"', 'spid="5"')
+        .replace('spid="3"', mode === 'child' ? 'spid="3"' : 'spid="5"')
         .replace(
           /\n              <\/p:childTnLst>\n            <\/p:cTn>/,
           `\n<p:par><p:cTn id="6" fill="hold"><p:stCondLst><p:cond delay="indefinite"/></p:stCondLst><p:childTnLst>
@@ -76,7 +76,7 @@ for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
           {
             objects: [
               { id: 'title', objectName: 'Title 1' },
-              { id: 'group', objectName: 'Second group' },
+              { id: 'group', objectName: mode === 'child' ? 'Second' : 'Second group' },
             ],
             actions: [
               {
@@ -277,7 +277,8 @@ for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
         throw new Error(`Expected one unlinked page-entry effect, got ${schedule.unboundCount}`);
       if (schedule.scheduled[1].effect.asc_getDuration() !== 500)
         throw new Error('Generated cue replaced the saved native duration');
-      if (schedule.scheduled[1].effect.getObjectId() !== Reflect.get(slide.cSld.spTree[1], 'Id'))
+      const expectedTarget = mode === 'child' ? group.spTree[0] : group;
+      if (schedule.scheduled[1].effect.getObjectId() !== Reflect.get(expectedTarget as object, 'Id'))
         throw new Error(
           `Speech did not retain the native group animation: ${JSON.stringify({
             scheduled: schedule.scheduled.map((entry: { effect: { getObjectId(): string } }) =>
@@ -319,6 +320,21 @@ for (const mode of ['legacy', 'generated', 'linked', 'emphasis'] as const)
         if (!schedule.scheduled.every((entry: { effect: { isIdle(): boolean } }) => entry.effect.isIdle()))
           throw new Error('Speech-linked animation ran before its speech trigger');
         const player = Reflect.get(slide, 'getAnimationPlayer').call(slide);
+        if (mode === 'child') {
+          const drawer = player.animationDrawer;
+          const draw = drawer.drawObject;
+          const painted: unknown[] = [];
+          drawer.drawObject = (shape: unknown, graphics: unknown) => {
+            painted.push(shape);
+            return draw.call(drawer, shape, graphics);
+          };
+          try {
+            player.onRecalculateFrame();
+            if (!painted.includes(expectedTarget)) throw new Error('Group bitmap bypassed the animated child');
+          } finally {
+            drawer.drawObject = draw;
+          }
+        }
         const target = schedule.scheduled[0].effect.getObjectId();
         if (player.animationDrawer.isDrawingVisible(target))
           throw new Error('Speech entrance target is visible before its speech trigger');

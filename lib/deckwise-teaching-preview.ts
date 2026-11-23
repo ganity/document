@@ -302,8 +302,22 @@ export async function createTeachingAttentionPreview(input: {
             throw new Error('提示对象已替换，请重新读取本页');
           identities.set(t.id, t.shape);
         }
+        const drawer = input.slideshow && slide.getAnimationPlayer()?.animationDrawer;
+        const visible = (shape: Shape) => {
+          if (!drawer || !shape.Id) return true;
+          const animation = drawer.getSandwich(shape.Id);
+          return drawer.isDrawingVisible(shape.Id) && animation?.isDrawingVisible(shape.Id) !== false &&
+            animation?.getOpacity(shape.Id) !== 0;
+        };
+        const hasVisibleContent = (shape: Shape): boolean =>
+          visible(shape) && (!shape.spTree?.length || shape.spTree.some(hasVisibleContent));
+        const targets = g.targets.filter(({ shape }) => {
+          for (let parent = shape.group as Shape | undefined; parent; parent = parent.group as Shape | undefined)
+            if (!visible(parent)) return false;
+          return hasVisibleContent(shape);
+        });
         const clip = viewport.getBoundingClientRect();
-        const next = JSON.stringify([cues, g.origin, g.end, g.targets.map((t) => t.rect), clip.toJSON()]);
+        const next = JSON.stringify([cues, g.origin, g.end, targets.map((t) => [t.id, t.rect]), clip.toJSON()]);
         if (signature !== next) {
           signature = next;
           Object.assign(layer.style, {
@@ -322,21 +336,22 @@ export async function createTeachingAttentionPreview(input: {
             width: `${g.end.X - g.origin.X}px`,
             height: `${g.end.Y - g.origin.Y}px`,
           });
-          const spot = supported.findLast((c) => c.effect.type === 'spotlight');
+          const spot = supported.findLast((c) => c.effect.type === 'spotlight' &&
+            targets.some((t) => t.id === c.effect.elementId || c.effect.elementIds?.includes(t.id)));
           if (spot) {
             const ids = [spot.effect.elementId, ...(spot.effect.elementIds ?? [])];
             const path = input.doc.createElementNS(svg.namespaceURI, 'path');
             path.setAttribute(
               'd',
-              shared.buildEvenOddPath(g.targets.filter((t) => ids.includes(t.id)).map((t) => t.rect)),
+              shared.buildEvenOddPath(targets.filter((t) => ids.includes(t.id)).map((t) => t.rect)),
             );
             path.setAttribute('fill-rule', 'evenodd');
             path.setAttribute('fill', `rgba(0,0,0,${spot.effect.dimOpacity ?? 0.6})`);
             path.setAttribute('data-attention-kind', 'spotlight');
             svg.append(path);
           }
-          for (const cue of supported.filter((c) => c.effect.type === 'highlight')) {
-            for (const target of g.targets.filter((t) => cue.effect.elementIds?.includes(t.id))) {
+          for (const cue of supported.filter((c) => !spot && c.effect.type === 'highlight')) {
+            for (const target of targets.filter((t) => cue.effect.elementIds?.includes(t.id))) {
               const rect = input.doc.createElementNS(svg.namespaceURI, 'rect');
               for (const [key, value] of Object.entries({
                 x: target.rect.x,
