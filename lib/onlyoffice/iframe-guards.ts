@@ -23,6 +23,7 @@ import { installMixedScriptLineMetricsGuard } from './guards/mixed-script-line-m
 import { installImageColorKeyGuard } from './guards/image-color-key';
 import { installEastAsianVerticalGuard } from './guards/east-asian-vertical';
 import { installImageSoftEdgeGuard } from './guards/image-soft-edge';
+import { installAssistantFocusGuard } from './guards/assistant-focus';
 
 /**
  * Same-origin preparation of the editor iframe, applied from onAppReady and
@@ -36,8 +37,8 @@ import { installImageSoftEdgeGuard } from './guards/image-soft-edge';
  * production bug that reached users.
  *
  * Returns true once every guard whose absence would still be felt later has
- * landed on some frame, so the caller can stop re-applying: the five that must
- * be in place before a document can be opened and saved, plus the wasm binary
+ * landed on some frame, so the caller can stop re-applying: the guards required
+ * before a document can be opened and saved, focus ownership, and the wasm binary
  * release, which reports "in place" once it is watching for x2t rather than
  * once it has released -- x2t can load long after this timer is gone (see
  * ./guards/wasm-binary-release).
@@ -54,6 +55,7 @@ export function prepareEditorIframe(): boolean {
       installSlideSourceIdentity(win);
       installNestedSlideAnimations(win);
       injectLocalChromeCss(doc);
+      const assistantFocusGuarded = installAssistantFocusGuard(win);
 
       const sharedWorkerShadowed = shadowSharedWorker(win);
       const fetchFontsGuarded = installFetchFontsGuard(win);
@@ -61,7 +63,7 @@ export function prepareEditorIframe(): boolean {
       const longActionGuarded = installLongActionLeakGuard(win);
 
       installSeriesSettingsGuard(win);
-      installFontLoadAcceleration(win);
+      const fontLoadAccelerated = installFontLoadAcceleration(win);
       installCommentSelectionGuard(win);
       installCanvasLossGuard(win, doc);
       installSingleUnloadPrompt(win);
@@ -90,7 +92,12 @@ export function prepareEditorIframe(): boolean {
         longActionGuarded &&
         x2tWorkerProxied &&
         punctuationGuarded &&
-        wasmBinaryHandled
+        wasmBinaryHandled &&
+        assistantFocusGuarded &&
+        // Font acceleration also attaches the NeedStyles clamp once
+        // DrawingDocument exists; stopping the poll before that leaves open
+        // on the unclamped path (NeedStyles 15 forever).
+        fontLoadAccelerated
       ) {
         fullyApplied = true;
       }

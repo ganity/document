@@ -51,6 +51,22 @@ describe('public/_headers', () => {
     expect(rules['/*']?.['cross-origin-embedder-policy']).toBe('require-corp');
   });
 
+  it('serves the WebMCP Origin Trial token on every static response', () => {
+    // Bound to https://edit.chaxus.com:443, feature WebMCP, expiry 2027-03-30.
+    // Without this header, document.modelContext stays undefined on stable Chrome
+    // and lib/web-mcp.ts registers nothing for production visitors.
+    const token = rules['/*']?.['origin-trial'];
+    expect(token).toBeTruthy();
+    // Chrome OT format: signature bytes + trailing base64 JSON (`eyJ…`).
+    const json = JSON.parse(Buffer.from(token!.match(/eyJ[A-Za-z0-9+/=]+$/)![0], 'base64').toString());
+    expect(json).toEqual({
+      origin: 'https://edit.chaxus.com:443',
+      feature: 'WebMCP',
+      expiry: 1806364800,
+    });
+    expect(read('sws.toml')).toContain(token!);
+  });
+
   it('keeps deploy-coupled files uncacheable (a stale one breaks the shell)', () => {
     const deployCoupled = [
       '/sw.js',
@@ -63,10 +79,18 @@ describe('public/_headers', () => {
       '/open-local.js',
       '/landing-prefetch.js',
       '/ranui-iife/*',
+      // Its message protocol changes with the app bundle that posts to it.
+      '/libs/sheetjs/convert.worker.js',
     ];
     for (const p of deployCoupled) {
       expect(cc(p), p).toBe('no-cache');
     }
+  });
+
+  it('never caches the deployment identity on Pages or the local production preview', () => {
+    expect(cc('/build-identity.json')).toBe('no-store');
+    expect(read('vite.config.ts')).toContain("'/build-identity.json'");
+    expect(read('vite.config.ts')).toContain("res.setHeader('Cache-Control', 'no-store')");
   });
 
   it('declares the x2t wasm pre-encoded, which is the only thing that makes it loadable', () => {
@@ -160,6 +184,10 @@ describe('sws.toml (self-hosted Docker)', () => {
     expect(cc('**')).toBe('no-cache');
   });
 
+  it('never caches the deployment identity in Docker', () => {
+    expect(cc('/build-identity.json')).toBe('no-store');
+  });
+
   it('declares gzip for x2t so ordinary HTTP self-hosting can decode it', () => {
     // Chrome only decodes Brotli on trustworthy origins. Docker must serve
     // gzip for http://<server-ip>, while HTTPS Pages keeps its Brotli payload.
@@ -191,7 +219,9 @@ describe('sws.toml (self-hosted Docker)', () => {
     expect(dockerfile).toMatch(/COPY sws\.toml \/sws\.toml/);
     expect(dockerfile).toMatch(/ENV SERVER_CONFIG_FILE=\/sws\.toml/);
     // Re-encode before the build hashes the served vendor tree for sw.js.
-    expect(dockerfile).toMatch(/node bin\/prepare-docker-wasm\.mjs public\s*&&\s*pnpm run build/);
+    expect(dockerfile).toMatch(
+      /node bin\/prepare-docker-wasm\.mjs public\s*&&\s*BUILD_REVISION="\$BUILD_REVISION" pnpm run build/,
+    );
   });
 });
 

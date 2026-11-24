@@ -13,34 +13,7 @@
 import { openLocalFile } from '../document';
 import { getLatestSnapshot, readDocumentRecord } from './store';
 import type { HistoryDoc } from './types';
-import { readActiveSource } from '../active-document-source';
-
-/** A short "5 minutes ago", for the history list's timestamps. */
-export function formatRelativeTime(timestamp: number, now = Date.now()): string {
-  const seconds = Math.round((timestamp - now) / 1000);
-  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
-    ['second', 60],
-    ['minute', 60],
-    ['hour', 24],
-    ['day', 7],
-    ['week', 5],
-  ];
-  let value = seconds;
-  let unit: Intl.RelativeTimeFormatUnit = 'second';
-  for (const [name, size] of units) {
-    unit = name;
-    if (Math.abs(value) < size) break;
-    value = Math.round(value / size);
-  }
-  try {
-    return new Intl.RelativeTimeFormat(document.documentElement.lang || undefined, { numeric: 'auto' }).format(
-      value,
-      unit,
-    );
-  } catch {
-    return new Date(timestamp).toLocaleString();
-  }
-}
+import { readActiveSourceRecord } from '../active-document-source';
 
 /**
  * Reopen the document from its newest snapshot.
@@ -64,9 +37,20 @@ export async function restoreDocument(doc: HistoryDoc, options?: { readonly?: bo
 export async function restoreSavedDocument(id: string, options?: { readonly?: boolean }): Promise<boolean> {
   const record = await readDocumentRecord(id);
   if (!record) return false;
-  if (record.doc) return restoreDocument(record.doc, options);
-  const source = await readActiveSource(id);
+  const source = await readActiveSourceRecord(id);
+  // A disk save can be newer than the last autosave. Its revision boundary
+  // is local to these exact source bytes: another tab's save metadata cannot
+  // accidentally promote this tab's original over an unsaved snapshot.
+  if (
+    record.doc &&
+    !(
+      source?.savedThroughRevision !== undefined &&
+      source.savedThroughRevision >= record.doc.nextRev &&
+      source.historyCreatedAt === record.doc.createdAt
+    )
+  )
+    return restoreDocument(record.doc, options);
   if (!source) return false;
-  await openLocalFile(source, { historyId: id, ...options });
+  await openLocalFile(source.file, { historyId: id, ...options });
   return true;
 }

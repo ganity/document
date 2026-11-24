@@ -34,7 +34,7 @@ export interface LLMMessage {
   /** Opaque host presentation, stripped at runtime provider boundary. Never model context. */
   hostPresentation?: { id: string; metadata: Readonly<Record<string, unknown>> };
   content: string | LLMContent[];
-  /** Visible partial prose preserved after cancellation; never a complete answer. */
+  /** Visible partial prose preserved after cancellation or incomplete generation; never a complete answer. */
   interrupted?: true;
   /** Host-created document body; never inferred from generic assistant prose. */
   documentArtifact?: true;
@@ -73,7 +73,7 @@ export interface LLMResponse {
   text: string;
   /** Tool calls the model wants executed (empty when none). */
   toolCalls: LLMToolCall[];
-  /** Why generation stopped, e.g. "end_turn" | "tool_use" | "max_tokens". */
+  /** Why generation stopped, e.g. "end_turn" | "tool_use" | "max_tokens" | "content_filter" | "incomplete". */
   stopReason: string;
   /** The assistant message to append to history before the next turn. */
   assistant: LLMMessage;

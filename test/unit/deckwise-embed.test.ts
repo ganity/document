@@ -77,7 +77,15 @@ describe('DeckWise restricted embed mode', () => {
     const iframe = document.createElement('iframe');
     iframe.name = 'frameEditor';
     document.body.appendChild(iframe);
-    const originalDownloadAs = vi.fn();
+    const downloadFile = vi.fn();
+    const converter = {
+      convertFromBin: async () => ({ binary: new Uint8Array(8) }),
+      downloadFile,
+    };
+    const originalDownloadAs = vi.fn(async () => {
+      const result = await converter.convertFromBin();
+      converter.downloadFile(result.binary, 'document.pptx');
+    });
     class DownloadOptions {
       constructor(readonly fileType: number) {}
     }
@@ -103,14 +111,7 @@ describe('DeckWise restricted embed mode', () => {
       },
       asc_CDownloadOptions: DownloadOptions,
     };
-    Object.assign(child, {
-      AscCommon: {
-        x2t: {
-          convertFromBin: vi.fn(async () => ({ binary: new Uint8Array([1]) })),
-          downloadFile: vi.fn(),
-        },
-      },
-    });
+    Object.assign(child, { AscCommon: { x2t: converter } });
     expect(installServerlessSaveSemantics(child)).toBe(true);
     (window as unknown as { editor?: { downloadAs: (format: string) => void } }).editor = {
       downloadAs: vi.fn(),
@@ -118,7 +119,7 @@ describe('DeckWise restricted embed mode', () => {
     markDocumentContentReady();
 
     const saving = requestSaveDocument('PPTX');
-    await vi.waitFor(() => expect(originalDownloadAs).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(downloadFile).toHaveBeenCalledOnce());
     window.dispatchEvent(
       new MessageEvent('message', {
         origin: window.location.origin,

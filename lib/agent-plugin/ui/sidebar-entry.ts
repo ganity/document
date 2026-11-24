@@ -77,6 +77,8 @@ export function createSidebarEntry(
         '</svg>';
       button.style.cssText =
         'display:flex;align-items:center;justify-content:center;padding:0;color:inherit;cursor:pointer;';
+      // The vendor rail schedules editor focus on mouse presses.
+      button.addEventListener('mousedown', (event) => event.stopPropagation());
       button.addEventListener('click', (event) => {
         event.stopPropagation();
         if (enabled()) toggle();

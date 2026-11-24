@@ -1,11 +1,109 @@
 import { REFERENCE_CITATION_RULE } from './llm/prompt';
-import type { LLMMessage } from './llm/types';
+import type { LLMContent, LLMMessage } from './llm/types';
+import type { AgentTool } from './types';
 
 /** A conservative UTF-8 byte budget, not an exact model-token count. */
 export const DEFAULT_CONTEXT_BYTES = 6144;
 const encoder = new TextEncoder();
 const messageBytes = (message: LLMMessage) =>
   encoder.encode(JSON.stringify({ role: message.role, content: message.content })).byteLength + 16;
+
+/** Payload space left after retaining the whole latest user/tool turn. */
+export function remainingContextBytes(messages: LLMMessage[], maxBytes = DEFAULT_CONTEXT_BYTES): number {
+  const start = messages.findLastIndex(
+    (message) =>
+      message.role === 'user' &&
+      (typeof message.content === 'string' || !message.content.some((block) => block.type === 'tool_result')),
+  );
+  return maxBytes - messages.slice(Math.max(0, start)).reduce((sum, message) => sum + messageBytes(message), 0);
+}
+
+type TextField = { parent: Record<string, unknown>; characters: string[] };
+function textResultFields(result: unknown): { value: unknown; fields: TextField[] } {
+  const value = structuredClone(result);
+  const fields: TextField[] = [];
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    const parent = node as Record<string, unknown>;
+    if (typeof parent.text === 'string') fields.push({ parent, characters: Array.from(parent.text) });
+    for (const child of Object.values(parent)) visit(child);
+  };
+  visit(value);
+  return { value, fields };
+}
+function clipTextFields(fields: TextField[], length: number): void {
+  for (const { parent, characters } of fields) {
+    parent.text = characters.slice(0, length).join('');
+    if (length < characters.length) parent.truncated = true;
+  }
+}
+/** Preserve metadata even when none of the source excerpt can fit. */
+export function minimumTextResult(result: unknown): unknown {
+  const { value, fields } = textResultFields(result);
+  clipTextFields(fields, 0);
+  return value;
+}
+
+/** Opt-in excerpt policy for structured text reads, including host result envelopes.
+ * Preserve all scope/availability metadata and never split a Unicode code point. */
+export function fitTextResult(result: unknown, fits: (candidate: unknown) => boolean): unknown {
+  if (fits(result)) return result;
+  const { value, fields } = textResultFields(result);
+  const clipped = (length: number) => {
+    clipTextFields(fields, length);
+    return value;
+  };
+  if (!fields.length || !fits(clipped(0))) throw new Error('agentContextTooLong');
+  let low = 0,
+    high = Math.max(...fields.map((field) => field.characters.length));
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits(clipped(middle))) low = middle;
+    else high = middle - 1;
+  }
+  return clipped(low);
+}
+
+type ToolResult = Extract<LLMContent, { type: 'tool_result' }>;
+export interface BudgetedToolResult {
+  result: ToolResult;
+  output: unknown;
+  policy: NonNullable<AgentTool['fitResult']>;
+}
+/** Refit all opted-in reads as new call/result shells grow the current turn.
+ * Minimum valid outputs establish the real available space, without reserving
+ * guessed capacity or changing arbitrary tool results. Oversized immutable
+ * exchanges stay archival; the next inference enforces its own request budget. */
+export function budgetToolResults(
+  messages: LLMMessage[],
+  entries: BudgetedToolResult[],
+  maxBytes = DEFAULT_CONTEXT_BYTES,
+): void {
+  if (!entries.length) return;
+  const original = entries.map(({ result }) => result.content);
+  const restore = () =>
+    entries.forEach(({ result }, index) => {
+      result.content = original[index];
+    });
+  const payloadSize = (value: unknown) => encoder.encode(JSON.stringify(JSON.stringify(value ?? null))).byteLength;
+  try {
+    for (const { result, output, policy } of entries) result.content = JSON.stringify(policy.minimum(output) ?? null);
+    if (remainingContextBytes(messages, maxBytes) < 0) {
+      restore();
+      return;
+    }
+    for (const [index, { result, output, policy }] of entries.entries()) {
+      const minimumBytes = encoder.encode(JSON.stringify(result.content)).byteLength;
+      const extra = Math.floor(remainingContextBytes(messages, maxBytes) / (entries.length - index));
+      result.content = JSON.stringify(
+        policy.fit(output, (candidate) => payloadSize(candidate) <= minimumBytes + extra) ?? null,
+      );
+    }
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
 
 /** Optional reference data must never crowd out the user's current turn. */
 export function contextualizeMessages(

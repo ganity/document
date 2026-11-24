@@ -1,5 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { matchesGlob, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -42,6 +44,35 @@ function parseJobs(src: string): Array<{ name: string; body: string }> {
   return jobs;
 }
 
+/** Read the step-level command/environment contract without depending on a flag's placement. */
+function parseSteps(body: string): Array<{ name: string; run?: string; env: Record<string, string> }> {
+  const steps: Array<{ name: string; run?: string; env: Record<string, string> }> = [];
+  let inEnv = false;
+  for (const line of body.split('\n')) {
+    const header = line.match(/^ {6}- name: (.+)$/);
+    if (header) {
+      steps.push({ name: header[1], env: {} });
+      inEnv = false;
+      continue;
+    }
+    const step = steps.at(-1);
+    if (!step) continue;
+    if (/^ {8}env:/.test(line)) {
+      inEnv = true;
+      continue;
+    }
+    const variable = inEnv && line.match(/^ {10}([A-Z_][A-Z0-9_]*): (.+)$/);
+    if (variable) {
+      step.env[variable[1]] = variable[2];
+      continue;
+    }
+    if (/^ {8}\S/.test(line)) inEnv = false;
+    const run = line.match(/^ {8}run: (.+)$/);
+    if (run) step.run = run[1];
+  }
+  return steps;
+}
+
 it('finds every workflow (a bad glob would make the checks below vacuous)', () => {
   expect(workflows.length).toBeGreaterThanOrEqual(8);
   expect(workflows.every(({ src }) => parseJobs(src).length > 0)).toBe(true);
@@ -74,10 +105,15 @@ describe('the shared setup action', () => {
     expect(action).not.toMatch(/run: pnpm exec playwright install/);
   });
 
-  it('caches the browsers against the Playwright version, not the lockfile', () => {
+  it('caches the browsers against the distro and Playwright version, not the lockfile', () => {
     // Keying on the lockfile would evict the cache on every dependency bump
-    // and re-download the browsers for no reason.
-    expect(action).toMatch(/key: playwright-\$\{\{ runner\.os \}\}-\$\{\{ steps\.playwright\.outputs\.version \}\}/);
+    // and re-download the browsers for no reason. The distro is part of the
+    // key because Playwright builds per release: without it the 24.04 WebKit
+    // was restored onto the 26.04 runner and could not start.
+    expect(action).toMatch(/distro=\$\(\. \/etc\/os-release && echo "\$ID\$VERSION_ID"\)/);
+    expect(action).toMatch(
+      /key: playwright-\$\{\{ runner\.os \}\}-\$\{\{ steps\.playwright\.outputs\.distro \}\}-\$\{\{ runner\.arch \}\}-\$\{\{ steps\.playwright\.outputs\.version \}\}/,
+    );
   });
 });
 
@@ -89,30 +125,15 @@ describe('the Playwright install script', () => {
     expect(script).toMatch(/for attempt in \$\(seq 1 "\$attempts"\)/);
   });
 
-  it('does not call apt at all once the browsers came from the cache', () => {
-    // Read off a healthy run: every library Chromium needs already reports
-    // "is already the newest version" on the hosted image, and the only thing
-    // install-deps installs is 21 MB of fonts that nothing here renders
-    // through (the editor draws with its own vendored catalog). That call was
-    // a network dependency on Ubuntu's mirrors in the hot path of every job,
-    // buying nothing and stalling regularly.
-    const cachedBranch = script.match(/BROWSERS_CACHED:-\}" = "true" \]; then\n([\s\S]*?)\nelse\n/);
-    expect(cachedBranch).not.toBeNull();
-    const body = cachedBranch![1];
-    // The branch has to leave before it can reach a playwright invocation.
-    expect(body).toMatch(/^\s*exit 0$/m);
-    expect(body.search(/^\s*exit 0$/m)).toBeLessThan(body.search(/command=\(/));
-  });
-
   it('keeps the apt config write off the path that never reaches apt', () => {
     // Ordering, not decoration: a skip that still sudo-writes an apt config is
     // a skip that can still fail for apt's reasons.
     expect(script.indexOf('skipping the apt font install')).toBeLessThan(script.indexOf('99-ci-timeouts'));
   });
 
-  it('lets a stalled apt through once the browsers came from the cache', () => {
-    // A cache hit means the binaries are already there and apt could only be
-    // adding system libraries the runner image already ships. Treating its
+  it('keeps the explicit Chromium dependency refresh advisory', () => {
+    // The optional Chromium refresh only adds libraries already present on
+    // the hosted image; required WebKit/Firefox dependencies are tested separately. Treating its
     // stall as fatal turned a bad Ubuntu mirror into a red pull request --
     // twice on one run, and sharding tripled the number of jobs exposed.
     expect(script).toMatch(/deps_are_advisory=true/);
@@ -189,21 +210,24 @@ describe('.github/workflows/ci.yml', () => {
     expect(ci).toMatch(/cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/);
   });
 
-  const sharded = ciJobs.filter(({ body }) => body.includes('--shard='));
+  const sharded = ciJobs.filter(({ body }) => parseSteps(body).some((step) => step.env.E2E_SHARD));
 
   it('shards every E2E suite (the three of them are the whole cost of the run)', () => {
     expect(sharded.map(({ name }) => name)).toEqual(['e2e-shard', 'e2e-pages-shard', 'e2e-docker-shard']);
   });
 
   it.each(sharded)('job $name splits into exactly as many shards as it declares', ({ body }) => {
-    // A matrix of three against `--shard=N/4` silently drops a quarter of the
-    // suite and still reports green -- the failure mode is invisible, so the
-    // two numbers are pinned to each other here.
+    // Missing an index or using the wrong denominator silently drops tests.
+    // The selector belongs to the executing step, so it reaches the CLI/config.
     const matrix = body.match(/shard: \[([^\]]+)\]/);
-    const denominator = body.match(/--shard=\$\{\{ matrix\.shard \}\}\/(\d+)/);
+    const execution = parseSteps(body).filter((step) => step.env.E2E_SHARD);
     expect(matrix).not.toBeNull();
+    expect(execution).toHaveLength(1);
+    const denominator = execution[0].env.E2E_SHARD.match(/^\$\{\{\s*matrix\.shard\s*\}\}\/(\d+)$/);
     expect(denominator).not.toBeNull();
-    expect(matrix![1].split(',').length).toBe(Number(denominator![1]));
+    const count = Number(denominator![1]);
+    expect(matrix![1].split(',').map(Number)).toEqual(Array.from({ length: count }, (_, index) => index + 1));
+    expect(execution[0].run).toBeTruthy();
   });
 
   it.each([
@@ -231,7 +255,11 @@ describe('.github/workflows/ci.yml', () => {
     // while a whole class of assertion stops running.
     const e2e = ciJobs.find(({ name }) => name === 'e2e-shard');
     expect(e2e).toBeDefined();
-    expect(e2e!.body).toMatch(/--shard=\$\{\{ matrix\.shard \}\}\/3 --grep-invert @serial/);
+    const parallel = parseSteps(e2e!.body).find((step) => step.env.E2E_SHARD)!;
+    const command = parallel.run!.split(/\s+/);
+    expect(command.slice(0, 4)).toEqual(['pnpm', 'exec', 'playwright', 'test']);
+    expect(command[command.indexOf('--grep-invert') + 1]).toBe('@serial');
+    expect(command).not.toContain('--grep');
     const serial = ciJobs.find(({ name }) => name === 'e2e-serial');
     expect(serial?.body).toMatch(/playwright test --grep @serial --workers=1/);
     expect(e2e!.body).not.toMatch(/playwright test --grep @serial/);
@@ -258,16 +286,18 @@ describe('.github/workflows/ci.yml', () => {
     // floor: every shard then runs the whole suite, three times over, and the
     // run stays green while the sharding does nothing at all. Measured, not
     // assumed -- see docs/explorations/2026-08-19-ci-e2e-sharding.md.
-    expect(ci).toMatch(/run: sh \.\/bin\/test-e2e-docker\.sh --shard=/);
-    expect(ci).not.toMatch(/pnpm run test:e2e:docker.*--shard/);
+    const docker = ciJobs.find(({ name }) => name === 'e2e-docker-shard')!;
+    const execution = parseSteps(docker.body).find((step) => step.env.E2E_SHARD)!;
+    expect(execution.run!.split(/\s+/)).toEqual(['sh', './bin/test-e2e-docker.sh']);
+    expect(execution.env.E2E_SHARD).toMatch(/^\$\{\{\s*matrix\.shard\s*\}\}\/3$/);
+    expect(parseSteps(docker.body).some((step) => /^pnpm run test:e2e:docker(?:\s|$)/.test(step.run || ''))).toBe(
+      false,
+    );
   });
 });
 
 describe('.github/workflows/prod-smoke.yml', () => {
   const src = readFileSync(resolve(WORKFLOW_DIR, 'prod-smoke.yml'), 'utf8');
-  const editorHtml = readFileSync(resolve(ROOT, 'editor.html'), 'utf8');
-  const landingHtml = readFileSync(resolve(ROOT, 'index.html'), 'utf8');
-
   it('limits upstream site deployments and production probes to their owning repository', () => {
     expect(src).toContain("if: github.repository == 'ranuts/document'");
     const pages = readFileSync(resolve(WORKFLOW_DIR, 'pages-build-site.yml'), 'utf8');
@@ -275,31 +305,17 @@ describe('.github/workflows/prod-smoke.yml', () => {
     expect(pages).toMatch(/deploy:[\s\S]*needs: build/);
   });
 
-  /**
-   * The deploy gate has to watch a file that CARRIES the build.
-   *
-   * It used to grep `assets/index-*.js` out of `dist/index.html` and poll `/`
-   * for the same name. `/` has shipped no bundle since the route split
-   * (2026-08-16), so the expectation was the empty string -- which matched the
-   * equally empty answer on the first poll. The step printed "live after 20s"
-   * and every production smoke since ran against whatever was already
-   * deployed. Nothing noticed until a case could tell two builds apart, and
-   * then it read as "the new code is broken in production".
-   */
-  it('waits on the entry asset of the page that actually has one', () => {
-    expect(src).toContain("grep -o 'assets/editor-[A-Za-z0-9_-]*\\.js' dist/editor.html");
-    expect(src).toContain('curl -s "$PROD_URL/editor"');
-    // The premise of the two lines above: the editor page is the one that
-    // loads a bundle, and the landing page is the one that does not.
-    expect(editorHtml).toMatch(/<script[^>]+type="module"/);
-    expect(landingHtml).not.toMatch(/<script[^>]+type="module"/);
-  });
-
-  it('fails loudly when it cannot name what it is waiting for', () => {
-    // An empty expectation is what made the gate vacuous; it must never again
-    // be allowed to pass for free.
-    expect(src).toMatch(/if \[ -z "\$ASSET" \]; then/);
-    expect(src).toMatch(/::error::[^\n]*deploy gate/);
+  it('waits for the exact checkout revision through the executable identity gate and never smokes stale bytes', () => {
+    const job = parseJobs(src)[0];
+    expect(src).toContain('node bin/wait-for-deploy.mjs "$PROD_URL" "$GITHUB_SHA"');
+    expect(src).not.toMatch(/assets\/editor-|::warning::production/);
+    expect(job.body.indexOf('bin/wait-for-deploy.mjs')).toBeLessThan(job.body.indexOf('name: Smoke production'));
+    expect(src).toContain("if: github.event_name == 'push'");
+    expect(readFileSync(resolve(ROOT, 'bin/build.sh'), 'utf8')).toContain('node bin/build-identity.mjs "$DIST_DIR"');
+    expect(readFileSync(resolve(ROOT, 'Dockerfile'), 'utf8')).toContain('ARG BUILD_REVISION');
+    expect(readFileSync(resolve(ROOT, '.github/workflows/docker.yml'), 'utf8')).toContain(
+      'BUILD_REVISION=${{ github.sha }}',
+    );
   });
 });
 
@@ -371,7 +387,99 @@ describe('bin/test-e2e-docker.sh', () => {
  */
 describe('.github/workflows/nightly-corpus.yml', () => {
   const src = readFileSync(resolve(ROOT, '.github/workflows/nightly-corpus.yml'), 'utf8');
+  const jobs = parseJobs(src);
   const exclude = new RegExp(/CORPUS_EXCLUDE: "(.*)"/.exec(src)![1].replace(/\\\\/g, '\\'), 'i');
+
+  it('runs three ordinary shards per engine with exclusive serial runners and distinct artifacts', () => {
+    const normal = jobs.find(({ name }) => name === 'browsers-shard')!.body;
+    const serial = jobs.find(({ name }) => name === 'browsers-serial')!.body;
+    expect(normal).toMatch(/shard: \[1, 2, 3\]/);
+    expect(normal).toContain('E2E_SHARD: ${{ matrix.shard }}/3');
+    expect(normal).toContain('E2E_BROWSER: ${{ matrix.browser }}');
+    expect(normal).toContain('browser: [webkit, firefox]');
+    expect(normal).toContain('fail-fast: false');
+    expect(serial).toContain('browser: [webkit, firefox]');
+    expect(serial).not.toMatch(/E2E_SHARD|shard: \[/);
+    expect(serial).toContain('needs: [gate, browsers-shard]');
+    expect(serial).toContain("if: ${{ !cancelled() && needs.gate.outputs.browsers == 'true' }}");
+    expect(normal).toContain('name: playwright-report-browsers-${{ matrix.browser }}-shard-${{ matrix.shard }}-normal');
+    expect(serial).toContain('name: playwright-report-browsers-${{ matrix.browser }}-serial');
+    for (const [body, workers] of [
+      [normal, 2],
+      [serial, 1],
+    ] as const) {
+      const commands = parseSteps(body).filter(({ run }) => run?.includes('playwright test'));
+      expect(commands).toHaveLength(1);
+      expect(commands[0].run).toContain('--project=${{ matrix.browser }}');
+      expect(commands[0].run).toContain('--workers=' + workers);
+    }
+    expect(serial).toContain('--grep @serial');
+  });
+
+  it('keeps the existing browser check and rejects every unsuccessful ordinary or serial verdict', () => {
+    const summary = jobs.find(({ name }) => name === 'browsers')!;
+    expect(summary.body).toMatch(/^ {4}name: Cross-browser \(WebKit \+ Firefox\)$/m);
+    expect(summary.body).toContain('needs: [gate, browsers-shard, browsers-serial]');
+    expect(summary.body).toContain("if: always() && needs.gate.outputs.browsers == 'true'");
+    const step = parseSteps(summary.body).find(({ env }) => env.RESULT)!;
+    expect(step.env.RESULT).toBe('${{ needs.browsers-shard.result }}');
+    expect(step.env.SERIAL_RESULT).toBe('${{ needs.browsers-serial.result }}');
+    for (const result of ['success', 'failure', 'cancelled', 'skipped']) {
+      for (const serial of ['success', 'failure', 'cancelled', 'skipped']) {
+        const verdict = spawnSync('sh', ['-c', step.run!], {
+          env: { ...process.env, RESULT: result, SERIAL_RESULT: serial },
+        });
+        expect(verdict.status, result + '/' + serial).toBe(result === 'success' && serial === 'success' ? 0 : 1);
+      }
+    }
+  });
+
+  it('selects all ordinary tests once per engine through the actual workflow CLI; serial runs once outside shards', () => {
+    const require = createRequire(resolve(ROOT, 'package.json'));
+    const normal = parseSteps(jobs.find(({ name }) => name === 'browsers-shard')!.body).find(({ run }) =>
+      run?.includes('playwright test'),
+    )!;
+    const serial = parseSteps(jobs.find(({ name }) => name === 'browsers-serial')!.body).find(({ run }) =>
+      run?.includes('playwright test'),
+    )!;
+    const collect = (suite: {
+      specs?: { id: string; tests: { projectName: string }[] }[];
+      suites?: unknown[];
+    }): string[] => [
+      ...(suite.specs || []).flatMap((spec) => spec.tests.map((test) => test.projectName + ':' + spec.id)),
+      ...(suite.suites || []).flatMap((child) => collect(child as typeof suite)),
+    ];
+    for (const browser of ['webkit', 'firefox']) {
+      const list = (step: typeof normal, shard = '') => {
+        const tokens = step
+          .run!.replaceAll('${{ matrix.browser }}', browser)
+          .match(/"[^"]*"|'[^']*'|\S+/g)!
+          .map((token) => token.replace(/^(["'])(.*)\1$/, '$2'));
+        const result = spawnSync(
+          process.execPath,
+          [require.resolve('@playwright/test/cli'), 'test', ...tokens.slice(4), '--list', '--reporter=json'],
+          {
+            cwd: ROOT,
+            env: { ...process.env, E2E_SHARD: shard, E2E_BROWSER: browser },
+            encoding: 'utf8',
+            maxBuffer: 20 * 1024 * 1024,
+          },
+        );
+        expect(result.status, result.stderr + result.stdout).toBe(0);
+        return collect(JSON.parse(result.stdout));
+      };
+      const expected = list(normal);
+      const selected = ['1/3', '2/3', '3/3'].flatMap((shard) => list(normal, shard));
+      expect(selected.length).toBeGreaterThan(100);
+      expect(selected.every((id) => id.startsWith(browser + ':'))).toBe(true);
+      expect(new Set(selected).size).toBe(selected.length);
+      expect(selected.sort()).toEqual(expected.sort());
+      const serialTests = list(serial);
+      expect(serialTests.length).toBeGreaterThan(0);
+      expect(serialTests.every((id) => id.startsWith(browser + ':'))).toBe(true);
+      expect(serialTests.some((id) => selected.includes(id))).toBe(false);
+    }
+  }, 40_000);
 
   it('skips a device-emulating spec by project, not by browser name', () => {
     // `devices['Pixel 5']` carries `defaultBrowserType: 'chromium'`, which wins
@@ -403,7 +511,8 @@ describe('.github/workflows/nightly-corpus.yml', () => {
     // on the origin -- sw-warm read a vendor stamp that belonged to it, and
     // the cache-first probe lost the entry it had just planted.
     expect(src).toMatch(/--grep-invert "api surface\|corpus\|@serial"/);
-    expect(src).toMatch(/-c playwright\.browsers\.config\.ts --grep @serial --workers=1/);
+    const commands = parseSteps(jobs.find(({ name }) => name === 'browsers-serial')?.body || '').map(({ run }) => run);
+    expect(commands.some((run) => run?.includes('--grep @serial') && run.includes('--workers=1'))).toBe(true);
   });
 
   it('runs each half of the night only when it has something to say', () => {
@@ -412,7 +521,7 @@ describe('.github/workflows/nightly-corpus.yml', () => {
     // one cheap gate job so a quiet night still leaves a run explaining itself.
     const jobs = parseJobs(src);
     expect(jobs.map(({ name }) => name)).toContain('gate');
-    for (const name of ['browsers', 'budgets']) {
+    for (const name of ['browsers-shard', 'budgets', 'sweeps']) {
       const job = jobs.find((candidate) => candidate.name === name);
       expect(job, name).toBeDefined();
       expect(job!.body, name).toMatch(/^ {4}if: needs\.gate\.outputs\.browsers == 'true'$/m);
@@ -453,6 +562,28 @@ describe('.github/workflows/nightly-corpus.yml', () => {
     for (const vendored of ['public/sdkjs/**', 'public/web-apps/**', 'public/fonts/**']) {
       expect(oxlint.ignorePatterns, vendored).toContain(vendored);
     }
+    // Our own scripts can sit next to a vendored bundle (the SheetJS worker beside
+    // xlsx.full.min.js); a directory-wide ignore there silently drops them.
+    for (const own of ['public/sw.js', 'public/libs/sheetjs/convert.worker.js']) {
+      const ignoredBy = oxlint.ignorePatterns.filter((pattern) => matchesGlob(own, pattern));
+      expect(ignoredBy, own).toEqual([]);
+    }
+  });
+
+  it('runs the interaction sweeps that the docs call nightly', () => {
+    // CLAUDE.md / test-matrix used to claim API_SWEEP / SHORTCUT_SWEEP / MONKEY
+    // ran at night while only UI crawl + slow-net were wired. The dedicated
+    // sweeps job is what makes that claim true.
+    const sweeps = jobs.find(({ name }) => name === 'sweeps');
+    expect(sweeps).toBeDefined();
+    expect(sweeps!.body).toMatch(/timeout-minutes: 120/);
+    const env = sweeps!.body;
+    expect(env).toContain('API_SWEEP: "1"');
+    expect(env).toContain('SHORTCUT_SWEEP: "1"');
+    expect(env).toContain('MONKEY: "1"');
+    expect(env).toContain('test/e2e/api-surface.spec.ts');
+    expect(env).toContain('test/e2e/shortcut-surface.spec.ts');
+    expect(env).toContain('test/e2e/monkey.spec.ts');
   });
 
   it('drops the corpus fuzzer output without dropping real bug-report files', () => {

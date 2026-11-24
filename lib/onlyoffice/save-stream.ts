@@ -3,23 +3,23 @@ import { t } from '@ranuts/shared/i18n';
 import { X2TConverter, saveFileToDisk } from '@ranuts/converter';
 import { oAscFileType } from '../file-types';
 import { getFileExtension, getNormalizedFile, getSavedFileMimeType } from './file-helpers';
-import { getDocumentOpenError, waitForDocumentContentReady } from './open-state';
-import { getReadonlyMode } from './readonly';
+import { getDocumentLifetimeSignal, getDocumentOpenError, waitForDocumentContentReady } from './open-state';
 import { isEmbedMode } from '../embed-mode';
 import { markDocumentSaved } from '../unsaved-guard';
 import type { SaveOutcome } from '../save-target';
-import { captureSavePoint, commitSavePoint } from './save-point';
+import { captureSavePoint, commitSavePoint, isSavePointCurrent } from './save-point';
 
 /**
  * Notified when bytes actually reach the user's disk.
  *
  * Injected rather than imported: the history layer exports through this
- * module, so importing it back would close a cycle. Same shape as
- * setConverterCallbacks elsewhere in the app.
+ * module, so importing it back would close a cycle. Same shape as the other
+ * narrow injectors (setUICallbacks, setOpenRunner, setDiskWriter).
  */
-let savedToDiskListener: (() => void) | null = null;
+type SavedToDiskListener = (file: File, isCurrent: () => boolean) => void | Promise<void>;
+let savedToDiskListener: SavedToDiskListener | null = null;
 
-export function setSavedToDiskListener(listener: (() => void) | null): void {
+export function setSavedToDiskListener(listener: SavedToDiskListener | null): void {
   savedToDiskListener = listener;
 }
 
@@ -51,9 +51,39 @@ type EmbeddedSaveRequest = {
   timeoutId: number;
   fallbackId: number;
   settled: boolean;
+  isCurrent: () => boolean;
+  signal: AbortSignal;
+  onAbort: () => void;
 };
 
 let embeddedSaveRequest: EmbeddedSaveRequest | null = null;
+// Carry ownership through SDK serialization, including options retained while
+// pagination defers a download. Later toolbar saves keep their own destination.
+let triggeringSaveRequest: EmbeddedSaveRequest | null = null;
+const nativeExportRequests = new WeakMap<object, EmbeddedSaveRequest>();
+type NativeExportMethod = (this: Record<string, unknown>, ...args: unknown[]) => unknown;
+const trackedNativeMethods = new WeakSet<NativeExportMethod>();
+
+function installNativeExportOwnership(win: Window): void {
+  const api = (win as Window & { Asc?: { editor?: Record<string, unknown> } }).Asc?.editor;
+  if (!api) return;
+  for (const name of ['downloadAs', '_downloadAsFromLocal']) {
+    const method = api[name] as NativeExportMethod | undefined;
+    if (typeof method !== 'function' || trackedNativeMethods.has(method)) continue;
+    const tracked: NativeExportMethod = function (...args) {
+      const request = args
+        .filter((arg): arg is object => !!arg && typeof arg === 'object')
+        .map((arg) => nativeExportRequests.get(arg))
+        .find((request) => request !== undefined);
+      // CheckPrint retains these exact options across pagination/reader-mode
+      // work and resumes via downloadAs after the initial call has returned.
+      if (request) return runRequestedExport(request, () => method.apply(this, args));
+      return method.apply(this, args);
+    };
+    trackedNativeMethods.add(tracked);
+    api[name] = tracked;
+  }
+}
 
 export function hasPendingEmbeddedSaveRequest(): boolean {
   return embeddedSaveRequest !== null && !embeddedSaveRequest.settled;
@@ -87,6 +117,7 @@ function rejectEmbeddedSaveRequest(request: EmbeddedSaveRequest, error: Error): 
 function cleanupEmbeddedSaveRequest(request: EmbeddedSaveRequest): void {
   window.clearTimeout(request.timeoutId);
   window.clearTimeout(request.fallbackId);
+  request.signal.removeEventListener('abort', request.onAbort);
   if (embeddedSaveRequest === request) {
     embeddedSaveRequest = null;
   }
@@ -120,7 +151,7 @@ interface FileStreamMessage {
 // lib/converter's singleton.
 let sheetJsConverter: X2TConverter | null = null;
 
-function standaloneExportState(win: Window, sequence = 0) {
+function standaloneExportState(win: Window, sequence = 0, request: EmbeddedSaveRequest | null = null) {
   const source = getDocmentObj();
   const editor = window.editor;
   const point = captureSavePoint();
@@ -128,7 +159,7 @@ function standaloneExportState(win: Window, sequence = 0) {
     source,
     sequence,
     point,
-    request: embeddedSaveRequest,
+    request,
     isCurrent: () =>
       getDocmentObj() === source &&
       window.editor === editor &&
@@ -142,6 +173,7 @@ const writtenSequences = new WeakMap<object, number>();
 
 /** Bind serialized bytes to their conversion, then queue them in actual stream order. */
 export function installSaveStreamTracking(win: Window): boolean {
+  installNativeExportOwnership(win);
   type Result = { binary: object };
   type Converter = {
     convertFromBin(request: unknown): Promise<Result>;
@@ -160,7 +192,9 @@ export function installSaveStreamTracking(win: Window): boolean {
     const source = getDocmentObj();
     const sequence = (exportSequences.get(source) ?? 0) + 1;
     exportSequences.set(source, sequence);
-    const state = standaloneExportState(win, sequence);
+    const candidate = triggeringSaveRequest;
+    const request = candidate?.isCurrent() ? candidate : null;
+    const state = standaloneExportState(win, sequence, request);
     return convert.call(this, input).then((result) => {
       if (result?.binary && typeof result.binary === 'object') outputs.set(result.binary, state);
       return result;
@@ -183,29 +217,40 @@ function routeSavedFile(file: File, state: ReturnType<typeof standaloneExportSta
   if (state.request) {
     const request = state.request;
     if (request !== embeddedSaveRequest || request.settled) return;
+    if (!ensureCurrentSaveRequest(request)) return;
     cleanupEmbeddedSaveRequest(request);
     resolveEmbeddedSaveRequest(request, file);
     return;
   }
 
+  // No pending document:save: this stream came from the File tab (or an
+  // equivalent UI export). In embed mode, deliver a local download without
+  // clearing the host's dirty flag — the parent still has not received
+  // document:saved. Previously embed mode dropped the bytes entirely, which
+  // left the download control looking broken (#307).
   if (isEmbedMode()) {
-    console.warn('Local save is disabled in iframe embed mode. Use document:save from the parent page.');
+    void saveFileToDisk(file, file.name).catch((error) => notifyOperationFailed(error));
     return;
   }
 
   // Only ordinary saves reuse the linked document destination. Other formats
   // use independent export pickers and must not suppress each other's output.
-  const regularSave = getFileExtension(file.name) === getFileExtension(state.source.fileName);
+  const sourceExt = getFileExtension(state.source.fileName);
+  const savedExt = getFileExtension(file.name);
+  const normalizedExt = ({ DOC: 'DOCX', XLS: 'XLSX', PPT: 'PPTX' } as Record<string, string>)[sourceExt];
+  const regularSave = savedExt === sourceExt || savedExt === normalizedExt;
 
-  const reachedDisk = (): void => {
+  const reachedDisk = async (): Promise<void> => {
     // Reaching the user's disk is the only thing that clears the unsaved-changes
     // warning: an autosave snapshot lives in this browser, a saved file does not.
     if (regularSave)
       writtenSequences.set(state.source, Math.max(writtenSequences.get(state.source) ?? 0, state.sequence));
-    if (state.isCurrent() && commitSavePoint(state.point)) {
-      markDocumentSaved();
-      savedToDiskListener?.();
-    }
+    const isCurrent = () => state.isCurrent() && writtenSequences.get(state.source) === state.sequence;
+    if (regularSave && isCurrent() && isSavePointCurrent(state.point)) await savedToDiskListener?.(file, isCurrent);
+    // Clearing dirty also makes reload look safe. Retain the saved bytes before
+    // publishing completion, then recheck for edits made while storage waited.
+    // A PDF or other-format export does not save the editable source.
+    if (regularSave && state.isCurrent() && commitSavePoint(state.point)) markDocumentSaved();
   };
 
   // Write back to the document's own file where that is possible, and download
@@ -221,10 +266,10 @@ function routeSavedFile(file: File, state: ReturnType<typeof standaloneExportSta
       const outcome = await diskWriter?.(file);
       if (outcome === 'cancelled') return;
       if (outcome === 'written') {
-        reachedDisk();
+        await reachedDisk();
         return;
       }
-      if (await saveFileToDisk(file, file.name)) reachedDisk();
+      if (await saveFileToDisk(file, file.name)) await reachedDisk();
     } catch (error) {
       notifyOperationFailed(error);
     }
@@ -299,7 +344,7 @@ if (typeof window !== 'undefined') {
  * trigger the export directly on the same-origin editor iframe's API with the
  * numeric file-type constant. Returns false when no editor frame is ready.
  */
-function triggerPersonalDownloadAs(targetExt: string): boolean {
+function triggerPersonalDownloadAs(targetExt: string, request: EmbeddedSaveRequest): boolean {
   // A CSV export request pops the editor's delimiter-options dialog and stalls
   // a headless save forever; ask the editor for XLSX instead and convert the
   // returned stream to CSV in handleFileStreamMessage.
@@ -320,6 +365,7 @@ function triggerPersonalDownloadAs(targetExt: string): boolean {
             asc_DownloadAs?: (options: unknown) => void;
             isLoadFullApi?: boolean;
             isDocumentLoadComplete?: boolean;
+            isLongAction?: () => boolean;
           }
         | undefined;
       if (api && typeof api.asc_DownloadAs === 'function' && AscNs?.asc_CDownloadOptions) {
@@ -329,8 +375,13 @@ function triggerPersonalDownloadAs(targetExt: string): boolean {
         // of undefined (reading 'forEach')") or is silently dropped. Only
         // fire once the SDK itself reports full readiness -- the caller's
         // retry loop keeps polling until then.
-        if (!api.isLoadFullApi || !api.isDocumentLoadComplete) return false;
-        api.asc_DownloadAs(new AscNs.asc_CDownloadOptions(code));
+        if (!api.isLoadFullApi || !api.isDocumentLoadComplete || api.isLongAction?.()) return false;
+        // The readiness callback and guard-install retry can race on a cold
+        // load. Never start an export whose conversion cannot carry its owner.
+        if (!installSaveStreamTracking(window.frames[i])) return false;
+        const options = new AscNs.asc_CDownloadOptions!(code) as object;
+        nativeExportRequests.set(options, request);
+        runRequestedExport(request, () => api.asc_DownloadAs!(options));
         return true;
       }
     } catch {
@@ -338,6 +389,25 @@ function triggerPersonalDownloadAs(targetExt: string): boolean {
     }
   }
   return false;
+}
+
+function ensureCurrentSaveRequest(request: EmbeddedSaveRequest): boolean {
+  if (request.settled) return false;
+  if (request.isCurrent()) return true;
+  cleanupEmbeddedSaveRequest(request);
+  rejectEmbeddedSaveRequest(request, new DOMException('Document changed before save completed', 'AbortError'));
+  return false;
+}
+
+function runRequestedExport<T>(request: EmbeddedSaveRequest, action: () => T): T | undefined {
+  if (!ensureCurrentSaveRequest(request)) return;
+  const previous = triggeringSaveRequest;
+  triggeringSaveRequest = request;
+  try {
+    return action();
+  } finally {
+    triggeringSaveRequest = previous;
+  }
 }
 
 export function requestSaveDocument(
@@ -350,9 +420,9 @@ export function requestSaveDocument(
     return Promise.reject(new Error('No document is open'));
   }
 
-  if (getReadonlyMode()) {
-    return Promise.reject(new Error('Current document is readonly'));
-  }
+  // Read-only blocks editing, not exporting. Embed hosts call document:save
+  // for the bytes, and the File tab's download uses the same stream — both
+  // must work on a locked document (#307). Autosave still skips read-only.
 
   const openError = getDocumentOpenError();
   if (openError) {
@@ -363,19 +433,21 @@ export function requestSaveDocument(
     return Promise.reject(new Error('A save request is already in progress'));
   }
 
+  const source = getDocmentObj();
+  const editor = window.editor;
+  const signal = getDocumentLifetimeSignal();
+  if (signal.aborted) return Promise.reject(signal.reason);
+
   return new Promise<File>((resolve, reject) => {
     const normalizedTargetExt = targetExt.toUpperCase();
 
     const fallbackId = window.setTimeout(() => {
-      if (!embeddedSaveRequest || embeddedSaveRequest.settled) {
-        return;
-      }
+      if (!ensureCurrentSaveRequest(request)) return;
 
-      const { file, fileName } = getDocmentObj() || {};
+      const { file, fileName } = source;
       const originalExt = getFileExtension(fileName || file?.name || '');
 
       if (options.returnOriginalOnTimeout && file && originalExt === normalizedTargetExt) {
-        const request = embeddedSaveRequest;
         cleanupEmbeddedSaveRequest(request);
         resolveEmbeddedSaveRequest(request, getNormalizedFile(file));
       }
@@ -389,26 +461,29 @@ export function requestSaveDocument(
     // open-conversion failure rejects the request immediately
     // (installOpenFailureGuard).
     const timeoutId = window.setTimeout(() => {
-      if (!embeddedSaveRequest) {
-        return;
-      }
-      const request = embeddedSaveRequest;
+      if (!ensureCurrentSaveRequest(request)) return;
       cleanupEmbeddedSaveRequest(request);
       rejectEmbeddedSaveRequest(request, new Error('Save request timed out before receiving edited file data'));
     }, SAVE_REQUEST_TIMEOUT_MS);
 
-    embeddedSaveRequest = {
+    const request: EmbeddedSaveRequest = {
       targetExt: normalizedTargetExt,
       resolve,
       reject,
       timeoutId,
       fallbackId,
       settled: false,
+      signal,
+      isCurrent: () => !signal.aborted && getDocmentObj() === source && window.editor === editor,
+      onAbort: () => {
+        cleanupEmbeddedSaveRequest(request);
+        rejectEmbeddedSaveRequest(request, signal.reason);
+      },
     };
+    embeddedSaveRequest = request;
+    signal.addEventListener('abort', request.onAbort, { once: true });
 
-    const editor = window.editor;
     if (!editor || typeof editor.downloadAs !== 'function') {
-      const request = embeddedSaveRequest;
       cleanupEmbeddedSaveRequest(request);
       rejectEmbeddedSaveRequest(request, new Error('The current editor does not support downloadAs export'));
       return;
@@ -421,13 +496,13 @@ export function requestSaveDocument(
     // editor boot can take a long time (observed in headless CI / first
     // preview visits). onDocumentReady is a dependable signal
     // (createPersonalEditorInstance wires it), so wait for it -- capped
-    // below the request's own 60 s timeout so the trigger still gets a
+    // below the request's own timeout so the trigger still gets a
     // window to fire -- then retry until the SDK reports full readiness
     // (see triggerPersonalDownloadAs) or the request settles.
     const downloadAs = editor.downloadAs.bind(editor);
-    const request = embeddedSaveRequest;
     void (async () => {
-      await waitForDocumentContentReady(SAVE_READY_WAIT_MS);
+      await waitForDocumentContentReady(SAVE_READY_WAIT_MS, signal);
+      if (!ensureCurrentSaveRequest(request)) return;
       const failure = getDocumentOpenError();
       if (failure && request && !request.settled) {
         cleanupEmbeddedSaveRequest(request);
@@ -435,14 +510,17 @@ export function requestSaveDocument(
         return;
       }
       const retryDeadline = Date.now() + SAVE_RETRY_WINDOW_MS;
-      while (!request?.settled && !triggerPersonalDownloadAs(normalizedTargetExt)) {
+      while (ensureCurrentSaveRequest(request) && !triggerPersonalDownloadAs(normalizedTargetExt, request)) {
         if (Date.now() > retryDeadline) {
-          downloadAs(normalizedTargetExt);
+          runRequestedExport(request, () => downloadAs(normalizedTargetExt));
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
-    })();
+    })().catch((error: Error) => {
+      cleanupEmbeddedSaveRequest(request);
+      rejectEmbeddedSaveRequest(request, error);
+    });
   });
 }
 

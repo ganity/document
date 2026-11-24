@@ -1,3 +1,4 @@
+import { mockApi } from './lib/mock-api';
 import { readFile } from 'node:fs/promises';
 import type { Page } from '@playwright/test';
 import { expect, test } from './lib/l0';
@@ -23,7 +24,7 @@ async function open(
     );
   }, endpoint);
   let requested = 0;
-  await page.route(`${endpoint}/chat/completions`, async (route) => {
+  await mockApi(page, `${endpoint}/chat/completions`, async (route) => {
     const call = calls[requested++];
     await route.fulfill({
       json: {
@@ -127,7 +128,7 @@ test('formatted Word content retains native headings and lists with safe readbac
   });
   await page
     .frameLocator('iframe[name="frameEditor"]')
-    .getByRole('button', { name: 'Save (Ctrl+S)', exact: true })
+    .getByRole('button', { name: /^Save \((?:Ctrl|⌘)\+S\)$/ })
     .click();
   const download = await downloadPromise;
   const saved = await download.path();

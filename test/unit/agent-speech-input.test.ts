@@ -297,6 +297,26 @@ it('dismisses speech privacy with Escape before cancelling active dictation', ()
   expect(speech.isBusy()).toBe(false);
 });
 
+it('closes the speech disclosure as soon as the language menu opens', () => {
+  const { el, speech } = setup();
+  const privacy = el.querySelector<HTMLElement>('.agent-speech-privacy')!;
+  const language = el.querySelector<HTMLElement>('.agent-speech-language')!;
+  expect(privacy.hasAttribute('open')).toBe(true);
+  language.dispatchEvent(new Event('show'));
+  expect(privacy.hasAttribute('open')).toBe(false);
+  expect(speech.isBusy()).toBe(true);
+});
+
+it('closes the language menu when the speech disclosure opens', () => {
+  const { el } = setup();
+  const privacy = el.querySelector<HTMLElement>('.agent-speech-privacy')!;
+  const language = el.querySelector<HTMLElement>('.agent-speech-language')!;
+  privacy.removeAttribute('open');
+  language.setAttribute('open', '');
+  privacy.dispatchEvent(new Event('show'));
+  expect(language.hasAttribute('open')).toBe(false);
+});
+
 it('expires the initial speech disclosure without ending listening', () => {
   vi.useFakeTimers();
   try {
@@ -357,6 +377,33 @@ it('expires the error popover but retains the error and a readable detail entry'
     expect(el.querySelector('[role="status"]')!.textContent).toBe('agentSpeechDenied');
     expect(privacy.querySelector('button')!.getAttribute('aria-label')).toBe('agentSpeechDenied');
     expect(draft()).toBe('Original');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it.each(['end', 'timeout'] as const)('finishes healthy dictation at the duration limit (%s)', (ending) => {
+  vi.useFakeTimers();
+  try {
+    const { el, recognition, speech, draft } = setup();
+    recognition.onstart?.();
+    vi.advanceTimersByTime(59000);
+    recognition.onresult?.({ results: [{ isFinal: false, 0: { transcript: 'Visible words' } }] });
+    vi.advanceTimersByTime(1000);
+    expect(recognition.stop).toHaveBeenCalledOnce();
+    expect(recognition.abort).not.toHaveBeenCalled();
+    expect(speech.isBusy()).toBe(true);
+    if (ending === 'end') {
+      recognition.onresult?.({ results: [{ isFinal: true, 0: { transcript: 'Final words' } }] });
+      recognition.onend?.();
+    } else vi.advanceTimersByTime(2000);
+    expect(speech.isBusy()).toBe(false);
+    expect(draft()).toBe(ending === 'end' ? 'Original Final words' : 'Original Visible words');
+    expect(el.querySelector('[role="status"]')!.textContent).toBe('agentSpeechLimit');
+    el.querySelector<HTMLButtonElement>('.agent-speech-mic')!.click();
+    expect(speech.isBusy()).toBe(true);
+    expect(el.querySelector('[role="status"]')!.textContent).toBe('agentSpeechStarting');
+    speech.close();
   } finally {
     vi.useRealTimers();
   }

@@ -26,6 +26,7 @@ export interface I18nMessages {
   agentSpeechDenied: string;
   agentSpeechFailed: string;
   agentSpeechFinishing: string;
+  agentSpeechLimit: string;
   agentSpeechUnsupported: string;
 
   agentDownloadIncomplete: string;
@@ -322,6 +323,8 @@ export interface I18nMessages {
   agentHistoryBusy: string;
   agentHistorySaveFailed: string;
   agentHistoryConflict: string;
+  agentRecoverHistory: string;
+  agentHistoryLocalCopy: string;
   agentRestoreHistory: string;
   agentImportHistory: string;
   agentExportHistory: string;
@@ -381,6 +384,7 @@ export interface I18nMessages {
   agentModelSourceInvalid: string;
   agentModelQuota: string;
   agentStopped: string;
+  agentResponseIncomplete: string;
   agentMaxSteps: string;
   agentTaskPartialFailed: string;
   agentTaskRepeatStopped: string;
@@ -473,15 +477,6 @@ export interface I18nMessages {
   agentSourcesSources: string;
   agentSourcesLocal: string;
   agentSourcesLocalHint: string;
-  agentSourcesMcp: string;
-  agentSourcesUrl: string;
-  agentSourcesToken: string;
-  agentSourcesConnect: string;
-  agentSourcesDisconnect: string;
-  agentSourcesDrive: string;
-  agentSourcesDriveHint: string;
-  agentSourcesUnavailable: string;
-  agentSourcesReconnect: string;
   agentSourcesLoading: string;
   agentSourcesFailed: string;
   agentSourcesTooLarge: string;
@@ -491,14 +486,12 @@ export interface I18nMessages {
   agentSourcesTimeout: string;
   agentSourcesUnsupported: string;
   agentSourcesRemove: string;
-  agentSourcesAttached: string;
   agentSourcesAttach: string;
   agentSourcesClose: string;
   agentSourcesPreviewTruncated: string;
   agentSourcesPartial: string;
   agentSourcesSearch: string;
   agentSourcesOpen: string;
-  agentSourcesMore: string;
   agentSourcesExcerpt: string;
   agentArtifactTitle: string;
   agentArtifactEmpty: string;

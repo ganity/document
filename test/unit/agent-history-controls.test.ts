@@ -33,6 +33,9 @@ it('does not offer cancellation after confirmed deletion has started', async () 
   await vi.waitFor(() => expect(finish).toBeDefined());
   const cancel = controls.el.querySelector<HTMLButtonElement>('.agent-history-cancel')!;
   expect(cancel.disabled).toBe(true);
+  for (const action of controls.el.querySelectorAll<HTMLButtonElement>('.agent-history-actions button')) {
+    expect(action.disabled).toBe(true);
+  }
   cancel.click();
   expect(controls.el.querySelector<HTMLElement>('.agent-history-confirmation')!.hidden).toBe(false);
   finish();
@@ -40,6 +43,9 @@ it('does not offer cancellation after confirmed deletion has started', async () 
     expect(controls.el.querySelector<HTMLElement>('.agent-history-confirmation')!.hidden).toBe(true),
   );
   expect(cancel.disabled).toBe(false);
+  for (const action of controls.el.querySelectorAll<HTMLButtonElement>('.agent-history-actions button')) {
+    expect(action.disabled).toBe(false);
+  }
 });
 
 it('requires explicit opt-in to save and restores after a previously enabled preference', async () => {
@@ -352,4 +358,23 @@ it('settles clear-all exactly once only on successful retry while preserving con
   );
   expect(restored).toHaveBeenCalledExactlyOnceWith('all');
   expect(document.activeElement).toBe(trigger);
+});
+
+it('offers explicit preserve-local recovery only after a conflict', async () => {
+  const store = createConversationStore();
+  store.history().save([{ role: 'user', content: 'local' }]);
+  const before = vi.fn();
+  const restored = vi.fn();
+  const controls = createHistoryControls({ store, onBeforeRestore: before, onRestore: restored });
+  document.body.append(controls.el);
+  const recover = controls.el.querySelector<HTMLButtonElement>('.agent-history-recover')!;
+  expect(recover.hidden).toBe(true);
+  controls.showError(new ConversationConflictError());
+  expect(recover.hidden).toBe(false);
+  recover.click();
+  await vi.waitFor(() => expect(restored).toHaveBeenCalledOnce());
+  expect(before).toHaveBeenCalledOnce();
+  expect(store.history().load()[0].content).toBe('local');
+  expect(store.saving).toBe(false);
+  expect(recover.hidden).toBe(true);
 });

@@ -1,3 +1,4 @@
+import { mockApi } from './lib/mock-api';
 import { expect, test } from './lib/l0';
 import { buildDocx, toBase64 } from './lib/ooxml';
 
@@ -115,7 +116,7 @@ for (const ext of ['docx', 'xlsx', 'pptx', 'pdf'] as const) {
     let messages = 0;
     let holdNextAnswer = false;
     let releaseAnswer: (() => void) | undefined;
-    await page.route('http://localhost:11434/api/**', async (route) => {
+    await mockApi(page, 'http://localhost:11434/api/**', async (route) => {
       if (route.request().method() === 'OPTIONS') {
         await route.fulfill({
           status: 204,
@@ -282,8 +283,11 @@ for (const ext of ['docx', 'xlsx', 'pptx', 'pdf'] as const) {
       await expect(liveStatus).toContainText('Microphone permission denied');
       await privacyToggle.click();
       await expect(page.locator('.agent-speech-hint')).toContainText('Microphone permission denied');
-      await input.click();
+      // The anchored disclosure can cover the center of a tall draft. Click
+      // the visible text inset to exercise an actual outside click.
+      await input.click({ position: { x: 8, y: 8 } });
       await expect(disclosure).not.toHaveAttribute('open');
+      await expect(input).toBeFocused();
       await page.locator('.agent-speech-mic').click();
       await page.locator('.agent-speech-cancel').click();
       await expect(input).toHaveValue(longDraft);

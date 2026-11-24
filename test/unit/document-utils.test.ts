@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   DOCUMENT_TYPE_MAP,
   getBasePath,
+  getDocumentExtension,
+  getDocumentMimeType,
   getDocumentType,
-  getMimeTypeFromExtension,
   parseReadonly,
 } from '@ranuts/shared/document-utils';
 
@@ -27,13 +28,16 @@ describe('document utils', () => {
     expect(getDocumentType(extension)).toBe(kind);
   });
 
-  it('normalizes extension casing for MIME lookup', () => {
-    expect(getMimeTypeFromExtension('XLSX')).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  });
+  it.each(['docx', 'doc', 'odt', 'rtf', 'txt', 'pdf', 'xlsx', 'xls', 'ods', 'csv', 'pptx', 'ppt', 'odp'])(
+    'names %s back from its own MIME type',
+    (extension) => {
+      expect(getDocumentExtension(getDocumentMimeType(extension))).toBe(extension);
+    },
+  );
 
-  it('uses image/png fallback for unknown MIME extensions', () => {
-    expect(getMimeTypeFromExtension('unknown')).toBe('image/png');
-    expect(getMimeTypeFromExtension('')).toBe('image/png');
+  it('names no extension for a MIME type outside the document formats', () => {
+    expect(getDocumentExtension('image/png')).toBe('');
+    expect(getDocumentExtension('')).toBe('');
   });
 
   it('parses the readonly query value for preview mode', () => {

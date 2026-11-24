@@ -1,4 +1,6 @@
+import { mockApi } from './lib/mock-api';
 import { expect, test } from './lib/l0';
+import { assertTitleRail, contentGeometry, textGeometry } from './lib/layout-geometry';
 
 test('restores a long saved conversation and switches sessions with completed answer actions', async ({ page }) => {
   test.setTimeout(90_000);
@@ -136,15 +138,16 @@ test('restores a long saved conversation and switches sessions with completed an
   await expect(viewHeader.locator('.agent-history-heading')).toHaveCount(1);
   const back = viewHeader.getByRole('button', { name: 'Back to conversation', exact: true });
   await expect(back).toHaveCount(1);
-  const viewHeaderBox = await viewHeader.boundingBox();
-  const titleBox = await viewHeader.locator('.agent-history-heading').boundingBox();
-  const backBox = await back.boundingBox();
-  const headerBox = await page.locator('.agent-runtime-panel .agent-panel-title').boundingBox();
-  expect(Math.abs(viewHeaderBox!.x - headerBox!.x)).toBeLessThanOrEqual(1);
-  const rowBox = await history.locator('.agent-conversation-title').first().boundingBox();
-  expect(Math.abs(viewHeaderBox!.x - rowBox!.x)).toBeLessThanOrEqual(1);
+  await page.evaluate(() => document.fonts.ready);
+  await assertTitleRail(page.locator('.agent-runtime-panel .agent-panel-title'));
+  const geometry = await contentGeometry(history);
+  const row = await textGeometry(history.locator('.agent-conversation-title').first());
+  // The Back hit area extends into the gutter; its SVG and row text share the content rail.
+  expect(geometry.contentLeft).toBeCloseTo(16, 1);
+  expect(geometry.iconLeft).toBeCloseTo(geometry.contentLeft, 1);
+  expect(row.textLeft).toBeCloseTo(geometry.contentLeft, 1);
   // The owned title follows the compact Back target and the shared 8px gap.
-  expect(Math.abs(titleBox!.x - (backBox!.x + backBox!.width + 8))).toBeLessThanOrEqual(1);
+  expect(Math.abs(geometry.headingLeft - (geometry.backLeft + geometry.backWidth + 8))).toBeLessThanOrEqual(1);
   await page.locator('.agent-runtime-panel').screenshot({ path: test.info().outputPath('history-light.png') });
   await page.emulateMedia({ colorScheme: 'dark' });
   await page.locator('.agent-runtime-panel').screenshot({ path: test.info().outputPath('history-dark.png') });
@@ -323,12 +326,15 @@ test('keeps the first validating request in its original chat while startup hist
     db.close();
   });
   await page.addInitScript(() => {
-    const open = indexedDB.open.bind(indexedDB);
+    // WebKit drops an override stored on the indexedDB instance during
+    // editor startup. Patch its stable prototype so the first history open
+    // is actually held until this test releases it.
+    const open = IDBFactory.prototype.open;
     const success = Object.getOwnPropertyDescriptor(IDBRequest.prototype, 'onsuccess')!;
     const host = window as unknown as { releaseAssistantHistory?: () => void };
     let delayed = false;
-    indexedDB.open = (...args: Parameters<IDBFactory['open']>) => {
-      const request = open(...args);
+    IDBFactory.prototype.open = function (...args: Parameters<IDBFactory['open']>) {
+      const request = open.apply(this, args);
       if (args[0] === 'document-ai-conversations' && !delayed) {
         delayed = true;
         Object.defineProperty(request, 'onsuccess', {
@@ -348,7 +354,7 @@ test('keeps the first validating request in its original chat while startup hist
     };
   });
   let releaseRouting: (() => void) | undefined;
-  await page.route('http://localhost:11434/api/**', async (route) => {
+  await mockApi(page, 'http://localhost:11434/api/**', async (route) => {
     if (route.request().method() === 'OPTIONS') {
       await route.fulfill({
         status: 204,
@@ -378,6 +384,12 @@ test('keeps the first validating request in its original chat while startup hist
     await page.goto('/editor?new=docx&locale=en');
     await page.waitForFunction(() => Boolean(window.__ooFrames.readyEditor()));
     await page.frameLocator('iframe[name="frameEditor"]').locator('.agent-sidebar-entry').click();
+    await page.waitForFunction(
+      () =>
+        typeof (window as unknown as { releaseAssistantHistory?: () => void }).releaseAssistantHistory === 'function',
+    );
+    await expect(page.locator('.agent-history-status')).toHaveText('Updating chat history…');
+    await expect(page.locator('.cui-msg-user')).toHaveCount(0);
     const input = page.locator('.cui-input');
     await input.fill('Tell me a brief story');
     await page.locator('.cui-send').click();
@@ -392,10 +404,6 @@ test('keeps the first validating request in its original chat while startup hist
     for (const action of ['edit', 'remove', 'send-now'])
       await expect(page.locator(`.agent-queue-${action}`)).toBeDisabled();
     await expect(page.locator('.cui-stop')).toBeEnabled();
-    await page.waitForFunction(
-      () =>
-        typeof (window as unknown as { releaseAssistantHistory?: () => void }).releaseAssistantHistory === 'function',
-    );
     await page.evaluate(() => (window as unknown as { releaseAssistantHistory(): void }).releaseAssistantHistory());
     await expect(page.locator('.agent-history-status')).toContainText('saving is enabled');
     await expect(page.locator('.agent-queue-text')).toHaveText('Tell me a brief story');
@@ -478,7 +486,7 @@ test('deleting an inactive saved chat preserves a held reply and the next draft 
     release = resolve;
   });
   let answers = 0;
-  await page.route('http://localhost:11434/api/**', async (route) => {
+  await mockApi(page, 'http://localhost:11434/api/**', async (route) => {
     if (route.request().method() === 'OPTIONS') {
       await route.fulfill({
         status: 204,

@@ -11,15 +11,24 @@
  * with a scripted provider and mock tools.
  */
 import type { AgentTool } from './types';
+import { incompleteResponseReason, type IncompleteResponseReason } from './llm/completion';
+export { incompleteResponseReason } from './llm/completion';
 import { validateToolInput } from './tool-validation';
 export { validateToolInput } from './tool-validation';
-import { budgetMessages, contextualizeMessages, DEFAULT_CONTEXT_BYTES } from './context-budget';
+import {
+  budgetMessages,
+  contextualizeMessages,
+  DEFAULT_CONTEXT_BYTES,
+  budgetToolResults,
+  type BudgetedToolResult,
+} from './context-budget';
+export { fitTextResult, minimumTextResult } from './context-budget';
 import type { LLMContent, LLMMessage, LLMProvider, LLMResponse, LLMToolDef } from './llm/types';
 
 /** Progress event emitted during a run (for UI: chat bubbles, tool activity). */
 export type AgentEvent =
   | { type: 'usage'; usage: NonNullable<LLMResponse['usage']> }
-  | { type: 'assistant'; text: string; streamed: boolean }
+  | { type: 'assistant'; text: string; streamed: boolean; interrupted?: true }
   | { type: 'assistant_delta'; text: string }
   | { type: 'tool_call'; name: string; input: Record<string, unknown> }
   | {
@@ -72,6 +81,8 @@ export interface AgentRunResult {
   toolCallCount: number;
   /** A host tool explicitly ended the turn; this alone does not imply success. */
   completedByTool?: true;
+  /** Generation ended before a complete answer or tool request was produced. */
+  incompleteReason?: IncompleteResponseReason;
   /** True if the run stopped because it hit `maxIterations`. */
   stoppedOnLimit: boolean;
   /** Identifies a guard stop without interpreting internal error prose in the UI. */
@@ -108,6 +119,7 @@ export async function runAgent(
   if (![maxIterations, maxToolCalls, maxRepeatedCalls].every((n) => Number.isSafeInteger(n) && n > 0))
     throw new Error('Agent limits must be positive integers');
   const seenCalls = new Map<string, number>();
+  const resultBudgets: BudgetedToolResult[] = [];
   let contextNoticeSent = false;
   let firstProviderText = false;
 
@@ -137,7 +149,11 @@ export async function runAgent(
     const budgetedMessages = exactBudget
       ? [...contextualMessages]
       : budgetMessages(contextualMessages, options.maxContextBytes);
-    const requestMessages = budgetedMessages.map(({ hostPresentation: _presentation, ...message }) => message);
+    // Later exchanges may refit earlier read excerpts. Keep each provider's
+    // already-sent request independent from those archival updates.
+    const requestMessages = structuredClone(
+      budgetedMessages.map(({ hostPresentation: _presentation, ...message }) => message),
+    );
     if ((contextual.trimmed || requestMessages.length < messages.length) && !contextNoticeSent) {
       contextNoticeSent = true;
       options.onContextTrimmed?.();
@@ -166,6 +182,20 @@ export async function runAgent(
       options.onContextTrimmed?.();
     }
     if (response.usage) options.onEvent?.({ type: 'usage', usage: response.usage });
+    const incompleteReason = incompleteResponseReason(response);
+    if (incompleteReason) {
+      // A truncated tool request can contain a valid-looking partial argument
+      // object. Retain only its prose: no call is executable or left unmatched
+      // in the next provider request.
+      if (deferredDeltas.length) options.onEvent?.({ type: 'assistant_delta', text: deferredDeltas.join('') });
+      if (response.text) {
+        options.onEvent?.({ type: 'assistant', text: response.text, streamed, interrupted: true });
+        const assistant: LLMMessage = { role: 'assistant', content: response.text, interrupted: true };
+        const presentation = options.annotateAssistant?.(assistant);
+        messages.push(presentation ? { ...assistant, hostPresentation: presentation } : assistant);
+      }
+      return { text: response.text, messages, toolCallCount, stoppedOnLimit: false, aborted: false, incompleteReason };
+    }
     if (!response.toolCalls.length) {
       if (deferredDeltas.length) options.onEvent?.({ type: 'assistant_delta', text: deferredDeltas.join('') });
       if (response.text) options.onEvent?.({ type: 'assistant', text: response.text, streamed });
@@ -178,18 +208,30 @@ export async function runAgent(
       return { text: response.text, messages, toolCallCount, stoppedOnLimit: false, aborted: false };
     }
 
-    const results: LLMContent[] = [];
+    const results: LLMContent[] = response.toolCalls.map((call) => ({
+      type: 'tool_result',
+      toolUseId: call.id,
+      content: '',
+      isError: false,
+    }));
+    messages.push({ role: 'user', content: results });
+    const refitResults = () => {
+      if (!exactBudget) budgetToolResults(messages, resultBudgets, options.maxContextBytes);
+    };
+    // Refit earlier reads around the actual new shells. An oversized terminal
+    // exchange needs no inference; only provider-bound requests must fit.
+    refitResults();
     let terminal = false;
     let limited = false;
     let limitReason: Exclude<AgentRunResult['limitReason'], 'iterations'>;
-    for (const call of response.toolCalls) {
+    for (const [index, call] of response.toolCalls.entries()) {
       if (options.signal?.aborted || terminal) {
-        results.push({
+        results[index] = {
           type: 'tool_result',
           toolUseId: call.id,
           content: options.signal?.aborted ? 'Cancelled before execution' : 'Turn concluded before execution',
           isError: true,
-        });
+        };
         continue;
       }
       toolCallCount++;
@@ -204,12 +246,24 @@ export async function runAgent(
           : tool && repeats > (tool.readOnlyHint ? maxRepeatedCalls : 1)
             ? 'Repeated identical tool call refused; inspect the prior result before continuing'
             : undefined;
-      const { content, isError } = policyError
+      let { content, isError } = policyError
         ? { content: policyError, isError: true }
         : await executeToolCall(tools, call.name, call.input, options.signal);
+      const result: Extract<LLMContent, { type: 'tool_result' }> = {
+        type: 'tool_result',
+        toolUseId: call.id,
+        content,
+        isError,
+      };
+      results[index] = result;
+      if (!isError && tool?.fitResult)
+        resultBudgets.push({ result, output: JSON.parse(content), policy: tool.fitResult });
+      refitResults();
+      content = result.content;
       if (policyError) {
         limited = terminal = true;
         limitReason = toolCallCount > maxToolCalls ? 'tool_budget' : 'repeated_call';
+        result.guardReason = limitReason;
       }
       if (
         typeof tool?.concludesTurn === 'function'
@@ -225,15 +279,8 @@ export async function runAgent(
         ...(tool ? { readOnlyHint: tool.readOnlyHint } : {}),
         ...(policyError ? { limitReason } : {}),
       });
-      results.push({
-        type: 'tool_result',
-        toolUseId: call.id,
-        content,
-        isError,
-        ...(policyError ? { guardReason: limitReason } : {}),
-      });
     }
-    messages.push({ role: 'user', content: results });
+    refitResults();
     options.onToolExchange?.(structuredClone(messages));
     if (terminal && !options.signal?.aborted)
       return {

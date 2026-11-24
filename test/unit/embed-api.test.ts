@@ -513,6 +513,49 @@ describe('embed-api', () => {
     });
   });
 
+  it('preserves the mounted metadata when an embedded file fails before replacement', async () => {
+    const store = await import('@ranuts/shared/store');
+    store.setDocmentObj({ fileName: 'Original.docx', file: new File(['original'], 'Original.docx') });
+    const original = store.getDocmentObj();
+    window.history.replaceState(null, '', '/editor?embed=1');
+    const { initEmbedApi } = await import('../../lib/embed-api');
+    initEmbedApi();
+    mockHandleDocumentOperation.mockRejectedValueOnce(new DOMException('Unreadable file', 'NotReadableError'));
+    await dispatchMessage({
+      id: 'failed-metadata',
+      type: 'document:open-file',
+      payload: { file: new File(['bad'], 'Bad.xlsx') },
+    });
+    expectMessagePosted(postMessageSpy, 'document:error', 'failed-metadata');
+    expect(store.getDocmentObj()).toBe(original);
+  });
+
+  it('publishes embedded metadata after a successful mount', async () => {
+    const store = await import('@ranuts/shared/store');
+    store.setDocmentObj({ fileName: 'Original.docx', file: new File(['original'], 'Original.docx') });
+    const original = store.getDocmentObj();
+    window.history.replaceState(null, '', '/editor?embed=1');
+    const { initEmbedApi } = await import('../../lib/embed-api');
+    initEmbedApi();
+    let finish!: () => void;
+    mockHandleDocumentOperation.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const file = new File(['replacement'], 'Replacement.xlsx');
+    await dispatchMessage({ id: 'pending-metadata', type: 'document:open-file', payload: { file } });
+    try {
+      expect(store.getDocmentObj()).toBe(original);
+    } finally {
+      finish();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expectMessagePosted(postMessageSpy, 'document:opened', 'pending-metadata');
+    expect(store.getDocmentObj()).toEqual({ fileName: 'Replacement.xlsx', file });
+  });
+
   describe('detectEmbedMode via URL params', () => {
     it.each([
       ['?embed=', true],
@@ -539,17 +582,21 @@ describe('embed-api', () => {
       expect(document.body.classList.contains('embed-mode')).toBe(true);
     });
 
-    it('posts document:ready when the load event fires', async () => {
+    it.each(['loading', 'complete'] as const)('announces ready once when initialized at %s', async (state) => {
       window.history.pushState({}, '', '/?embed=1');
       const { initEmbedApi } = await import('../../lib/embed-api');
-      initEmbedApi();
-
-      window.dispatchEvent(new Event('load'));
-
-      expect(postMessageSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'document:ready' }),
-        expect.any(String),
-      );
+      const readyState = vi.spyOn(document, 'readyState', 'get').mockReturnValue(state);
+      try {
+        initEmbedApi();
+        expect(postMessageSpy).toHaveBeenCalledTimes(state === 'complete' ? 1 : 0);
+        window.dispatchEvent(new Event('load'));
+        expect(postMessageSpy).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ type: 'document:ready' }),
+          expect.any(String),
+        );
+      } finally {
+        readyState.mockRestore();
+      }
     });
 
     it('forwards the OnlyOffice save button to the DeckWise host', async () => {

@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { LanguageCode, setLanguage } from '@ranuts/shared/i18n';
+import { LanguageCode, loadLocale, setLanguage } from '@ranuts/shared/i18n';
 import { createTeachingAnimationForm } from '../../lib/deckwise-teaching-animation-form';
 import { relocateAnimationTrigger } from '../../lib/deckwise-teaching-animation-bindings';
 import type { AnimationCue } from '../../lib/deckwise-teaching-animation-bindings';
-beforeEach(() => setLanguage(LanguageCode.ZH));
+beforeEach(async () => {
+  await loadLocale(LanguageCode.ZH);
+  setLanguage(LanguageCode.ZH);
+});
 afterEach(() => {
   document.body.replaceChildren();
   setLanguage(LanguageCode.EN);

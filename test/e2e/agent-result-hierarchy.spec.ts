@@ -1,3 +1,4 @@
+import { captureClipboard } from './lib/clipboard';
 import { expect, test } from './lib/l0';
 
 test('restored drafts retain clear identity, readable narrow content and source-only keyboard copying', async ({
@@ -61,7 +62,7 @@ test('restored drafts retain clear identity, readable narrow content and source-
   await expect(page.locator('[data-interrupted] .cui-result-label')).toHaveText('Incomplete response');
   await expect(page.locator('.cui-apply')).toHaveCount(0);
   await expect(draft).toHaveAttribute('data-source', source);
-  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const copiedText = await captureClipboard(page);
   const copy = draft.locator('.cui-copy');
   await expect(copy).toBeVisible();
   await page.keyboard.press('Tab');
@@ -75,7 +76,7 @@ test('restored drafts retain clear identity, readable narrow content and source-
   ).toBe(true);
   await copy.press('Enter');
   await expect(copy).toHaveAccessibleName('Copied');
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(source);
+  expect(await copiedText()).toBe(source);
   const resize = page.getByRole('separator', { name: 'Resize AI panel' });
   for (const theme of ['light', 'dark'] as const) {
     await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
@@ -99,7 +100,11 @@ test('restored drafts retain clear identity, readable narrow content and source-
   await draft.scrollIntoViewIfNeeded();
   await expect.poll(() => draft.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThan(2);
   await page.locator('.agent-runtime-panel').screenshot({ path: testInfo.outputPath('results-narrow.png') });
-  await draft.locator('pre').focus();
-  await page.keyboard.press('ArrowRight');
-  await expect.poll(() => draft.locator('pre').evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
+  const code = draft.locator('pre');
+  await code.focus();
+  await expect(code).toBeFocused();
+  // WebKit can cancel native scroll before its first animation frame when
+  // keydown/keyup share a tick. Exercise a physical key press instead.
+  await code.press('ArrowRight', { delay: 100 });
+  await expect.poll(() => code.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
 });

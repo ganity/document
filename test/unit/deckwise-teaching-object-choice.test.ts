@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { LanguageCode, setLanguage } from '@ranuts/shared/i18n';
+import { LanguageCode, loadLocale, setLanguage } from '@ranuts/shared/i18n';
 const state = vi.hoisted(() => ({ api: {} as any }));
 vi.mock('../../lib/agent-plugin/editor-bridge', () => ({ getEditorApi: () => state.api }));
 import { teachingObjectChoices, appendTeachingObjectChoice } from '../../lib/deckwise-teaching-object-choice';
-beforeEach(() => setLanguage(LanguageCode.ZH));
+beforeEach(async () => {
+  await loadLocale(LanguageCode.ZH);
+  setLanguage(LanguageCode.ZH);
+});
 afterEach(() => {
   document.body.replaceChildren();
   setLanguage(LanguageCode.EN);

@@ -8,6 +8,7 @@ import { AgentChatController } from '../../lib/agent-plugin/ui/controller';
 import { createHistoryStorage } from '../../lib/agent-plugin/ui/storage';
 import { ChatView } from '@ranuts/chat-ui';
 import { RequestQueue } from '../../lib/agent-plugin/ui/request-queue';
+import { rememberModelSource } from '@ranuts/agent-core/llm/model-cache';
 HTMLElement.prototype.scrollTo = vi.fn();
 // Runtime tests explicitly prepare, as a user must now do from settings.
 function createPreparedPanel() {
@@ -29,6 +30,7 @@ const state = vi.hoisted(() => ({
   progress: [] as Array<(value: { text: string; progress?: number }) => void>,
   unavailable: undefined as undefined | (() => void),
   ready: false,
+  loadedSources: [] as Array<{ model?: string; modelUrl?: string; modelLibUrl?: string }>,
   nativeEndpoint: false,
   cached: false,
   cacheChecks: vi.fn(),
@@ -53,6 +55,7 @@ const state = vi.hoisted(() => ({
   source: '',
   readText: undefined as string | undefined,
   readAnswer: vi.fn().mockResolvedValue('120'),
+  actualDocumentTask: false,
   directTaskAnswer: undefined as undefined | ((delta?: (text: string) => void) => Promise<string>),
   editorReady: false,
   backend: undefined as undefined | ((backend: 'webllm' | 'wllama') => void),
@@ -117,15 +120,14 @@ vi.mock('@ranuts/agent-core/llm/webllm', async (original) => ({
   },
 }));
 vi.mock('../../lib/onlyoffice/readonly', () => ({ getReadonlyMode: () => state.readonly }));
-vi.mock('@ranuts/agent-core/llm/model-cache', () => ({
+vi.mock('@ranuts/agent-core/llm/model-cache', async (original) => ({
+  ...(await original<typeof import('@ranuts/agent-core/llm/model-cache')>()),
   deleteCachedModel: state.deleteCache,
   listCachedGGUF: async () =>
     state.cpuCached
       ? [{ name: 'cpu-model.gguf', url: 'https://models.example/cpu-model.gguf', size: 100, complete: true }]
       : [],
   deleteCachedGGUF: state.deleteCache,
-  rememberedModelSources: () => [],
-  rememberModelSource: () => {},
 }));
 vi.mock('../../lib/agent-plugin/editor-bridge', () => ({
   getEditorApi: () =>
@@ -184,10 +186,17 @@ vi.mock('@ranuts/agent-core/llm/local', async (original) => ({
       return state.activeBackend;
     }
     constructor(options: {
-      webllm: { onProgress: (value: { text: string }) => void; onUnavailable?: () => void };
+      webllm: {
+        model?: string;
+        modelUrl?: string;
+        modelLibUrl?: string;
+        onProgress: (value: { text: string }) => void;
+        onUnavailable?: () => void;
+      };
       onBackend?: (backend: 'webllm' | 'wllama') => void;
       wllama?: { onProgress: (value: { loaded: number; total: number }) => void };
     }) {
+      state.loadedSources.push(options.webllm);
       state.progress.push(options.webllm.onProgress);
       state.unavailable = options.webllm.onUnavailable;
       state.backend = options.onBackend;
@@ -339,7 +348,8 @@ vi.mock('../../lib/agent-plugin/document-task', async (original) => {
       request: string,
       options: Parameters<typeof import('../../lib/agent-plugin/document-task').runDocumentTask>[2],
     ) => {
-      if (options.target.context.kind === 'pdf') return actual.runDocumentTask(provider, request, options);
+      if (options.target.context.kind === 'pdf' || state.actualDocumentTask)
+        return actual.runDocumentTask(provider, request, options);
       options.beforeRun?.();
       return runAgent(
         createSchemaTaskProvider(provider, () => options.target.context),
@@ -387,6 +397,9 @@ vi.mock('../../lib/agent-plugin/document-tool-action', () => {
 afterEach(() => {
   localStorage.removeItem('agent-panel-provider');
   localStorage.removeItem('agent-local-preset');
+  localStorage.removeItem('agent-local-model-id');
+  localStorage.removeItem('agent-local-model-url');
+  localStorage.removeItem('agent-local-model-lib');
   localStorage.removeItem('agent-panel-gguf-url');
   localStorage.removeItem('agent-writing-endpoint');
   localStorage.removeItem('agent_conversation_saving_v2');
@@ -398,6 +411,8 @@ afterEach(() => {
   state.actionDispose.mockClear();
   state.progress.length = 0;
   state.ready = false;
+  state.loadedSources.length = 0;
+  localStorage.removeItem('agent-model-cache-catalog-v1');
   state.conversations = undefined;
   state.conversationRepository = undefined;
   state.nativeEndpoint = false;
@@ -416,6 +431,7 @@ afterEach(() => {
   state.toolPlan.mockReset();
   state.readAnswer.mockReset().mockResolvedValue('120');
   state.directTaskAnswer = undefined;
+  state.actualDocumentTask = false;
   state.toolContext = 'slide';
   state.apply.mockClear();
   state.routing.mockReset();
@@ -2173,6 +2189,52 @@ it.each(['word', 'cell', 'slide'] as const)(
     await vi.waitFor(() => expect(state.apply).toHaveBeenCalledOnce());
   },
 );
+it('loads a remembered mirror from real settings and keeps same-id official cache deletion independent', async () => {
+  const mirror = {
+    id: state.cachedModel,
+    label: 'Saved mirror source',
+    modelUrl: '/models/mirror/',
+    modelLibUrl: '/models/mirror.wasm',
+  };
+  rememberModelSource(mirror);
+  state.cached = true;
+  state.ready = true;
+  const panel = createAgentPanel();
+  const inventory = panel.querySelector<HTMLDetailsElement>('.agent-model-cache')!;
+  inventory.open = true;
+  inventory.dispatchEvent(new Event('toggle'));
+  const row = (label: string) =>
+    [...inventory.querySelectorAll<HTMLElement>('.agent-model-cache-row')].find((item) =>
+      item.textContent?.startsWith(label),
+    );
+  await vi.waitFor(() => expect(row(mirror.label)).toBeDefined());
+  row(mirror.label)!.querySelector<HTMLElement>('.agent-cache-use')!.click();
+  await vi.waitFor(() => expect(state.preload).toHaveBeenCalledOnce());
+  expect(state.loadedSources.at(-1)).toMatchObject({
+    model: mirror.id,
+    modelUrl: mirror.modelUrl,
+    modelLibUrl: mirror.modelLibUrl,
+  });
+  expect(localStorage.getItem('agent-local-model-url')).toBe(mirror.modelUrl);
+  expect(localStorage.getItem('agent-local-model-lib')).toBe(mirror.modelLibUrl);
+  await vi.waitFor(() =>
+    expect(row(mirror.label)?.querySelector('.agent-cache-use')?.hasAttribute('disabled')).toBe(true),
+  );
+  const official = row('Qwen3 · 4B')!;
+  expect(official.querySelector('.agent-cache-use')?.hasAttribute('disabled')).toBe(false);
+  const disposals = state.dispose.mock.calls.length;
+  const remove = official.querySelector<HTMLElement>('.agent-cache-delete')!;
+  remove.click();
+  remove.click();
+  await vi.waitFor(() => expect(state.deleteCache).toHaveBeenCalledWith(mirror.id, {}));
+  expect(state.dispose.mock.calls).toHaveLength(disposals);
+  expect(panel.querySelector('.agent-panel-note')?.textContent).toBe(t('agentModelLoaded'));
+  await vi.waitFor(() => expect(inventory.contains(official)).toBe(false));
+  row('Qwen3 · 4B')!.querySelector<HTMLElement>('.agent-cache-use')!.click();
+  await vi.waitFor(() => expect(state.preload).toHaveBeenCalledTimes(2));
+  expect(state.loadedSources.at(-1)).toMatchObject({ model: mirror.id, modelUrl: undefined, modelLibUrl: undefined });
+  expect(state.dispose.mock.calls.length).toBeGreaterThan(disposals);
+});
 it('requires confirmation and completed unload before deleting the running cached model', async () => {
   state.ready = true;
   state.cached = true;
@@ -5384,3 +5446,89 @@ it.each(['error', 'expired', 'abort'] as const)(
     }
   },
 );
+
+it.each(['length', 'max_tokens', 'content_filter'])(
+  'retains incomplete native document prose and pauses the queue on %s',
+  async (reason) => {
+    state.nativeEndpoint = true;
+    state.editorReady = true;
+    state.editorKind = 'slide';
+    state.toolContext = 'slide';
+    let finish!: () => void;
+    let nativeCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body));
+        if (body.tools?.length) {
+          nativeCalls++;
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: { content: body.tools?.length ? 'Partial document explanation' : 'connected' },
+                finish_reason: body.tools?.length ? reason : 'stop',
+              },
+            ],
+          }),
+        );
+      }),
+    );
+    try {
+      const panel = createAgentPanel();
+      document.body.append(panel);
+      const kind = panel.querySelector<HTMLSelectElement>('.agent-endpoint-kind')!;
+      kind.value = 'openai-compatible';
+      kind.dispatchEvent(new Event('change'));
+      for (const [selector, value] of [
+        ['.agent-panel-endpoint-url', 'https://api.example.com/v1'],
+        ['.agent-panel-endpoint-model', 'tool-model'],
+        ['.agent-panel-endpoint-key', 'sk-test'],
+      ]) {
+        const field = panel.querySelector<HTMLInputElement>(selector)!;
+        field.value = value;
+        field.dispatchEvent(new Event('change'));
+      }
+      const connect = panel.querySelector<HTMLButtonElement>('.agent-panel-endpoint-connect')!;
+      connect.click();
+      await vi.waitFor(() => expect(connect.textContent).toBe(t('agentEndpointDisconnect')));
+      const task = panel.querySelector<HTMLSelectElement>('.agent-writing-task')!;
+      task.value = 'tools';
+      task.dispatchEvent(new Event('change'));
+      enterQueueDraft(panel, 'Read this slide and explain its content');
+      await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+      enterQueueDraft(panel, 'Hello');
+      finish();
+      await vi.waitFor(() => expect(panel.textContent).toContain(t('agentResponseIncomplete')));
+      expect(panel.querySelector('[data-interrupted]')?.textContent).toContain('Partial document explanation');
+      expect(panel.querySelector('.agent-queue-resume')).not.toBeNull();
+      expect(panel.querySelector('.agent-queue-text')?.textContent).toBe('Hello');
+      expect(nativeCalls).toBe(1);
+      expect(state.apply).not.toHaveBeenCalled();
+    } finally {
+      finish?.();
+      vi.unstubAllGlobals();
+    }
+  },
+);
+
+it('retains incomplete schema document-task prose without finalizing its live answer', async () => {
+  state.ready = true;
+  state.actualDocumentTask = true;
+  state.semanticResponse = '{"task":"tools","language":"en"}';
+  state.structuredStream = async (_messages, _schema, delta) => {
+    const text = '{"kind":"answer","text":"Partial schema explanation';
+    delta(text);
+    return { text, assistant: { role: 'assistant', content: text }, toolCalls: [], stopReason: 'max_tokens' };
+  };
+  const panel = createPreparedPanel();
+  document.body.append(panel);
+  enterQueueDraft(panel, 'Explain what should happen next in this presentation.');
+  await vi.waitFor(() => expect(panel.textContent).toContain(t('agentResponseIncomplete')));
+  expect(panel.querySelector('[data-interrupted]')?.textContent).toContain('Partial schema explanation');
+  expect(state.apply).not.toHaveBeenCalled();
+});

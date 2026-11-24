@@ -161,7 +161,9 @@ test.describe('coarse pointer workspace', () => {
 
 // Observe closed ranui shadow surfaces without changing shadow mode or rendering.
 // The cache contains a one-byte fixture; no model download or inference occurs.
-test('cached-model delete keeps its danger role through confirmation and pending deletion', async ({ page }) => {
+test('cached-model delete keeps its danger role through confirmation and pending deletion', async ({
+  page,
+}, testInfo) => {
   test.setTimeout(90000);
   await page.addInitScript(() => {
     localStorage.setItem('document-assistant-enabled', 'true');
@@ -178,21 +180,31 @@ test('cached-model delete keeps its danger role through confirmation and pending
         const surface = roots.get(button)?.querySelector('[part="content"]');
         if (!surface) throw new Error('Missing ranui command surface');
         const style = getComputedStyle(surface);
-        return { color: style.color, background: style.backgroundColor };
+        return { color: style.color, background: style.backgroundColor, shadow: getComputedStyle(button).boxShadow };
       },
     });
-    const remove = FileSystemDirectoryHandle.prototype.removeEntry;
+    // This case checks the UI's pending deletion state. Use the real Cache API
+    // fallback on every engine: Linux WebKit exposes OPFS methods but rejects
+    // writable creation, so method presence cannot seed a portable fixture.
+    Object.defineProperty(Object.getPrototypeOf(navigator.storage), 'getDirectory', {
+      configurable: true,
+      value: undefined,
+    });
+    const remove = Cache.prototype.delete;
     let release: () => void = () => {};
     const hold = new Promise<void>((resolve) => (release = resolve));
-    FileSystemDirectoryHandle.prototype.removeEntry = async function (name, options) {
-      if (name.includes('command-fixture.gguf')) await hold;
-      return remove.call(this, name, options);
+    Cache.prototype.delete = async function (request, options) {
+      const url = typeof request === 'string' ? request : request instanceof Request ? request.url : String(request);
+      if (url.includes('command-fixture.gguf')) await hold;
+      return remove.call(this, request, options);
     };
     Object.assign(window, { releaseCommandDeletion: release });
   });
-  await page.goto('/');
-  await page.evaluate(async () => {
-    const cache = await (await navigator.storage.getDirectory()).getDirectoryHandle('cache', { create: true });
+  await page.goto('/editor?new=docx&locale=en');
+  await page.waitForFunction(() => Boolean(window.__ooFrames.readyEditor()));
+  expect(await page.evaluate(() => typeof navigator.storage.getDirectory)).toBe('undefined');
+  const seeded = await page.evaluate(async () => {
+    const cache = await caches.open('local-ai-wllama-models-v1');
     for (const [name, value] of [
       ['command-fixture.gguf', 'x'],
       [
@@ -200,24 +212,30 @@ test('cached-model delete keeps its danger role through confirmation and pending
         JSON.stringify({ originalURL: 'https://example.invalid/command-fixture.gguf', originalSize: 1, etag: '' }),
       ],
     ]) {
-      const writable = await (await cache.getFileHandle(name, { create: true })).createWritable();
-      await writable.write(value);
-      await writable.close();
+      await cache.put(`/__local_ai_model_cache__/entry-${encodeURIComponent(name)}`, new Response(value));
     }
+    return (await cache.keys()).length;
   });
-  await page.goto('/editor?new=docx&locale=en');
-  await page.waitForFunction(() => Boolean(window.__ooFrames.readyEditor()));
+  expect(seeded).toBe(2);
   await page.frameLocator('iframe[name="frameEditor"]').locator('.agent-sidebar-entry').click();
   await page.locator('.agent-panel-settings-toggle').click();
   await expect(page.locator('.agent-model-cache > summary')).toContainText('(1)');
   await page.locator('.agent-model-cache > summary').click();
   const row = page.locator('.agent-model-cache-row', { hasText: 'command-fixture.gguf' });
+  await page.locator('.agent-preferences > summary').click();
+  for (const theme of ['light', 'dark'] as const) {
+    await page.emulateMedia({ colorScheme: theme });
+    await page
+      .locator('.agent-runtime-panel')
+      .screenshot({ path: testInfo.outputPath(`models-expanded-${theme}.png`) });
+  }
+  await page.emulateMedia({ colorScheme: 'light' });
   const remove = row.locator('.agent-cache-delete');
   const surface = (control = remove) =>
     control.evaluate((button) =>
       (
         window as unknown as {
-          assistantCommandStyle(button: Element): { color: string; background: string };
+          assistantCommandStyle(button: Element): { color: string; background: string; shadow: string };
         }
       ).assistantCommandStyle(button),
     );
@@ -230,8 +248,9 @@ test('cached-model delete keeps its danger role through confirmation and pending
       probe.remove();
       return color;
     }, token);
-  const danger = await tokenColor('--ran-color-danger');
+  const danger = await tokenColor('--app-danger-fill');
   const disabled = await tokenColor('--ran-color-text-disabled');
+  expect((await surface()).shadow).toBe('none');
   await expect.poll(async () => (await surface()).color).toBe(danger);
   const idle = (await surface()).background;
   await remove.hover();
@@ -239,6 +258,7 @@ test('cached-model delete keeps its danger role through confirmation and pending
   expect((await surface()).background).not.toBe(idle);
   await remove.click();
   await expect(remove).toHaveText('Confirm deletion');
+  await page.locator('.agent-runtime-panel').screenshot({ path: testInfo.outputPath('models-confirm-delete.png') });
   expect((await surface()).color).toBe(danger);
   const cancel = row.locator('.agent-cache-cancel');
   expect((await surface(cancel)).background).toBe('rgba(0, 0, 0, 0)');

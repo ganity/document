@@ -26,6 +26,7 @@ test('native PPT edits automatically export with object lineage and renew the sa
       window.addEventListener('message', async (event) => {
         if (event.source !== frame || event.origin !== location.origin) return;
         if (event.data?.type === 'document:save-requested') {
+          const requestedAt = Date.now();
           const saved = await post('document:save', { requireHostCommit: true });
           const file = saved.file as File;
           const bytes = new Uint8Array(await file.arrayBuffer());
@@ -33,7 +34,7 @@ test('native PPT edits automatically export with object lineage and renew the sa
             b.toString(16).padStart(2, '0'),
           ).join('');
           if (sha !== saved.pageLineage?.outputSha256) throw new Error('Export lineage hash mismatch');
-          (window as any).automaticSaves.push({ ...saved.pageLineage, bytes: Array.from(bytes) });
+          (window as any).automaticSaves.push({ ...saved.pageLineage, requestedAt, bytes: Array.from(bytes) });
           frame.postMessage(
             { type: 'document:commit-save', id: saved.pageLineage.saveRequestId, payload: { success: true } },
             location.origin,
@@ -45,8 +46,8 @@ test('native PPT edits automatically export with object lineage and renew the sa
   );
   await page.waitForFunction(() => !!window.__ooFrames.readyEditor(), { timeout: 60_000 });
   const native = page.frames().find((frame) => frame.name() === 'frameEditor')!;
-  const move = () =>
-    native.evaluate(() => {
+  const lastEditAt = await native.evaluate(async () => {
+    const move = () => {
       const w = window as any,
         api = w.editor,
         logic = api.WordControl.m_oLogicDocument;
@@ -57,16 +58,18 @@ test('native PPT edits automatically export with object lineage and renew the sa
       logic.FinalizeAction();
       api.CheckChangedDocument();
       document.dispatchEvent(new Event('pointerup'));
-    });
-  await move();
-  // Verify the idle deadline follows a second edit while the SDK is already dirty.
-  await page.waitForTimeout(1000);
-  await move();
-  await page.waitForTimeout(1000);
-  expect(await page.evaluate(() => (window as any).automaticSaves.length)).toBe(0);
+    };
+    // Schedule both edits in the editor so driver latency cannot insert an idle save between them.
+    move();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const editedAt = Date.now();
+    move();
+    return editedAt;
+  });
   await expect.poll(() => page.evaluate(() => (window as any).automaticSaves.length), { timeout: 60_000 }).toBe(1);
   await expect.poll(() => page.evaluate(async () => (await post('document:get-state')).dirty)).toBe(false);
   const first = await page.evaluate(() => (window as any).automaticSaves[0]);
+  expect(first.requestedAt - lastEditAt).toBeGreaterThanOrEqual(1500);
   expect(first.objects[0][0]).toMatchObject({ sourceName: 'Title 1', name: 'Title 1' });
   expect(first.objects[0][0].sourcePageToken).toBe(first.openedPageTokens[0]);
   const xml = await zipEntryText(Uint8Array.from(first.bytes), 'ppt/slides/slide1.xml');

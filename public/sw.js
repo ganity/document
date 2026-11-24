@@ -32,6 +32,10 @@ const ASSETS_TO_CACHE = [
   './editor.html',
   './manifest.json',
   './theme-presentation.js',
+  // CSV and HTML-table opens convert through these. Not vendor assets, so the
+  // runtime cache's activation prune would drop them; core keeps them offline.
+  './libs/sheetjs/convert.worker.js',
+  './libs/sheetjs/xlsx.full.min.js',
   './icons/document-light.svg',
   './icons/document-dark.svg',
   './icons/document-light-32.png',
@@ -69,7 +73,7 @@ const EDITOR_BOOTSTRAP_HTML = [
 // its content changed.) Network-first with `cache: 'no-cache'` is what the HTML branch already
 // does, for exactly the same reason.
 const DEPLOY_COUPLED =
-  /^\/(?:home|landing|app-tokens)\.css$|^\/(?:lang-switch|sw-register|open-local|landing-prefetch|history-recent|theme-presentation)\.js$|^\/ranui-iife\//;
+  /^\/(?:home|landing|app-tokens)\.css$|^\/(?:lang-switch|sw-register|open-local|landing-prefetch|history-recent|theme-presentation)\.js$|^\/ranui-iife\/|^\/libs\/sheetjs\/convert\.worker\.js$/;
 
 // The OnlyOffice 9 tree is ~2600 files, but most of that is per-locale help
 // and on-demand font duplication a single session in one language never
@@ -545,8 +549,11 @@ self.addEventListener('fetch', (event) => {
   // 2. Only handle same-origin requests to avoid caching external APIs/documents
   if (url.origin !== self.location.origin) return;
 
-  // Optional authenticated connector APIs and OAuth callbacks are never offline assets.
-  if (url.pathname.startsWith('/api/connectors/')) return;
+  // Deployment probes must never receive an offline or stale cached marker.
+  if (url.pathname === '/build-identity.json') return;
+
+  // API responses are never offline assets.
+  if (url.pathname.startsWith('/api/')) return;
 
   // Desktop supplies this runtime independently of the hosted app build.
   if (url.pathname.startsWith('/.deckwise/')) return;
@@ -716,7 +723,8 @@ self.addEventListener('fetch', (event) => {
               return networkResponse;
             })
             .catch(() => {
-              return cachedResponse;
+              // An offline cache miss still needs a Response for respondWith.
+              return cachedResponse || Response.error();
             });
 
           return cachedResponse || fetchPromise;

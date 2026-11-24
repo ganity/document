@@ -187,19 +187,17 @@ async function openFile(file: File, readonly = false, lineageBinding?: unknown):
   const onContentReady =
     lineageBinding !== undefined ? await deckwisePageLineage.begin(lineageBinding, file) : undefined;
   opening.assertCurrent();
-  setDocmentObj({
-    fileName: file.name,
-    file,
-  });
   await handleDocumentOperation({
     fileName: file.name,
     file,
     isNew: false,
     readonly,
+    signal: opening.signal,
     isCurrent: opening.isCurrent,
     ...(onContentReady ? { onContentReady } : {}),
   });
   if (!commitDocumentOpen(opening.id)) throw new DOMException('Document open superseded', 'AbortError');
+  setDocmentObj({ fileName: file.name, file });
   clearDocumentSession();
   await clearActiveSource();
   if (!isMountedDocumentOpen(opening.id)) throw new DOMException('Document open superseded', 'AbortError');
@@ -569,9 +567,9 @@ export function initEmbedApi(): void {
   window.addEventListener('message', (event) => {
     void handleMessage(event);
   });
-  window.addEventListener('load', () => {
-    postToParent('document:ready');
-  });
+  const notifyReady = () => postToParent('document:ready');
+  if (document.readyState === 'complete') notifyReady();
+  else window.addEventListener('load', notifyReady, { once: true });
 }
 
 /** One document host per page; the desktop transport never accepts window messages. */

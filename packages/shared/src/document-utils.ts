@@ -1,4 +1,3 @@
-import { getMime } from 'ranuts/utils';
 import type { DocumentType } from './document-types';
 
 /**
@@ -39,17 +38,6 @@ export function getDocumentType(fileType: string): string | null {
   return Object.hasOwn(DOCUMENT_TYPE_MAP, type) ? DOCUMENT_TYPE_MAP[type] : null;
 }
 
-/**
- * Get MIME type from file extension (using ranuts getMime utility)
- * @param extension - File extension
- * @returns string - MIME type
- */
-export function getMimeTypeFromExtension(extension: string): string {
-  // Use ranuts getMime for common image types, fallback to image/png
-  const mime = getMime(extension?.toLowerCase() || '');
-  return mime || 'image/png';
-}
-
 // Canonical MIME map for the document formats this project saves/exports.
 // Single source of truth -- lib/onlyoffice-editor.ts and @ranuts/converter
 // both delegate here instead of keeping their own copies.
@@ -76,6 +64,11 @@ const DOCUMENT_MIME_MAP: Record<string, string> = {
 export function getDocumentMimeType(fileNameOrExt: string): string {
   const ext = fileNameOrExt.split('.').pop()?.toLowerCase() || '';
   return DOCUMENT_MIME_MAP[ext] || 'application/octet-stream';
+}
+
+/** The document extension a MIME type names; '' outside the supported document formats. */
+export function getDocumentExtension(mimeType: string): string {
+  return Object.keys(DOCUMENT_MIME_MAP).find((ext) => DOCUMENT_MIME_MAP[ext] === mimeType) ?? '';
 }
 
 /**

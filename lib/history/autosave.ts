@@ -19,13 +19,13 @@
  * never clear the unsaved-changes warning, and never touch the user's file.
  */
 import { t } from '@ranuts/shared/i18n';
-import { localStorageGetItem, localStorageSetItem } from 'ranuts/utils';
 import { requestSaveDocument } from '../onlyoffice/save-stream';
 import { getReadonlyMode } from '../onlyoffice/readonly';
 import { getLastEditAt, hasUnsavedChanges } from '../unsaved-guard';
 import { isEmbedMode } from '../embed-mode';
 import { captureSavePoint, type SavePoint } from '../onlyoffice/save-point';
 import { extensionOf, markOpened, putSnapshot } from './store';
+import { isAutosaveEnabled, writeAutosavePreference } from './preferences';
 import type { HistoryDoc, HistoryOrigin } from './types';
 
 /**
@@ -65,8 +65,6 @@ export const TICK_MS = 15_000;
 export const IDLE_GRACE_MS = 2_000;
 /** Consecutive export failures before this session gives up. */
 export const MAX_CONSECUTIVE_FAILURES = 3;
-
-const AUTOSAVE_PREF_KEY = 'document-autosave-enabled';
 
 export interface AutosaveSessionInput {
   /**
@@ -110,15 +108,8 @@ export function shouldSnapshot(state: SnapshotDecision): boolean {
   return state.now - state.lastEditAt >= IDLE_GRACE_MS;
 }
 
-export function isAutosaveEnabled(): boolean {
-  // Default on. Off by default would mean the feature does not exist for
-  // almost everyone, and the loss it prevents happens before anyone goes
-  // looking through settings.
-  return localStorageGetItem(AUTOSAVE_PREF_KEY) !== 'false';
-}
-
 export function setAutosaveEnabled(enabled: boolean): void {
-  localStorageSetItem(AUTOSAVE_PREF_KEY, enabled ? 'true' : 'false');
+  writeAutosavePreference(enabled);
   if (!enabled) stopAutosaveSession();
 }
 
@@ -211,11 +202,12 @@ export async function takeSnapshot(): Promise<HistoryDoc | null> {
   )
     return null;
 
+  const storageAbort = active.storageAbort;
   active.exporting = true;
   const startedAt = Date.now();
   try {
     const file = await requestSaveDocument(active.ext.toUpperCase());
-    if (session !== active || active.stopped) return null;
+    if (session !== active || active.stopped || storageAbort.signal.aborted) return null;
     // Let storage check the exported file's size before copying its bytes.
     // The owner signal also guards budget checks and asynchronous file reads.
     const doc = await putSnapshot(
@@ -225,9 +217,9 @@ export async function takeSnapshot(): Promise<HistoryDoc | null> {
         origin: active.origin,
         bytes: file,
       },
-      active.storageAbort.signal,
+      storageAbort.signal,
     );
-    if (session !== active || active.stopped) return null;
+    if (session !== active || active.stopped || storageAbort.signal.aborted) return null;
     if (!doc) {
       // The store gave up (no room, and eviction did not help). Stopping and
       // saying so beats a silent autosave, which is the most dangerous kind:
@@ -248,7 +240,7 @@ export async function takeSnapshot(): Promise<HistoryDoc | null> {
     active.failures = 0;
     return doc;
   } catch (error) {
-    if (session !== active || active.stopped) return null;
+    if (session !== active || active.stopped || storageAbort.signal.aborted) return null;
     const message = error instanceof Error ? error.message : String(error);
     // A save the user asked for owns the channel; this tick simply waits.
     if (!message.includes('already in progress')) {
@@ -380,6 +372,13 @@ export async function beginAutosaveSession(input: AutosaveSessionInput): Promise
   // No-op until this document has a row; from then on it restarts the
   // seven-day clock every time the document is opened.
   void markOpened(input.docId);
+}
+
+/** A completed disk save supersedes any older recovery export still pending. */
+export function cancelPendingSnapshot(): void {
+  if (!session) return;
+  session.storageAbort.abort();
+  session.storageAbort = new AbortController();
 }
 
 export function stopAutosaveSession(): void {

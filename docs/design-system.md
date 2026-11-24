@@ -1,8 +1,9 @@
 # 页面版式规范（业界基准与本站取值）
 
 日期：2026-08-22
-适用：所有用户可见页面（落地页、生成页、`/history`、demo、404）。编辑器本身（`/editor`）
-是全屏应用，不在此列。
+适用：所有用户可见页面（落地页、生成页、`/history`、demo、404），以及 `/editor` 的应用壳与
+AI 工作区。下述站点列宽不套用到全屏编辑器；AI 工作区的布局与验收见本文末尾的应用布局契约。
+OnlyOffice 内部界面由 vendor 持有。
 
 审计脚本：`node bin/design-audit.mjs <baseUrl>`——渲染每个页面，打印下面这些数字；
 加 `--all` 则把每种页型在**七种语言**下各量一遍（默认只量英文，那是本规范写作时的基准）。
@@ -72,15 +73,21 @@ Notion 正文 708）。**不存在"一个正确的宽度"，只存在按内容�
 | ----------------- | ------------------------ | -------------------------------- | -------------------------- |
 | h1                | 64/700（hero，刻意更重） | 40/700，`letter-spacing: -1.2px` | 同内容页                   |
 | body              | 16px / 1.65              | 16px / 1.65                      | 16px / 1.65                |
-| 顶栏 `header.bar` | 有                       | 有                               | 有                         |
+| 顶栏 `header.bar` | 有（sticky）             | 有（sticky）                     | 有（sticky）               |
 | 页脚              | 有                       | 有                               | **无**                     |
 
 **"应用页有顶栏、无页脚"是有意的**：`/history` 和 `/embed-demo.html` 是来办事的地方，
 不是浏览站点的地方；页脚的站内导航在那里只会挡路。这与 Gmail / Notion / Linear 一致。
 但顶栏必须有——用户是从首页走过来的，顶栏消失会让人以为跳到了别的站。
 
+**顶栏滚动时固定**（`position: sticky; top: 0`）：首页与内容页都够长，滚过首屏后
+仍要够得到语言切换与 GitHub。背景用 `--ran-color-bg` 实底，不透内容。首页的
+`#landing-hero` **不能**设 `overflow-x`（非 visible 的 overflow 会让 sticky 贴在
+区块上而不是视口上）。内容页右侧目录栏的 `top` 要清过这条约 4.5rem 的固定顶栏。
+
 顶栏和页脚的样式**只有一份**（`landing.css`），页面复用它的类名与结构，
-而不是抄一遍数值。`/history` 因此直接 `<link>` 了 `landing.css`。
+而不是抄一遍数值。`/history` 因此直接 `<link>` 了 `landing.css`。首页自己的那份
+在 `home.css`（不加载 `landing.css`），两份由 `design-contract` 钉住一致。
 
 ## 四、按钮两档
 
@@ -198,3 +205,104 @@ validated token references. Static icon artwork and vendor assets are separate o
 The browser suite verifies real component parts, page families, seven locales, both
 themes, narrow widths and coarse-pointer targets. Token audit success alone does not
 prove component API or interaction correctness.
+
+Two rules are mechanical because both fail silently in review:
+
+- **Logical properties count as spacing.** The property pattern has to read through
+  every hyphen (`padding-inline-start`, not just `padding-inline`); when it stopped at
+  the first one, three literal insets were invisible to the contract.
+- **A palette property never appears in a `transition`.** CSS cannot tell why a colour
+  changed, so `background`, `color`, `border-*-color`, `box-shadow`, `fill` and `stroke`
+  in a transition also fade on a theme flip — each surface at its own duration while the
+  page snaps. Bare durations (`transition: 0.15s`) mean `all` and fail the same way. The
+  documented `var(--…-transition)` hook is the opt-in escape hatch and is not judged.
+
+## Assistant application layout contract
+
+The canonical composition rules are owned by
+[ranui DESIGN section 11](https://github.com/chaxus/ran/blob/main/packages/ranui/docs/DESIGN.md#11-composition--the-page-not-the-component).
+This section supplies the application's geometry and browser acceptance; the site's marketing
+column widths do not apply inside the assistant. `styles/assistant.css` owns the shared values.
+
+| Geometry        | Product contract                                                                                                   | Acceptance subject                                                                         |
+| --------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| Content rail    | 16px from the panel's inside edge                                                                                  | Header title text, onboarding copy, unframed copy, section labels, field/list outer frames |
+| Header title    | Text-sized target with 8px inline padding; leading hit area extends into the gutter                                | DOM Range text left, actual button width, hover/focus area and neighboring actions         |
+| Back navigation | Center a 16px SVG viewport in the 32px fine / 44px coarse pointer target; the viewport returns to the content rail | SVG viewport and full target bounds, not painted path bounds                               |
+| Subpage heading | An explicit navigation column followed by an 8px gap; shared by every subpage and nested artifact state            | Repeated title rail: 48px fine / 54px coarse, relative to the panel's inside edge          |
+| Framed fields   | Outer frame follows the content rail; internal text retains its control inset                                      | Native frame and real ranui shadow parts are separate subjects                             |
+| Vertical groups | 8px internal, 16px group and 24px section spacing                                                                  | Actual related-region edges; empty status paragraphs reserve no anonymous margins          |
+
+The title's flexible trailing filler is layout space, not a clickable/hovering title surface.
+At panel widths up to 360px, the runtime header gives the readable title its own row above
+the five action slots. Coarse input retains 44px targets without constraining the title to
+an icon's flex basis. Back focus outlines use zero offset so their full 2px ring remains
+inside the scrolling view. Populated result lists keep a 16px boundary before Import.
+Back navigation is a declared hierarchy, not an unexplained extra body inset. Centered empty
+states remain centered within their content frame. Frame, text, icon viewport and hit area
+must not be substituted for each other during review. CSS token compliance alone cannot prove
+these relationships. Do not nudge individual pages or SVG paths to compensate for a shared
+layout error.
+
+Apply this contract to onboarding/chat, Models, Conversations, Sources and Artifacts, including
+list/import/editor, empty/populated states, statuses and disclosures. Layout owners retain
+callbacks, focus return, busy guards and drafts. New sibling views must join the same checks.
+
+`test/e2e/agent-layout-rails.spec.ts` and `test/e2e/lib/layout-geometry.ts` read actual text
+Ranges and layout frames after fonts and async view content settle. They cover 432px desktop
+panels, 360px/320px windows, English/Portuguese, both themes and coarse input, with nested
+artifact import/editor/return paths. The existing sidebar test also measures title text rather
+than its padded button rectangle. Relevant focus, navigation, workspace and source/artifact
+suites remain required alongside the geometry assertions.
+
+Acceptance must reject a text-only 8px drift even when the outer frame stays fixed, a title
+target expanded into free toolbar space, and a sibling view shifted off its content rail.
+Review screenshots with these measured relationships; a stored screenshot without assertions
+or inspection is not acceptance evidence.
+
+### Settings command groups
+
+History & data is already a named section inside the assistant pane. Restore, Import and
+Export use content-sized native secondary buttons in one column: each button has a restrained
+resting surface and functional inset stroke, with no enclosing group frame, group fill,
+raised shadow or row separators. Keep 8px between buttons and 16px before deletion commands.
+A recognizable button shape must be visible before hover in both themes and on touch screens;
+verb labels and hover feedback alone do not establish initial discoverability.
+
+The declared columns are 16px from the panel’s inner edge for both checkbox and 16px icon
+viewports, and 40px for checkbox/action text Ranges. Each command target extends 8px into the
+owned inline-start gutter, with 8px inline padding and icon/label gap; target frames need not
+match visible columns. Keep targets inside the pane, at least 44px high, and non-overlapping.
+Long translations wrap without shifting the columns or overflowing the pane. The save-history
+checkbox uses the monochrome primary role.
+
+Deletion commands share the secondary control shape with readable danger text/icons; only
+explicit confirmation has a solid danger fill. Hover, press, disabled and keyboard focus
+remain distinct. Draft, confirmation, busy and focus-return behavior remain owned by the
+existing controls. Acceptance checks actual renders as well as shared checkbox/icon/text
+geometry, resting surface difference from the canvas, text contrast and real interactions.
+
+Review boundaries in the full pane. The panel/editor edge owns the independent sidebar;
+the search/input frames identify editable values; the single History & data section divider
+separates task regions; button surfaces identify action targets; keyboard outlines identify focus.
+An inner card or more row rules
+would repeat those relationships. Models picker frames, Sources search/attachment controls
+and Artifacts form fields keep their functional control boundaries. Do not remove every
+border globally, add transparent borders to preserve obsolete card insets, or require a
+decorative group outline in acceptance.
+
+### Models, Sources and Artifacts
+
+Apply the same boundary review to each complete view and its expanded states:
+
+| Surface   | Flat composition                                                                                                                                 | Functional boundaries retained                                                                                                                                |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Models    | Device/service containers, cached entries and preferences use headings and the existing group gap; no extra disclosure/row rules                 | Model/source pickers, endpoint/custom fields, focus and explicit load/connect/delete states                                                                   |
+| Sources   | Separate the attached list from search by 16px; keep removal beside the title while the excerpt expands; no result card or remove-button outline | Search input, native disclosure and bounded excerpt scrolling; Attach file is the primary entry action                                                        |
+| Artifacts | Full-width saved-result rows; quiet ordinary review/export/page/revision controls; no blanket button outlines                                    | Import/Save/Use in draft primary roles, editable fields, structured table row relationships, revision input/diff, focus and explicit destructive confirmation |
+
+Use application danger foreground roles for quiet destructive labels and their hover/active
+states. Disabled commands keep their own disabled role and do not inherit an enabled fill.
+Do not infer that every control is a secondary outlined button from its ancestor view class.
+Role-specific styling belongs to the actual action. The full state inventory, renders and
+verification are recorded in [the workspace boundary audit](explorations/2026-10-20-workspace-boundary-audit.md).

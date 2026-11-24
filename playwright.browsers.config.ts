@@ -1,3 +1,5 @@
+import { ciTestMatch } from './bin/ci-shards.mjs';
+import { playwrightArtifacts } from './bin/ci-artifacts.mjs';
 import { defineConfig, devices } from '@playwright/test';
 import base from './playwright.config';
 
@@ -9,7 +11,8 @@ import base from './playwright.config';
  */
 export default defineConfig({
   ...base,
-  reporter: [['list'], ['html', { outputFolder: 'playwright-report-browsers', open: 'never' }]],
+  ...ciTestMatch('browsers'),
+  ...playwrightArtifacts('playwright-report-browsers', base.outputDir || 'test-results'),
   // Nightly signal, not a gate: one retry turns load-dependent one-offs
   // (Firefox EditingError -25 on a 20k-row sheet under parallel load) into
   // "flaky" in the report instead of red, while a real regression still fails.

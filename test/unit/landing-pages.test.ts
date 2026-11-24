@@ -189,6 +189,27 @@ describe('landing pages', () => {
       });
 
       /**
+       * chaxus.com and the ran sites describe the same person with the same
+       * @id, name and url; only identical values let a consumer merge them.
+       */
+      it('names chaxus as author and publisher of the site and the editor', () => {
+        const graph = jsonLdGraph(html);
+        const site = graph.find((n) => n['@type'] === 'WebSite');
+        if (!site) return;
+        const person = { '@id': 'https://chaxus.com/#person' };
+        expect(graph.find((n) => n['@type'] === 'Person')).toEqual({
+          '@type': 'Person',
+          ...person,
+          name: 'chaxus',
+          url: 'https://chaxus.com/',
+          sameAs: ['https://github.com/chaxus', 'https://ran.chaxus.com'],
+        });
+        expect([site.author, site.publisher]).toEqual([person, person]);
+        const app = graph.find((n) => n['@type'] === 'WebApplication' && n.applicationCategory);
+        if (app) expect([app.author, app.publisher]).toEqual([person, person]);
+      });
+
+      /**
        * A visitor who picked a language on the site must not land in an editor
        * that guesses one from browser settings. The app resolves `?locale=`
        * before anything else, so every link from a translated page into the
@@ -348,13 +369,16 @@ describe('landing pages', () => {
     // or an assistant ("I closed the tab -- did I lose my work?"), and the one
     // place the seven-day promise has to be machine-readable. Losing it to a
     // copy edit would cost the answer, not just the wording.
+    // Join keeps prettier / editors from inserting spaces around `|` inside
+    // CJK patterns (those spaces become part of the match and miss the FAQ).
+    const askPat = (parts: string[]) => new RegExp(parts.join('|'));
     for (const [rel, ask, days] of [
       ['index.html', /tab|refresh/i, `${retentionDays} days`],
-      ['zh-CN/index.html', /标签页|刷新/, `${retentionDays} 天`],
-      ['ja/index.html', /タブ|再読み込み/, `${retentionDays} 日間`],
+      ['zh-CN/index.html', askPat(['标签页', '刷新']), `${retentionDays} 天`],
+      ['ja/index.html', askPat(['タブ', '再読み込み']), `${retentionDays} 日間`],
       ['de/index.html', /Tab|neu lade/i, `${retentionDays} Tage`],
       ['es/index.html', /pestaña|recargo/i, `${retentionDays} días`],
-      ['ko/index.html', /탭|새로고침/, `${retentionDays}일`],
+      ['ko/index.html', askPat(['탭', '새로고침']), `${retentionDays}일`],
       ['pt/index.html', /aba|recarreg/i, `${retentionDays} dias`],
     ] as Array<[string, RegExp, string]>) {
       const html = generated(rel);
@@ -575,6 +599,12 @@ describe('page shell', () => {
   it.each(pages)('$label has exactly one main landmark', ({ html, label }) => {
     expect((html.match(/<main[\s>]/g) ?? []).length, label).toBe(1);
   });
+  /** The way back to the author's site; chaxus.com has only English and Chinese. */
+  it.each(GENERATED)('$rel links its author in the footer', ({ html, route, rel }) => {
+    const footer = html.match(/<footer[\s\S]*?<\/footer>/)?.[0] ?? '';
+    const href = localeOf(route) === 'zh-CN' ? 'https://chaxus.com/zh/' : 'https://chaxus.com/';
+    expect(footer, rel).toContain(`href="${href}" rel="author"`);
+  });
 });
 
 /**
@@ -591,6 +621,10 @@ describe('llms.txt', () => {
     .split(/^## /m)
     .filter((section) => /^(Links|Pages)\b/.test(section))
     .flatMap((section) => section.split('\n').filter((line) => line.startsWith('- ')));
+
+  it('names its author up front', () => {
+    expect(llms.split('\n## ')[0]).toContain('By chaxus (https://chaxus.com/)');
+  });
 
   it('lists its pages as markdown links', () => {
     expect(linkBullets.length).toBeGreaterThan(20);

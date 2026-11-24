@@ -3,7 +3,7 @@ import { beginDocumentOpen, cancelDocumentOpen, commitDocumentOpen } from './doc
 import { clearDocumentSession } from './history/autosave';
 import { MessageCodec, Platform } from 'ranuts/utils';
 import type { MessageHandler } from 'ranuts/utils';
-import { getDocmentObj, setDocmentObj } from '@ranuts/shared/store';
+import { setDocmentObj } from '@ranuts/shared/store';
 import { handleDocumentOperation } from './converter';
 import { showLoading } from './loading';
 
@@ -47,13 +47,15 @@ export const events: Record<string, MessageHandler<any, unknown>> = {
       try {
         const file = await MessageCodec.decodeFileChunked(chunks);
         opening.assertCurrent();
-        setDocmentObj({
+        await handleDocumentOperation({
+          file,
           fileName: file.name,
-          file: file,
+          isNew: false,
+          signal: opening.signal,
+          isCurrent: opening.isCurrent,
         });
-        const { fileName, file: fileBlob } = getDocmentObj();
-        await handleDocumentOperation({ file: fileBlob, fileName, isNew: !fileBlob, isCurrent: opening.isCurrent });
         if (commitDocumentOpen(opening.id)) {
+          setDocmentObj({ fileName: file.name, file });
           clearDocumentSession();
           await clearActiveSource();
         }

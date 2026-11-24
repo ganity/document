@@ -23,6 +23,13 @@ export interface AgentTool<P = Record<string, unknown>, R = unknown> {
   readOnlyHint: boolean;
   /** Host policy evaluated after execution. A boolean retains the successful-result policy. */
   concludesTurn?: boolean | ((result: { content: string; isError: boolean }) => boolean);
+  /** Optional structured excerpt policy. The runtime supplies the exact serialized
+   * result budget; tools without this capability are never truncated. */
+  fitResult?: {
+    /** Smallest valid result, with the same scope and explicit partial-read flags. */
+    minimum(result: unknown): unknown;
+    fit(result: unknown, fits: (candidate: unknown) => boolean): unknown;
+  };
   /** Execute the tool. Throws on invalid input or when the editor isn't ready. */
   execute: (params: P, signal?: AbortSignal) => Promise<R>;
 }

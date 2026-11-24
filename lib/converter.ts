@@ -1,8 +1,7 @@
-import { getExtensions } from 'ranuts/utils';
 import { t } from '@ranuts/shared/i18n';
 import { X2TConverter, isHtmlDocument, preprocessDocxRuby, preprocessPptx } from '@ranuts/converter';
 import { createEditorInstance, loadEditorApi } from './onlyoffice-editor';
-import { getDocumentType } from '@ranuts/shared/document-utils';
+import { getDocumentExtension, getDocumentType } from '@ranuts/shared/document-utils';
 
 // Export types
 export type {
@@ -34,8 +33,10 @@ export async function handleDocumentOperation(options: {
   readonly?: boolean;
   isCurrent?: () => boolean;
   onContentReady?: () => void;
+  signal?: AbortSignal;
 }): Promise<void> {
   try {
+    options.signal?.throwIfAborted();
     // The DocsAPI loader is no longer a render-blocking <script> in
     // index.html (it cost ~0.5 s of homepage LCP for visitors who never open
     // a document); every open path funnels through here, so load it on
@@ -43,7 +44,7 @@ export async function handleDocumentOperation(options: {
     await loadEditorApi();
     if (options.isCurrent && !options.isCurrent()) throw new DOMException('Document open superseded', 'AbortError');
     const { isNew, fileName, file, readonly = false } = options;
-    const fileType = fileName.split('.').pop() || getExtensions(file?.type || '')[0] || '';
+    const fileType = fileName.split('.').pop() || getDocumentExtension(file?.type || '');
     const _docType = getDocumentType(fileType);
     // The type the editor is asked to open as; differs from the file's own
     // extension only for the CSV case below.
@@ -65,7 +66,7 @@ export async function handleDocumentOperation(options: {
         // and open the resulting real XLSX; saves come back as .xlsx.
         const raw = new Uint8Array(await file.arrayBuffer());
         if (isHtmlDocument(raw)) {
-          const xlsxFile = await x2tConverter.convertHtmlTableToXlsx(raw, fileName);
+          const xlsxFile = await x2tConverter.convertHtmlTableToXlsx(raw, fileName, options.signal);
           binData = await xlsxFile.arrayBuffer();
           openFileType = 'xlsx';
         } else {
@@ -89,7 +90,7 @@ export async function handleDocumentOperation(options: {
         // to CSV in handleFileStreamMessage so the user still gets a .csv
         // out (GitHub #13/#33).
         const csvData = new Uint8Array(await file.arrayBuffer());
-        const xlsxFile = await x2tConverter.convertCsvToXlsx(csvData, fileName);
+        const xlsxFile = await x2tConverter.convertCsvToXlsx(csvData, fileName, options.signal);
         binData = await xlsxFile.arrayBuffer();
         openFileType = 'xlsx';
       } else {

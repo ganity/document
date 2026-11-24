@@ -123,10 +123,35 @@ export function parseGeminiResponse(response: GeminiResponse): LLMResponse {
       assistant.push({ type: 'tool_use', id, name: part.functionCall.name, input });
     }
   });
+  const finishReason = candidate?.finishReason;
+  // CONTINUATION exhausts the current generation budget and requires another
+  // request. Only explicit STOP completes a candidate. Keep missing reasons
+  // compatible with intermediate streaming chunks; other explicit terminations
+  // are incomplete and cannot authorize a tool call.
+  const stopReason =
+    finishReason === 'MAX_TOKENS' || finishReason === 'CONTINUATION'
+      ? 'max_tokens'
+      : [
+            'SAFETY',
+            'RECITATION',
+            'BLOCKLIST',
+            'PROHIBITED_CONTENT',
+            'SPII',
+            'LANGUAGE',
+            'IMAGE_SAFETY',
+            'IMAGE_PROHIBITED_CONTENT',
+            'IMAGE_RECITATION',
+            'ESCALATION',
+            'PUP_LIMITED_DISABLED',
+          ].includes(finishReason ?? '')
+        ? 'content_filter'
+        : finishReason === 'STOP' || finishReason === undefined
+          ? (finishReason ?? 'stop')
+          : 'incomplete';
   return {
     text,
     toolCalls,
-    stopReason: candidate?.finishReason === 'MAX_TOKENS' ? 'max_tokens' : (candidate?.finishReason ?? 'stop'),
+    stopReason,
     assistant: { role: 'assistant', content: assistant },
   };
 }

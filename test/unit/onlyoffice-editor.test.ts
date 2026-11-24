@@ -13,10 +13,6 @@ vi.mock('@ranuts/shared/i18n', () => ({
   // caller passed; that the real locale strings fill them is i18n.test.ts.
   t: vi.fn((key: string, vars?: Record<string, unknown>) => (vars ? `${key}${JSON.stringify(vars)}` : key)),
 }));
-vi.mock(import('@ranuts/shared/document-utils'), async (importOriginal) => {
-  const actual = await importOriginal();
-  return { ...actual, getMimeTypeFromExtension: vi.fn().mockReturnValue('image/png') };
-});
 
 import {
   awaitFontSystem,
@@ -77,26 +73,6 @@ describe('onlyoffice-editor', () => {
       expect(getReadonlyMode()).toBe(false);
     });
 
-    it('sends processRightsChange command to the editor when one exists', () => {
-      const editor = makeEditor();
-      (window as any).editor = editor;
-
-      setReadonlyMode(true);
-
-      expect(editor.sendCommand).toHaveBeenCalledWith(expect.objectContaining({ command: 'processRightsChange' }));
-    });
-
-    it('prefers serviceCommand over sendCommand when the editor exposes both (v9 renamed it)', () => {
-      const serviceCommand = vi.fn();
-      const editor = makeEditor({ serviceCommand });
-      (window as any).editor = editor;
-
-      setReadonlyMode(true);
-
-      expect(serviceCommand).toHaveBeenCalledWith(expect.objectContaining({ command: 'processRightsChange' }));
-      expect(editor.sendCommand).not.toHaveBeenCalled();
-    });
-
     it('does not throw when no editor is present', () => {
       expect(() => setReadonlyMode(true)).not.toThrow();
     });
@@ -151,11 +127,20 @@ describe('onlyoffice-editor', () => {
       await expect(requestSaveDocument()).rejects.toThrow('No document is open');
     });
 
-    it('rejects when the document is readonly', async () => {
+    it('allows export when the document is readonly (#307)', async () => {
+      // Read-only blocks editing, not exporting: embed hosts and File → Download
+      // both need the bytes of a locked document.
+      const { iframe, requestedFileTypes } = installEditorFrame();
       (window as any).editor = makeEditor({ downloadAs: vi.fn() });
       setReadonlyMode(true);
 
-      await expect(requestSaveDocument()).rejects.toThrow('readonly');
+      const promise = requestSaveDocument('xlsx').catch(() => {});
+      await vi.advanceTimersByTimeAsync(150_000);
+
+      expect(requestedFileTypes).toEqual([257]); // oAscFileType.XLSX
+      iframe.remove();
+      vi.runAllTimers();
+      await promise;
     });
 
     it('rejects when editor does not support downloadAs', async () => {
@@ -197,6 +182,9 @@ describe('onlyoffice-editor', () => {
           isDocumentLoadComplete: true,
         },
         asc_CDownloadOptions: FakeDownloadOptions,
+      };
+      win.AscCommon = {
+        x2t: { convertFromBin: async () => ({ binary: new Uint8Array([1]) }), downloadFile: vi.fn() },
       };
       return { iframe, requestedFileTypes };
     }

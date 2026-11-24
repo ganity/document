@@ -4,9 +4,13 @@
 # that no longer exist after a deploy ("Refused to apply style… text/html").
 
 # Local WASM threads require an isolated document and matching iframe/Worker responses.
+# Origin-Trial enables WebMCP (document.modelContext) on Chrome for this origin;
+# the token is origin-bound and public by design (served on every HTML response).
+# Expires 2027-03-30 — renew at https://developer.chrome.com/origintrials before then.
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
+  Origin-Trial: AoTQnso1/o/QqeuQm3gH09lR4HmxWJUQxRSUYnkQjbMWdpd+HLLxif1WgCRuWLGkSGLeJ9w21/lxYCQkkdJ3twoAAABPeyJvcmlnaW4iOiJodHRwczovL2VkaXQuY2hheHVzLmNvbTo0NDMiLCJmZWF0dXJlIjoiV2ViTUNQIiwiZXhwaXJ5IjoxODA2MzY0ODAwfQ==
 
 # Hashed build outputs: the filename changes every deploy → cache forever.
 /assets/*
@@ -46,6 +50,8 @@
 /theme-presentation.js
   Cache-Control: no-cache
 /ranui-iife/*
+  Cache-Control: no-cache
+/libs/sheetjs/convert.worker.js
   Cache-Control: no-cache
 
 # Self-hosted fonts: unhashed but they only change with a ranui release; a
@@ -136,3 +142,7 @@
 # PDF extraction module worker must remain executable under strict MIME checks.
 /assets/pdf.worker.min-*.mjs
   Content-Type: text/javascript; charset=utf-8
+
+# Final build identity is a deploy probe, never an offline asset.
+/build-identity.json
+  Cache-Control: no-store

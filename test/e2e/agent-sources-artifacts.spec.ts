@@ -1,3 +1,5 @@
+import { mockApi, originalApiUrl } from './lib/mock-api';
+import { readFile } from 'node:fs/promises';
 import { expect, test } from './lib/l0';
 
 test('local sources and versioned artifacts remain explicit, compact and reviewed', async ({ page }, testInfo) => {
@@ -47,10 +49,17 @@ test('local sources and versioned artifacts remain explicit, compact and reviewe
   await page.frameLocator('iframe[name="frameEditor"]').locator('.agent-sidebar-entry').click();
   await expect(page.locator('.cui-save')).toHaveCount(1);
   await page.locator('.agent-sources-toggle').click();
+  await expect(
+    page.locator('.agent-sources-view input[type=url], .agent-sources-view input[type=password]'),
+  ).toHaveCount(0);
+  await expect(page.locator('.agent-sources-view')).not.toContainText('Google Drive');
+  await expect(page.locator('.agent-sources-view')).not.toContainText('MCP resources');
   await page
     .locator('.agent-sources-view input[type=file]')
     .setInputFiles({ name: 'notes.md', mimeType: 'text/markdown', buffer: Buffer.from('Project reference') });
   await expect(page.locator('.agent-source-row')).toContainText('notes.md');
+  await page.locator('.agent-source-row summary').click();
+  await expect(page.locator('.agent-source-preview pre')).toHaveText('Project reference');
   await page.locator('.agent-runtime-panel').screenshot({ path: testInfo.outputPath('sources.png') });
   await page.getByRole('button', { name: 'Back to conversation', exact: true }).click();
   await expect(page.locator('.agent-sources-summary')).toHaveText('notes.md');
@@ -66,6 +75,7 @@ test('local sources and versioned artifacts remain explicit, compact and reviewe
   await expect(text).toHaveValue(source);
   await page.getByRole('button', { name: 'Save version', exact: true }).click();
   await expect(page.locator('.agent-artifact-editor select option')).toHaveCount(3);
+  await page.locator('.agent-artifact-presentation > details > summary').click();
   await page.setViewportSize({ width: 360, height: 700 });
   for (const theme of ['light', 'dark'] as const) {
     await page.emulateMedia({ colorScheme: theme });
@@ -74,6 +84,11 @@ test('local sources and versioned artifacts remain explicit, compact and reviewe
       .toBeLessThan(2);
     await page.locator('.agent-runtime-panel').screenshot({ path: testInfo.outputPath(`artifacts-${theme}.png`) });
   }
+  await page.locator('.agent-artifacts [data-action=delete]').click();
+  await expect(page.locator('.agent-artifacts [data-action=confirmDelete]')).toBeVisible();
+  await page.locator('.agent-runtime-panel').screenshot({ path: testInfo.outputPath('artifact-delete-confirm.png') });
+  await page.locator('.agent-artifacts [data-action=cancel]').click();
+  await expect(text).toHaveValue(source);
   await page.getByRole('button', { name: 'Review in document', exact: true }).click();
   await expect(page.locator('.agent-runtime-panel')).toHaveAttribute('data-view', 'chat');
   await expect(page.locator('.agent-plan-preview')).toBeVisible();
@@ -85,6 +100,36 @@ test('attached reference excerpts reach only the explicitly selected AI service'
   await page.addInitScript(() => {
     localStorage.setItem('document-assistant-enabled', 'true');
     localStorage.setItem('agent_conversation_saving_v2', 'true');
+    // Hold startup hydration until a source has been attached and searched.
+    // A normal reload below must restore the captured citation without a gate.
+    if (!sessionStorage.getItem('source-test-history-released')) {
+      const open = IDBFactory.prototype.open;
+      const success = Object.getOwnPropertyDescriptor(IDBRequest.prototype, 'onsuccess')!;
+      const host = window as unknown as { releaseSourceHistory?: () => void };
+      let delayed = false;
+      IDBFactory.prototype.open = function (...args: Parameters<IDBFactory['open']>) {
+        const request = open.apply(this, args);
+        if (args[0] === 'document-ai-conversations' && !delayed) {
+          delayed = true;
+          Object.defineProperty(request, 'onsuccess', {
+            set(callback: ((this: IDBRequest, event: Event) => void) | null) {
+              success.set!.call(
+                request,
+                callback &&
+                  function (event: Event) {
+                    host.releaseSourceHistory = () => {
+                      sessionStorage.setItem('source-test-history-released', 'true');
+                      callback.call(request, event);
+                    };
+                  },
+              );
+            },
+            get: () => success.get!.call(request),
+          });
+        }
+        return request;
+      };
+    }
     localStorage.setItem(
       'agent-writing-endpoint',
       JSON.stringify({
@@ -98,7 +143,7 @@ test('attached reference excerpts reach only the explicitly selected AI service'
     );
   });
   const bodies: string[] = [];
-  await page.route('http://localhost:11434/api/**', async (route) => {
+  await mockApi(page, 'http://localhost:11434/api/**', async (route) => {
     if (route.request().method() === 'OPTIONS') {
       await route.fulfill({
         status: 204,
@@ -126,6 +171,12 @@ test('attached reference excerpts reach only the explicitly selected AI service'
   await expect(page.locator('.agent-source-row')).toContainText('notes.txt');
   const sourceSearch = page.getByRole('searchbox', { name: 'Search sources', exact: true });
   await sourceSearch.fill('only this');
+  await page.waitForFunction(
+    () => typeof (window as unknown as { releaseSourceHistory?: unknown }).releaseSourceHistory === 'function',
+  );
+  await page.evaluate(() => (window as unknown as { releaseSourceHistory: () => void }).releaseSourceHistory());
+  await expect(page.locator('.agent-history-status')).toHaveText('Chat history saving is enabled on this device.');
+  await expect(page.locator('.agent-source-row')).toContainText('notes.txt');
   await page.locator('.agent-source-row summary').click();
   await expect(page.locator('.agent-source-preview mark')).toHaveText('Only this');
   await page.locator('.agent-source-row summary').click();
@@ -242,9 +293,10 @@ test('cloud model settings exclude browser runtime configuration and cache hints
   await page.locator('.agent-runtime-panel').screenshot({ path: testInfo.outputPath('cloud-settings.png') });
 });
 
-test('offline workspace hides cloud discovery and download controls while retaining local work without automatic reconnect', async ({
+test('offline workspace keeps local sources and hides download controls without automatic reconnect', async ({
   page,
   context,
+  l0,
 }, testInfo) => {
   test.setTimeout(90000);
   await page.addInitScript(() => {
@@ -253,7 +305,8 @@ test('offline workspace hides cloud discovery and download controls while retain
   });
   const connectorRequests: string[] = [];
   page.on('request', (request) => {
-    if (request.url().includes('/api/connectors/')) connectorRequests.push(request.url());
+    const url = originalApiUrl(page, request.url());
+    if (new URL(url).pathname.startsWith('/api/connectors/')) connectorRequests.push(url);
   });
   await page.goto('/editor?new=docx&locale=en');
   await page.waitForFunction(() => Boolean(window.__ooFrames.readyEditor()));
@@ -286,11 +339,38 @@ test('offline workspace hides cloud discovery and download controls while retain
     });
     db.close();
   });
+  // Cache inventory may probe an unprepared SDK while offline. WebKit emits
+  // pageerror for these caught import rejections; correlate only exact optional
+  // module failures, keeping prepared core and unrelated module failures fatal.
+  const manifest = await page.evaluate(async () => {
+    await navigator.serviceWorker.ready;
+    const source = await (await fetch('/sw.js', { cache: 'no-store' })).text();
+    return {
+      core: JSON.parse(/const APP_ASSETS_TO_CACHE = (\[.*?\]);/.exec(source)![1]) as string[],
+      capabilities: JSON.parse(/const ASSISTANT_CAPABILITY_ASSETS = (\{.*?\});/.exec(source)![1]) as Record<
+        string,
+        string[]
+      >,
+    };
+  });
+  const absolute = (path: string) => new URL(path, page.url()).href;
+  const core = new Set(manifest.core.map(absolute));
+  const optionalScripts = new Set(
+    [...manifest.capabilities.webgpu, ...(manifest.capabilities.wllama || [])]
+      .filter((path) => path.endsWith('.js'))
+      .map(absolute),
+  );
+  const failedWhileOffline = new Set<string>();
+  let offline = true;
+  page.on('requestfailed', (request) => {
+    if (offline) failedWhileOffline.add(originalApiUrl(page, request.url()));
+  });
   await context.setOffline(true);
   await page.locator('.agent-sources-toggle').click();
-  await expect(page.locator('.agent-cloud-sources')).toBeHidden();
+  await expect(
+    page.locator('.agent-sources-view input[type=url], .agent-sources-view input[type=password]'),
+  ).toHaveCount(0);
   await expect(page.locator('.agent-sources-view .agent-offline-hint')).toBeVisible();
-  await expect(page.locator('.agent-source-settings')).toBeVisible();
   await page.locator('.agent-sources-view input[type=file]').setInputFiles({
     name: 'offline.txt',
     mimeType: 'text/plain',
@@ -317,27 +397,35 @@ test('offline workspace hides cloud discovery and download controls while retain
   await expect(page.locator('.agent-artifact-editor select option')).toHaveCount(2);
   await expect(page.locator('.agent-artifact-status')).toHaveText('Saved on this device');
   await context.setOffline(false);
+  offline = false;
   await page.getByRole('button', { name: 'Artifacts', exact: true }).click();
   await page.locator('.agent-sources-toggle').click();
-  await expect(page.locator('.agent-cloud-sources')).toBeVisible();
+  await expect(
+    page.locator('.agent-sources-view input[type=url], .agent-sources-view input[type=password]'),
+  ).toHaveCount(0);
   await expect(page.locator('.agent-source-row')).toContainText('offline.txt');
   expect(connectorRequests).toEqual([]);
   await page.getByRole('button', { name: 'Back to conversation', exact: true }).click();
   await expect(page.locator('.cui-input')).toHaveValue('Keep this draft offline');
+  expect([...failedWhileOffline].filter((url) => core.has(url))).toEqual([]);
+  expect(
+    [...failedWhileOffline].filter((url) => new URL(url).pathname.startsWith('/assets/') && !optionalScripts.has(url)),
+  ).toEqual([]);
+  const loaderDiagnostics = /^(?:Response served by service worker is an error|Cannot load \.)$/;
+  const diagnostics = l0.pageErrors.filter((message) => loaderDiagnostics.test(message));
+  if (diagnostics.length) {
+    const optionalFailures = [...failedWhileOffline].filter((url) => optionalScripts.has(url));
+    expect(optionalFailures.length).toBeGreaterThan(0);
+    expect(diagnostics.length).toBeLessThanOrEqual(2 * optionalFailures.length);
+    l0.allowFrameError(loaderDiagnostics);
+  }
 });
 
-test('expired Drive authorization and attachment limits expose usable recovery actions', async ({ page }) => {
+test('local attachment limits expose usable recovery actions', async ({ page }) => {
   test.setTimeout(90000);
   await page.addInitScript(() => {
     localStorage.setItem('document-assistant-enabled', 'true');
     localStorage.setItem('agent-local-preset', 'Qwen3-4B-q4f16_1-MLC');
-  });
-  let reads = 0;
-  await page.route('**/api/connectors/google/**', async (route) => {
-    if (route.request().url().includes('/read')) {
-      reads++;
-      await route.fulfill({ status: 401, json: { error: 'reconnect_required' } });
-    } else await route.fulfill({ json: { files: [{ id: 'policy', name: 'Policy' }], nextPageToken: 'next' } });
   });
   await page.goto('/editor?new=docx&locale=en');
   await page.waitForFunction(() => Boolean(window.__ooFrames.readyEditor()));
@@ -360,17 +448,6 @@ test('expired Drive authorization and attachment limits expose usable recovery a
   await input.setInputFiles({ name: 'sixth.txt', mimeType: 'text/plain', buffer: Buffer.from('Sixth reference') });
   await expect(page.locator('.agent-source-row')).toHaveCount(5);
   await expect(page.locator('.agent-sources-attached')).toContainText('sixth.txt');
-  const cloud = page.locator('.agent-cloud-sources');
-  const connect = cloud.getByRole('button', { name: 'Connect', exact: true });
-  await cloud.getByRole('button', { name: 'Browse files', exact: true }).click();
-  await expect(connect).toBeHidden();
-  await cloud.getByRole('button', { name: 'Policy', exact: true }).click();
-  await expect(page.locator('.agent-sources-status')).toContainText('Connect again');
-  await expect(connect).toBeVisible();
-  await expect(cloud.getByRole('button', { name: 'Policy', exact: true })).toHaveCount(0);
-  await expect(cloud.getByRole('button', { name: 'Load more', exact: true })).toBeHidden();
-  await expect(page.locator('.agent-source-row')).toHaveCount(5);
-  expect(reads).toBe(1);
 });
 
 test('discard restores artifact titles and a full version history can continue as a new artifact', async ({
@@ -447,34 +524,38 @@ test('switching conversations releases a pending source read without attaching i
     localStorage.setItem('document-assistant-enabled', 'true');
     localStorage.setItem('agent-local-preset', 'Qwen3-4B-q4f16_1-MLC');
   });
-  let release!: () => void;
-  let reading = false;
-  const waitForRelease = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await page.route('**/api/connectors/google/**', async (route) => {
-    if (route.request().url().includes('/read')) {
-      reading = true;
-      await waitForRelease;
-      await route.fulfill({ json: { text: 'Old conversation private data' } });
-    } else await route.fulfill({ json: { files: [{ id: 'old', name: 'Old policy' }] } });
-  });
   await page.goto('/editor?new=docx&locale=en');
   await page.waitForFunction(() => Boolean(window.__ooFrames.readyEditor()));
   await page.frameLocator('iframe[name="frameEditor"]').locator('.agent-sidebar-entry').click();
   await page.locator('.agent-sources-toggle').click();
-  await page.getByRole('button', { name: 'Browse files', exact: true }).click();
-  await page.getByRole('button', { name: 'Old policy', exact: true }).click();
-  await expect.poll(() => reading).toBe(true);
+  await page.evaluate(() => {
+    const original = File.prototype.text;
+    const host = window as Window & { releaseOldReference?: () => void };
+    File.prototype.text = function () {
+      if (this.name !== 'old.txt') return original.call(this);
+      return new Promise<string>((resolve) => {
+        host.releaseOldReference = () => {
+          File.prototype.text = original;
+          resolve('Old conversation private data');
+        };
+      });
+    };
+  });
+  await page.locator('.agent-sources-view input[type=file]').setInputFiles({
+    name: 'old.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('Old conversation private data'),
+  });
+  await page.waitForFunction(
+    () => typeof (window as Window & { releaseOldReference?: () => void }).releaseOldReference === 'function',
+  );
   await page.locator('.agent-panel-clear').click();
   await page.locator('.agent-sources-toggle').click();
   await page
     .locator('.agent-sources-view input[type=file]')
     .setInputFiles({ name: 'fresh.txt', mimeType: 'text/plain', buffer: Buffer.from('New conversation data') });
   await expect(page.locator('.agent-source-row')).toHaveText('fresh.txtRemove');
-  const completed = page.waitForResponse((response) => response.url().includes('/api/connectors/google/read'));
-  release();
-  await completed;
+  await page.evaluate(() => (window as Window & { releaseOldReference?: () => void }).releaseOldReference!());
   await expect(page.locator('.agent-source-row')).toHaveText('fresh.txtRemove');
   await page.getByRole('button', { name: 'Back to conversation', exact: true }).click();
   await expect(page.locator('.agent-sources-summary')).toHaveText('fresh.txt');
@@ -486,6 +567,29 @@ test('structured results validate explicitly, preview compactly and export witho
 }, testInfo) => {
   test.setTimeout(90000);
   await page.goto('/');
+  // Measure the engine/platform's native filename policy separately from the
+  // exact filename requested by the application (GTK WebKit replaces spaces).
+  const nativeDownload = page.waitForEvent('download');
+  await page.evaluate(() => {
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob(['filename probe'], { type: 'text/csv;charset=utf-8' }));
+    link.download = 'Release table.csv';
+    document.body.append(link);
+    link.click();
+    link.remove();
+  });
+  const nativeFile = await nativeDownload;
+  const nativeFilename = nativeFile.suggestedFilename();
+  await nativeFile.delete();
+  await page.addInitScript(() => {
+    const host = window.top as Window & { __artifactDownloadNames?: string[] };
+    host.__artifactDownloadNames ??= [];
+    const click = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      if (this.download && this.href.startsWith('blob:')) host.__artifactDownloadNames!.push(this.download);
+      return click.call(this);
+    };
+  });
   await page.evaluate(() => {
     localStorage.setItem('document-assistant-enabled', 'true');
     localStorage.setItem(
@@ -502,7 +606,7 @@ test('structured results validate explicitly, preview compactly and export witho
   });
   let calls = 0;
   const requests: Record<string, unknown>[] = [];
-  await page.route('http://localhost:11434/api/**', async (route) => {
+  await mockApi(page, 'http://localhost:11434/api/**', async (route) => {
     if (route.request().method() === 'OPTIONS') {
       await route.fulfill({
         status: 204,
@@ -577,7 +681,16 @@ test('structured results validate explicitly, preview compactly and export witho
   const download = page.waitForEvent('download');
   await page.getByRole('button', { name: 'CSV', exact: true }).click();
   const file = await download;
-  expect(file.suggestedFilename()).toBe('Release table.csv');
+  expect(
+    await page.evaluate(() => (window as Window & { __artifactDownloadNames?: string[] }).__artifactDownloadNames),
+  ).toEqual(['Release table.csv']);
+  expect(file.suggestedFilename()).toBe(nativeFilename);
+  const exported = await readFile((await file.path())!, 'utf8');
+  const rows = exported.split('\r\n');
+  expect(rows).toHaveLength(26);
+  expect(rows[0]).toBe('"Name","Value"');
+  expect(rows[1]).toBe('"AI row","\'=1+1"');
+  expect(rows.at(-1)).toBe('"row 24","value"');
   for (const theme of ['light', 'dark'] as const) {
     await page.setViewportSize({ width: 360, height: 760 });
     await page.emulateMedia({ colorScheme: theme });

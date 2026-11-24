@@ -12,6 +12,9 @@ import {
   type I18nMessages,
   type Language,
 } from '@ranuts/shared/i18n';
+import { loadAllLocales } from './lib/locales';
+
+await loadAllLocales();
 
 /**
  * Shell locales beyond en/zh (roadmap direction eight, layer 2). All eight
@@ -57,7 +60,7 @@ const SAME_AS_ENGLISH: Partial<Record<string, Array<keyof I18nMessages>>> = {
 };
 
 /** The product name, which reads the same in every language. */
-const NEVER_TRANSLATED: Array<keyof I18nMessages> = ['webOffice', 'agentSourcesDrive'];
+const NEVER_TRANSLATED: Array<keyof I18nMessages> = ['webOffice'];
 
 const restore = () => {
   setLanguage(LanguageCode.EN);

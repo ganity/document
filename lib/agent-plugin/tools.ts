@@ -20,6 +20,7 @@ import { textToHtml, wordContent } from './word-content';
 export { textToHtml } from './word-content';
 import { requireEditorApi, requireEditorContext } from './editor-bridge';
 import type { AgentTool } from '@ranuts/agent-core/types';
+import { fitTextResult, minimumTextResult } from '@ranuts/agent-core/runtime';
 import { createSlideTool } from './presentation-content';
 import { setBoldTool, setParagraphAlignmentTool } from './formatting-tools';
 import { setSlideFontSizeTool } from './slide-font-size';
@@ -167,6 +168,7 @@ const DEFAULT_MAX_CHARS = 8000;
 
 export const getDocumentTextTool: AgentTool<GetDocumentTextParams, { text: string; truncated: boolean }> = {
   name: 'get_document_text',
+  fitResult: { minimum: minimumTextResult, fit: fitTextResult },
   description:
     'Read source text from the current Word document so the application can answer factual questions about it. ' +
     'Use this when a question refers to the open document, including when no text is selected. ' +
@@ -203,6 +205,7 @@ export const getPresentationTextTool: AgentTool<
   { text: string; truncated: boolean; slidesRead: number; totalSlides: number }
 > = {
   name: 'get_presentation_text',
+  fitResult: { minimum: minimumTextResult, fit: fitTextResult },
   description:
     'Presentation only. Read plain text from slide text shapes and groups without moving the selection. Does not read images, charts or speaker notes.',
   inputSchema: getDocumentTextTool.inputSchema,

@@ -20,12 +20,10 @@ import { initAnalytics } from './lib/analytics';
 import { createControlPanel, hideControlPanel, hideLanding, showControlPanel } from './lib/ui';
 import 'ranui/button';
 import 'ranui/card';
-import 'ranui/select';
 import { initWebMcp } from './lib/web-mcp';
 import { createAgentEntry } from './lib/agent-entry';
 import { hasUnsavedChanges, installUnsavedChangesGuard } from './lib/unsaved-guard';
 import { initDocumentHistory } from './lib/history';
-import '@khmyznikov/pwa-install';
 import './styles/base.css';
 
 declare global {
@@ -178,15 +176,9 @@ void (async () => {
   }
 
   if (documentUrl) {
-    let decodedUrl = documentUrl;
-    try {
-      decodedUrl = decodeURIComponent(documentUrl);
-    } catch (error) {
-      console.warn('Failed to decode URL, using original:', error);
-    }
-    // The open path already reports failures to the reader. Only decoding
-    // errors use the original URL; a failed download must not be retried here.
-    await openDocumentFromUrl(decodedUrl, undefined, {
+    // Query parsing already decoded the outer parameter. Encoded delimiters
+    // inside the remote URL belong to that server's path/query and must survive.
+    await openDocumentFromUrl(documentUrl, undefined, {
       readonly: isReadonly,
       docId: savedParam || undefined,
     }).catch(() => {});
@@ -344,5 +336,9 @@ const initPwaInstall = () => {
   document.body.appendChild(builder.build());
 };
 
-// Start PWA initialization after short delay to ensure everything is settled
-setTimeout(initPwaInstall, 1000);
+// Start PWA initialization after short delay to ensure everything is settled.
+// The element is optional and mounted late, so its ~110 KB definition stays
+// off the editor's startup chunk.
+setTimeout(() => {
+  import('@khmyznikov/pwa-install').then(initPwaInstall, () => {});
+}, 1000);

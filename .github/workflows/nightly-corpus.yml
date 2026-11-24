@@ -21,6 +21,10 @@ on:
     - cron: "17 19 * * *" # 03:17 Asia/Shanghai
   workflow_dispatch:
     inputs:
+      skip_corpus:
+        description: "Run cross-browser and budgets without the corpus matrix"
+        type: boolean
+        default: false
       limit:
         description: "Max files to run (CORPUS_LIMIT)"
         default: "300"
@@ -52,6 +56,7 @@ jobs:
         id: decide
         env:
           MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+          SKIP_CORPUS: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_corpus }}
         run: |
           age_hours=$(( ( $(date -u +%s) - $(git log -1 --format=%ct) ) / 3600 ))
           # 1..7 with 7 = Sunday. The cron fires at 19:17 UTC, so this is the
@@ -71,6 +76,10 @@ jobs:
           fi
           if [ "$MANUAL" = "true" ] || { [ "$weekday" -eq 7 ] && [ "$age_hours" -lt 193 ]; }; then
             corpus=true
+          fi
+          # A focused manual browser validation does not need the weekly corpus.
+          if [ "$SKIP_CORPUS" = "true" ]; then
+            corpus=false
           fi
 
           {
@@ -134,7 +143,7 @@ jobs:
           # are narrow on purpose: a bare `crash` would also drop
           # 51921-Word-Crash067.doc, which is a real document from a bug report.
           CORPUS_EXCLUDE: "password|protect|encrypt|corrupt|truncat|broken|invalid|damaged|clusterfuzz|fuzzer|fuzzed|poi-fuzz|crash-[0-9a-f]{6}|\\.xlsm$|\\.xlsb$|\\.docm$|\\.pptm$"
-        run: pnpm exec playwright test test/e2e/corpus.spec.ts --workers=2 --reporter=list
+        run: pnpm exec playwright test test/e2e/corpus.spec.ts --workers=2
 
       - name: Summarize
         if: always()
@@ -150,12 +159,17 @@ jobs:
             playwright-report/
           retention-days: 14
 
-  browsers:
-    name: Cross-browser (WebKit + Firefox)
+  browsers-shard:
+    name: Cross-browser (${{ matrix.browser }}, shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     needs: gate
     if: needs.gate.outputs.browsers == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [webkit, firefox]
+        shard: [1, 2, 3]
 
     steps:
       - name: Checkout code
@@ -164,30 +178,78 @@ jobs:
       - name: Set up the toolchain
         uses: ./.github/actions/setup
         with:
-          browsers: webkit firefox
+          browsers: ${{ matrix.browser }}
 
-      # The same PR-time suites (minus the opt-in sweeps) on the two engines
-      # the gate does not cover. Same-realm/L0 rules apply unchanged.
-      - name: Run E2E on WebKit and Firefox
-        run: pnpm exec playwright test -c playwright.browsers.config.ts --grep-invert "api surface|corpus|@serial" --reporter=list
-
-      # The other half of that `--grep-invert`, exactly as ci.yml's e2e job
-      # pairs them: an @serial case is one that cannot share the run. Without
-      # this split sw-silent-update.spec.ts rewrites the served sw.js while
-      # other specs are being served from it, replacing THEIR worker mid-test
-      # -- which is where sw-warm's "runtime-e2e-next" and cache-first's
-      # missing sentinel came from on 2026-08-25. Without the second pass
-      # nothing runs them at all and the job stays green regardless.
-      - name: Run the cases that cannot share the run
-        run: pnpm exec playwright test -c playwright.browsers.config.ts --grep @serial --workers=1 --reporter=list
+      # Per-engine measured file weights, assigned with LPT; unknown specs use
+      # that engine's median. Keep two workers and the existing retry budget.
+      - name: Run ordinary E2E on ${{ matrix.browser }}
+        env:
+          E2E_SHARD: ${{ matrix.shard }}/3
+          E2E_BROWSER: ${{ matrix.browser }}
+          E2E_REPORT_DIR: playwright-report-browsers/${{ matrix.browser }}-${{ matrix.shard }}-normal
+          E2E_RESULTS_DIR: test-results-browsers/${{ matrix.browser }}-${{ matrix.shard }}-normal
+        run: pnpm exec playwright test -c playwright.browsers.config.ts --project=${{ matrix.browser }} --grep-invert "api surface|corpus|@serial" --workers=2
 
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: playwright-report-browsers
-          path: playwright-report-browsers/
+          name: playwright-report-browsers-${{ matrix.browser }}-shard-${{ matrix.shard }}-normal
+          path: |
+            playwright-report-browsers/
+            test-results-browsers/
           retention-days: 14
+
+  browsers-serial:
+    name: Cross-browser (${{ matrix.browser }}, serial)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [gate, browsers-shard]
+    if: ${{ !cancelled() && needs.gate.outputs.browsers == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [webkit, firefox]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up the toolchain
+        uses: ./.github/actions/setup
+        with:
+          browsers: ${{ matrix.browser }}
+
+      # Exactly once per engine, on its own runner, even after ordinary failures.
+      # sw-silent-update rewrites the served SW; budgets also need exclusive CPU.
+      - name: Run the cases that cannot share the run
+        env:
+          E2E_REPORT_DIR: playwright-report-browsers/${{ matrix.browser }}-serial
+          E2E_RESULTS_DIR: test-results-browsers/${{ matrix.browser }}-serial
+        run: pnpm exec playwright test -c playwright.browsers.config.ts --project=${{ matrix.browser }} --grep @serial --workers=1
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-browsers-${{ matrix.browser }}-serial
+          path: |
+            playwright-report-browsers/
+            test-results-browsers/
+          retention-days: 14
+
+  browsers:
+    name: Cross-browser (WebKit + Firefox)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [gate, browsers-shard, browsers-serial]
+    if: always() && needs.gate.outputs.browsers == 'true'
+    steps:
+      - name: Report the browser matrix verdict
+        env:
+          RESULT: ${{ needs.browsers-shard.result }}
+          SERIAL_RESULT: ${{ needs.browsers-serial.result }}
+        run: test "$RESULT" = "success" && test "$SERIAL_RESULT" = "success"
 
   budgets:
     name: Slow-network budgets
@@ -226,7 +288,7 @@ jobs:
       - name: UI crawl
         env:
           UI_CRAWL: "1"
-        run: pnpm exec playwright test test/e2e/ui-crawl.spec.ts --reporter=list
+        run: pnpm exec playwright test test/e2e/ui-crawl.spec.ts
 
       - name: Upload UI crawl reports
         if: always()
@@ -241,4 +303,49 @@ jobs:
       - name: Throttled-network budget
         env:
           SLOW_NET: "1"
-        run: pnpm exec playwright test test/e2e/slow-network.spec.ts --reporter=list
+        run: pnpm exec playwright test test/e2e/slow-network.spec.ts
+
+  # Strategy §9 interaction sweeps. Documented as "nightly" for a long time,
+  # but only UI crawl + slow-net actually ran. Keep them off the PR gate
+  # (opt-in env) and off the cross-browser shards (too long / Chromium-shaped);
+  # fail the night when they go red so the coverage claim stays honest.
+  sweeps:
+    name: Interaction sweeps (api / shortcut / monkey)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: gate
+    if: needs.gate.outputs.browsers == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up the toolchain
+        uses: ./.github/actions/setup
+        with:
+          browsers: chromium
+
+      - name: API surface sweep
+        env:
+          API_SWEEP: "1"
+        run: pnpm exec playwright test test/e2e/api-surface.spec.ts --workers=1
+
+      - name: Shortcut surface sweep
+        env:
+          SHORTCUT_SWEEP: "1"
+        run: pnpm exec playwright test test/e2e/shortcut-surface.spec.ts --workers=1
+
+      - name: Seeded monkey
+        env:
+          MONKEY: "1"
+        run: pnpm exec playwright test test/e2e/monkey.spec.ts --workers=1
+
+      - name: Upload sweep reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: interaction-sweep-reports
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14

@@ -1,3 +1,5 @@
+import { captureClipboard } from './lib/clipboard';
+import { mockApi } from './lib/mock-api';
 import { expect, test } from './lib/l0';
 import { buildDocx, toBase64 } from './lib/ooxml';
 
@@ -40,7 +42,7 @@ for (const ext of ['docx', 'xlsx', 'pptx', 'pdf'] as const) {
       release = resolve;
     });
     let answers = 0;
-    await page.route('http://localhost:11434/api/**', async (route) => {
+    await mockApi(page, 'http://localhost:11434/api/**', async (route) => {
       if (route.request().method() === 'OPTIONS') {
         await route.fulfill({
           status: 204,
@@ -142,9 +144,31 @@ for (const ext of ['docx', 'xlsx', 'pptx', 'pdf'] as const) {
       await expect.poll(() => input.evaluate((el) => el.clientHeight)).toBeLessThan(narrowHeight);
       await expect(input).toHaveValue(draft);
       await expect.poll(() => log.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(3);
-      await log.evaluate((el) => {
-        el.scrollTop = 0;
-      });
+      if (ext === 'docx') {
+        // Inject delayed native scroll delivery so the readiness gate is exercised
+        // deterministically. This schedules a browser fault, not a readiness wait.
+        await log.evaluate((el) => {
+          let scheduled = false;
+          const holdScroll = (event: Event) => {
+            event.stopImmediatePropagation();
+            if (el.scrollTop !== 0 || scheduled) return;
+            scheduled = true;
+            setTimeout(() => {
+              el.removeEventListener('scroll', holdScroll, true);
+              el.dispatchEvent(new Event('scroll'));
+            }, 500);
+          };
+          el.addEventListener('scroll', holdScroll, true);
+        });
+      }
+      const scrollLatest = page.getByRole('button', { name: 'Scroll to latest' });
+      await expect(scrollLatest).toBeHidden();
+      await log.focus();
+      await log.press('Home');
+      // The offset can change before the native scroll event detaches the reader.
+      // Wait for its visible result before a resize can change transcript geometry.
+      await expect(scrollLatest).toBeVisible();
+      await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(0);
       await resize.press('Home');
       await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(0);
       await input.fill(draft + draft);
@@ -182,11 +206,12 @@ for (const ext of ['docx', 'xlsx', 'pptx', 'pdf'] as const) {
       ).toEqual([4, 17, 'backward']);
       await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(0);
       await expect(input).not.toBeFocused();
-      await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+      const copiedText = await captureClipboard(page);
       const copy = page.locator('.cui-copy').first();
       const width = (await copy.boundingBox())!.width;
       await copy.click();
       await expect(copy).toHaveAccessibleName('Copied');
+      expect(await copiedText()).toBe('Completed response');
       await expect(page.locator('.cui-feedback')).toHaveText('Copied');
       expect((await copy.boundingBox())!.width).toBe(width);
       await expect(copy).toHaveAccessibleName('Copy');
@@ -200,11 +225,12 @@ for (const ext of ['docx', 'xlsx', 'pptx', 'pdf'] as const) {
       await expect.poll(() => log.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(3);
       const code = page.locator('.cui-msg-agent pre');
       await code.focus();
-      await code.press('ArrowRight');
+      // Native WebKit scrolling needs a key hold spanning an animation frame.
+      await code.press('ArrowRight', { delay: 100 });
       await expect.poll(() => code.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
       const table = page.locator('.cui-msg-agent .cui-table');
       await table.focus();
-      await table.press('ArrowRight');
+      await table.press('ArrowRight', { delay: 100 });
       await expect.poll(() => table.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
       await page.screenshot({ path: testInfo.outputPath('chat-details.png') });
     } finally {
@@ -230,7 +256,7 @@ for (const width of [320, 360, 1280]) {
         }),
       );
     });
-    await page.route('http://localhost:11434/api/**', (route) =>
+    await mockApi(page, 'http://localhost:11434/api/**', (route) =>
       route.fulfill({ json: { models: [{ name: 'density-test' }] } }),
     );
     await page.goto('/editor?new=docx&locale=en');
@@ -297,6 +323,7 @@ for (const width of [320, 360, 1280]) {
     await composer.screenshot({ path: testInfo.outputPath(`composer-only-${width}.png`) });
     await page.evaluate(() => document.documentElement.setAttribute('data-ran-theme', 'dark'));
     await expect(composer).toHaveCSS('box-shadow', 'none');
+    await page.keyboard.press('Tab');
     await page.locator('.agent-sources-toggle').focus();
     expect(await page.locator('.agent-sources-toggle').evaluate((el) => getComputedStyle(el).outlineWidth)).toBe('2px');
     await page.locator('.agent-runtime-panel').screenshot({ path: testInfo.outputPath(`composer-dark-${width}.png`) });

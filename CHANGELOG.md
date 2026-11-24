@@ -81,6 +81,52 @@ notes. Entries describe what users experience, not internal refactors.
 
 - Embedded presentation image replacement rejects corrupt or incomplete PNG chunks before native loading, even when the browser decoder would accept them.
 
+### Changed
+
+- Opening a Word or PowerPoint file downloads only the font faces the document
+  actually uses (regular / bold / italic), instead of every face of every
+  family up front. Pasting or applying a new style still fetches what it needs.
+- The site top bar stays fixed while you scroll the homepage and content pages,
+  so language, GitHub and brand links remain reachable past the first screen.
+- Nightly CI now runs the API surface, keyboard shortcut, and seeded monkey
+  sweeps (previously documented as nightly but never scheduled).
+
+### Removed
+
+- External MCP and Google Drive connections in the AI assistant. Local file
+  references, citations and saved artifacts remain available without account
+  authorization or a connector backend.
+
+### Fixed
+
+- Read-only embeds can export again: `document:save` returns the file while
+  editing stays locked, and the File tab's download control inside an iframe
+  starts a real download instead of silently dropping the bytes ([#307](https://github.com/ranuts/document/issues/307)).
+- Read-only documents now look read-only: the toolbar keeps only the File and View tabs, editing buttons such as paste and macros are hidden, and the side panels are locked, while search, zoom and navigation stay available. Switching read-only off restores the full toolbar.
+- Exporting a PDF or another format keeps unsaved changes in the editable original visible until the original is saved.
+- Failed file opens restore usable file controls, including keyboard access.
+- Document history search keeps focus and ignores outdated results while typing.
+- Chat history conflicts offer an explicit way to keep local copies and restore saved conversations.
+- Dictation reaching its time limit finishes normally and preserves the final recognized words.
+- Spreadsheet conversions run in a background worker where supported, keeping the page responsive and canceling superseded opens.
+- Saving long chat histories avoids repeatedly processing unchanged conversations.
+
+- The language menu no longer flashes open and stretches the page header while
+  the page is still loading.
+- Select lists and the dictation privacy note open above the AI assistant panel
+  instead of behind it.
+- Local references attached while saved chat history is loading remain attached
+  when the conversation finishes restoring.
+- Reloading after a completed save restores the saved document instead of an
+  older recovery snapshot or the original file.
+- Opening a copied editor tab no longer removes the original tab's reload
+  source.
+- Document links preserve encoded path and query characters, including signed
+  URLs with encoded delimiters.
+- Gemini artifact revisions accept normally completed responses while retaining
+  incomplete-response protection.
+- Using a downloaded model from a custom mirror preserves its source and runtime
+  settings; deleting another source of the same model keeps the active one loaded.
 - Editing a document after more than seven idle days keeps the new recovery
   bytes instead of leaving an empty history record.
 - Turning off recovery, or stopping it after a storage failure, keeps ordinary
@@ -240,6 +286,18 @@ notes. Entries describe what users experience, not internal refactors.
 
 ### Changed
 
+- Every site page's footer links to the author's site, chaxus.com.
+- The editor page fetches less than half the JavaScript it did before it can
+  start (163 KB instead of 350 KB compressed). Browser-agent text reading and
+  the install prompt load when first needed, and an unused character-set
+  detector is no longer shipped.
+- The local history page no longer downloads the editor to show its list
+  (122 KB instead of 148 KB compressed).
+- The editor and history pages load only the interface language you use rather
+  than all seven, so the editor starts on 105 KB instead of 162 KB compressed,
+  and the history page on 61 KB instead of 121 KB.
+- The editor no longer loads the assistant's dropdown control or an unused
+  file-type table at startup (84 KB instead of 105 KB compressed).
 - Voice controls stay in place while recording or finishing. Explanations appear
   without moving the draft, and cancelling preserves the text typed before dictation.
 - **Configured assistants reopen in chat.** Enable a downloaded model or reconnect

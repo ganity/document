@@ -1,4 +1,4 @@
-import { LanguageCode, setLanguage } from '@ranuts/shared/i18n';
+import { LanguageCode, loadLocale, setLanguage } from '@ranuts/shared/i18n';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({
   refresh: () => {},
@@ -82,7 +82,8 @@ const first = () => ({
 const flush = async () => {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 };
-beforeEach(() => {
+beforeEach(async () => {
+  await loadLocale(LanguageCode.ZH);
   setLanguage(LanguageCode.ZH);
   slideshowState.api = null;
   sourceSha = undefined;

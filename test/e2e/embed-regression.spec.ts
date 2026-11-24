@@ -1,5 +1,5 @@
 import { expect, test } from './lib/l0';
-import { toBase64 } from './lib/ooxml';
+import { buildDocx, toBase64 } from './lib/ooxml';
 import { buildPptx, buildXlsx } from './actions/fixtures';
 import { waitForEditorReady, saveAndCapture, SAVE_FORMAT_CODE } from './actions/editor';
 
@@ -107,7 +107,7 @@ test.describe('embed regression (real editor)', () => {
     expect(result.text.trim()).toBe(original);
   });
 
-  test('readonly open reports readonly state and refuses to save (#25, #87)', async ({ page }) => {
+  test('readonly open reports readonly state and still allows export (#25, #87, #307)', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['view only']]), 'Sheet1');
@@ -119,18 +119,17 @@ test.describe('embed regression (real editor)', () => {
         readonly: true,
       });
       const state = await post('document:get-state', {});
-      let saveError = '';
-      try {
-        await post('document:save', {});
-      } catch (error) {
-        saveError = String((error as Error).message || error);
-      }
-      return { opened, state, saveError };
+      // Read-only blocks editing, not exporting (#307).
+      const saved = await post('document:save', {});
+      const parsed = XLSX.read(new Uint8Array(await saved.file.arrayBuffer()), { type: 'array' });
+      const text = XLSX.utils.sheet_to_csv(parsed.Sheets[parsed.SheetNames[0]]).trim();
+      return { opened, state, savedName: saved.file.name as string, text };
     });
 
     expect(result.opened.readonly).toBe(true);
     expect(result.state).toEqual({ readonly: true, hasDocument: true, dirty: false });
-    expect(result.saveError).not.toBe('');
+    expect(result.savedName).toBe('readonly.xlsx');
+    expect(result.text).toBe('view only');
   });
 
   test('runtime readonly toggle locks and unlocks the live editor without a rebuild', async ({ page }) => {
@@ -178,12 +177,8 @@ test.describe('embed regression (real editor)', () => {
 
       await post('document:set-readonly', { readonly: true });
       await waitForRestriction(128);
-      let lockedSaveError = '';
-      try {
-        await post('document:save', {});
-      } catch (error) {
-        lockedSaveError = String((error as Error).message || error);
-      }
+      // Export still works while locked (#307).
+      const lockedSaved = await post('document:save', {});
 
       await post('document:set-readonly', { readonly: false });
       await waitForRestriction(0);
@@ -191,10 +186,16 @@ test.describe('embed regression (real editor)', () => {
       const parsed = XLSX.read(new Uint8Array(await saved.file.arrayBuffer()), { type: 'array' });
       const text = XLSX.utils.sheet_to_csv(parsed.Sheets[parsed.SheetNames[0]]).trim();
 
-      return { lockedSaveError, savedFileName: saved.file.name as string, text };
+      return {
+        lockedSavedName: lockedSaved.file.name as string,
+        lockedSize: lockedSaved.file.size as number,
+        savedFileName: saved.file.name as string,
+        text,
+      };
     });
 
-    expect(result.lockedSaveError).not.toBe('');
+    expect(result.lockedSavedName).toBe('toggle.xlsx');
+    expect(result.lockedSize).toBeGreaterThan(0);
     expect(result.savedFileName).toBe('toggle.xlsx');
     expect(result.text).toBe('toggle,1');
   });
@@ -713,6 +714,51 @@ test.describe('embed regression (real editor)', () => {
     // alone would still serialize them. Generous bound: everything requested
     // inside 1.5s regardless of family count.
     expect(stats.dispatchSpreadMs).toBeLessThan(1500);
+  });
+
+  test('open-time NeedStyles is clamped from Document_CreateFontMap (font-load 15c)', async ({ page, l0 }) => {
+    // Without the clamp, CheckFontNeeds builds CFont(name) so NeedStyles is
+    // always 15 and every face file of every family is queued. Reverse: disable
+    // installNeedStylesClamp / LoadDocumentFonts rewrite in font-loading.ts and
+    // this asserts __ooFontNeedStylesClamped false or Arial stays at 15.
+    l0.allowConsole(/font prefetch|font-load acceleration|NeedStyles clamp/);
+    const body =
+      '<w:p><w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>' +
+      '<w:b/></w:rPr><w:t>Bold Arial</w:t></w:r></w:p>' +
+      '<w:p><w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>' +
+      '</w:rPr><w:t>Regular Arial</w:t></w:r></w:p>';
+    await page.evaluate(
+      async ({ b64 }) => {
+        const bin = atob(b64);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        await post('document:open-buffer', { fileName: 'need-styles.docx', buffer: arr.buffer, readonly: false });
+      },
+      { b64: toBase64(buildDocx('need styles', body)) },
+    );
+    const ready = await waitForEditorReady(page);
+    expect(ready.kind).toBe('word');
+
+    const stats = await page.evaluate(() => {
+      const win = window.__ooFrames.editor() as any;
+      if (!win) return { clamped: false, hooked: false, arial: null as number | null };
+      const infos: Array<{ Name?: string; NeedStyles?: number }> = win.AscFonts?.g_font_infos || [];
+      const arial = infos.find((info) => info?.Name === 'Arial');
+      return {
+        clamped: !!win.__ooFontNeedStylesClamped,
+        hooked: !!win.__ooFontNeedStylesHooked,
+        arial: typeof arial?.NeedStyles === 'number' ? arial.NeedStyles : null,
+      };
+    });
+    expect(stats.hooked).toBe(true);
+    expect(stats.clamped).toBe(true);
+    // CreateFontMap saw Regular + Bold; clamp also keeps Italic for chrome.
+    // Regular (1) | Italic (2) | Bold (4) = 7; must not stay at all-faces 15.
+    expect(stats.arial).not.toBeNull();
+    expect(stats.arial! & 1).toBe(1);
+    expect(stats.arial! & 2).toBe(2);
+    expect(stats.arial! & 4).toBe(4);
+    expect(stats.arial).toBe(7);
   });
 
   test('opens a PDF through the vendor pdf editor', async ({ page }) => {
