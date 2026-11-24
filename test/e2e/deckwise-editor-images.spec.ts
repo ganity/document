@@ -52,7 +52,10 @@ test('DeckWise generates an art image, retains its parameters on reopen and repl
     Object.assign(window, { imageCalls: [] });
     window.addEventListener('message', (event) => {
       if (event.source !== frame.contentWindow) return;
-      if (event.data?.type === 'document:ready' && frame.contentWindow?.location.pathname === '/module.html')
+      if (
+        event.data?.type === 'document:ready' &&
+        new URLSearchParams(frame.contentWindow?.location.search).get('deckwise') === '1'
+      )
         document.body.dataset.moduleReady = 'true';
       if (event.data?.type !== 'document:teaching-request') return;
       const { operation, args } = event.data.payload;

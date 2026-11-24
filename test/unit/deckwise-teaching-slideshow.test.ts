@@ -171,6 +171,7 @@ it('allows verified appear/fade but rejects animated geometry and nested native 
   const input = { doc: document, page: 1, onReady: vi.fn(), onExit: vi.fn(), onError: vi.fn() };
   const slide = state.api.WordControl.m_oLogicDocument.Slides[0];
   slide.cSld.spTree = [{ Id: 'target' }];
+  slide.getAnimationPlayer = () => null;
   slide.timing = {
     getAllAnimEffects: () => [
       {
@@ -219,6 +220,7 @@ function steps() {
   }));
   const slide = stateApiSlide();
   slide.cSld.spTree = [{ Id: 'target' }];
+  slide.getAnimationPlayer = () => null;
   slide.timing = { getAllAnimEffects: () => effects, getEffectsSequences: () => [[null, ...effects]] };
   manager.OnNextSlideAnimPlayer.mockImplementation(() => {
     const index = state.findIndex((value) => value === 'idle');
