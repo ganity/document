@@ -3,11 +3,18 @@ import { centeredSlideImageBox, prepareSlideImageInsertion } from './agent-plugi
 import { validateSlidePng } from './agent-plugin/slide-image-png';
 import { prepareSlideImageReplacement, requireSlideImage } from './agent-plugin/slide-image-replacement';
 import { artStyles, artTextPrompt, type ArtStyle } from './deckwise-art-text-styles';
-import { prepareEditorImage, readPageStyleReference, readSelectedImageReference, refinementReference } from './deckwise-editor-image-pixels';
+import {
+  prepareEditorImage,
+  readPageStyleReference,
+  readSelectedImageReference,
+  refinementReference,
+} from './deckwise-editor-image-pixels';
 import { markDocumentDirty } from './unsaved-guard';
 
-const redrawPrompt = '参考当前图片，重新生成一张教学图片，保留原图的主体、内容、构图、画风和已有文字，提升清晰度，仅保留主体和已有文字、描边，背景透明，不添加无关内容。';
-const standalonePrompt = 'Create exactly one standalone foreground asset. Match the current course style. Prioritize the requested edits. Preserve subject details, outlines, white areas and any existing text that the user did not ask to change. Render replacement text exactly. Use a perfectly flat solid chroma magenta #FF00FF background edge-to-edge for removal to transparent PNG. Do not use this key color in the subject. No unrelated objects, scenery, extra text, logo, watermark, gradient or detached shadow.';
+const redrawPrompt =
+  '参考当前图片，重新生成一张教学图片，保留原图的主体、内容、构图、画风和已有文字，提升清晰度，仅保留主体和已有文字、描边，背景透明，不添加无关内容。';
+const standalonePrompt =
+  'Create exactly one standalone foreground asset. Match the current course style. Prioritize the requested edits. Preserve subject details, outlines, white areas and any existing text that the user did not ask to change. Render replacement text exactly. Use a perfectly flat solid chroma magenta #FF00FF background edge-to-edge for removal to transparent PNG. Do not use this key color in the subject. No unrelated objects, scenery, extra text, logo, watermark, gradient or detached shadow.';
 const freshPrompt = '重新生成一张教学图片，仅保留主体和已有文字、描边，背景透明，不添加无关内容。';
 type ArtText = { schema: 'deckwise-art-text/1'; text: string; style: ArtStyle; instruction: string; model: string };
 type Mode = 'redraw' | 'insert' | 'edit';
@@ -207,11 +214,17 @@ export function createDeckwiseImageTools(
     sync();
   }
   function needsReference() {
-    return mode === 'redraw' ? referenceCurrent.checked : selectedStyle === 'course' || (mode === 'edit' && referenceCurrent.checked);
+    return mode === 'redraw'
+      ? referenceCurrent.checked
+      : selectedStyle === 'course' || (mode === 'edit' && referenceCurrent.checked);
   }
   function syncModels(preferred = models.value) {
     const options = choices
-      .filter((model) => (!needsReference() && !(mode !== 'redraw' && refinement.value.trim() && selected)) || model.supportsReferenceImage)
+      .filter(
+        (model) =>
+          (!needsReference() && !(mode !== 'redraw' && refinement.value.trim() && selected)) ||
+          model.supportsReferenceImage,
+      )
       .map((model) => new Option(model.model, model.model));
     models.replaceChildren(...options);
     if (options.some((option) => option.value === preferred)) models.value = preferred;
@@ -315,11 +328,14 @@ export function createDeckwiseImageTools(
         const description = prompt.value.trim();
         if (!art && !description) throw new Error('请输入图片修改要求');
         notice.textContent = '正在生成图片…';
-        const reference = refine && previous
-          ? await refinementReference(previous)
-          : art?.style === 'course'
-            ? readPageStyleReference()
-            : needsReference() ? await readSelectedImageReference() : undefined;
+        const reference =
+          refine && previous
+            ? await refinementReference(previous)
+            : art?.style === 'course'
+              ? readPageStyleReference()
+              : needsReference()
+                ? await readSelectedImageReference()
+                : undefined;
         const input = art
           ? artTextPrompt(art.text, art.style, art.instruction, !!reference, previous ? refine : '')
           : description + '\n' + standalonePrompt;

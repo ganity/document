@@ -1,7 +1,12 @@
 import { COMPACT_VIEWPORT_MAX_WIDTH } from '../../onlyoffice/viewport';
 
 /** Use the editor's left rail when compact chrome hides its right rail. */
-export function createSidebarEntry(toggle: () => void, label: () => string, isAvailable?: () => boolean, icon?: string) {
+export function createSidebarEntry(
+  toggle: () => void,
+  label: () => string,
+  isAvailable?: () => boolean,
+  icon?: string,
+) {
   let button: HTMLButtonElement | null = null;
   let ready = false,
     open = false;

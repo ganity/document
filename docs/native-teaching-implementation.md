@@ -168,7 +168,6 @@ Question-change detection compares the supported response fields in a stable ord
 
 When legacy canonical Quiz data omits keyPoints, retain existing checkpoint reference key points for the unchanged question. Explicit keyPoints (including an empty array) remain authoritative; a changed question never inherits the previous question's reference points.
 
-
 ## Scene background teaching-region recovery (2026-11-18)
 
 `repair-background-region` takes the current view/revision, reviewed PNG SHA-256,

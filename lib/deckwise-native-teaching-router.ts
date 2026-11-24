@@ -361,10 +361,14 @@ export async function routeNativeTeaching(
     const logic = (getEditorApi() as any)?.WordControl?.m_oLogicDocument;
     const slide = logic?.Slides?.[pageNumber - 1];
     if (!slide) throw new Error('Native page unavailable');
-    const layers = (await Promise.all(nativeTeachingObjects(pageNumber).map(async ({ objectId, nativeShape }) => {
-      const evidence = await nativeLayerEvidence(nativeShape);
-      return evidence ? { objectId, dataUrl: evidence.dataUrl } : undefined;
-    }))).filter(Boolean);
+    const layers = (
+      await Promise.all(
+        nativeTeachingObjects(pageNumber).map(async ({ objectId, nativeShape }) => {
+          const evidence = await nativeLayerEvidence(nativeShape);
+          return evidence ? { objectId, dataUrl: evidence.dataUrl } : undefined;
+        }),
+      )
+    ).filter(Boolean);
     return { value: { dataUrl: renderNativeSlide(slide, logic, requireEditorContext().AscCommon as any), layers } };
   }
   if (operation === 'narration-context') {
@@ -384,27 +388,29 @@ export async function routeNativeTeaching(
           height: api?.WordControl?.m_oLogicDocument?.GetHeightMM?.() ?? 0,
           notes: notes || (typeof plannedPage?.narration === 'string' ? plannedPage.narration : ''),
           visualSummary: text,
-          objects: await Promise.all(nativeTeachingObjects(pageNumber).map(async ({ nativeShape, objectId, name }) => {
-            const shape = nativeShape as unknown as {
-              x?: number;
-              y?: number;
-              extX?: number;
-              extY?: number;
-              spTree?: unknown[];
-              isImage?(): boolean;
-            };
-            const text = readPresentationShapeText(nativeShape);
-            const layer = await nativeLayerEvidence(nativeShape);
-            return {
-              objectId,
-              name,
-              aliases: [name],
-              ...(layer ? { layerMetadata: layer.layerMetadata } : {}),
-              text,
-              kind: shape.spTree?.length ? 'group' : text.trim() ? 'text' : shape.isImage?.() ? 'image' : 'shape',
-              bbox: [shape.x ?? 0, shape.y ?? 0, shape.extX ?? 0, shape.extY ?? 0],
-            };
-          })),
+          objects: await Promise.all(
+            nativeTeachingObjects(pageNumber).map(async ({ nativeShape, objectId, name }) => {
+              const shape = nativeShape as unknown as {
+                x?: number;
+                y?: number;
+                extX?: number;
+                extY?: number;
+                spTree?: unknown[];
+                isImage?(): boolean;
+              };
+              const text = readPresentationShapeText(nativeShape);
+              const layer = await nativeLayerEvidence(nativeShape);
+              return {
+                objectId,
+                name,
+                aliases: [name],
+                ...(layer ? { layerMetadata: layer.layerMetadata } : {}),
+                text,
+                kind: shape.spTree?.length ? 'group' : text.trim() ? 'text' : shape.isImage?.() ? 'image' : 'shape',
+                bbox: [shape.x ?? 0, shape.y ?? 0, shape.extX ?? 0, shape.extY ?? 0],
+              };
+            }),
+          ),
         },
       },
     };
@@ -514,14 +520,17 @@ export async function routeNativeTeaching(
   }
   if (operation === 'write') {
     if (args.viewId !== teaching.documentId + '.' + page.pageId) throw new Error('Native teaching view changed');
-    const next = replaceNativeTeachingPage({
-      documentId: teaching.documentId,
-      expectedRevision: String(args.expectedTeachingRevision),
-      pageId: page.pageId,
-      enrichment: args.enrichment as Parameters<typeof replaceNativeTeachingPage>[0]['enrichment'],
-      semantics: args.semantics as Parameters<typeof replaceNativeTeachingPage>[0]['semantics'],
-      actions: args.actions as Parameters<typeof replaceNativeTeachingPage>[0]['actions'],
-    }, true);
+    const next = replaceNativeTeachingPage(
+      {
+        documentId: teaching.documentId,
+        expectedRevision: String(args.expectedTeachingRevision),
+        pageId: page.pageId,
+        enrichment: args.enrichment as Parameters<typeof replaceNativeTeachingPage>[0]['enrichment'],
+        semantics: args.semantics as Parameters<typeof replaceNativeTeachingPage>[0]['semantics'],
+        actions: args.actions as Parameters<typeof replaceNativeTeachingPage>[0]['actions'],
+      },
+      true,
+    );
     return routeNativeTeaching('open', {}, next.pages.findIndex((p) => p.pageId === page.pageId) + 1);
   }
   if (operation === 'tts:preview' || operation === 'media:preview') {

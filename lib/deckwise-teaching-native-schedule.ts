@@ -93,7 +93,8 @@ export function prepareSpeechNativeSchedule(
               effect.asc_getDelay() === cue.atMs &&
               effect.asc_getDuration() === cue.endMs - cue.atMs,
           );
-          if (!mirror) throw new Error('讲解关联的动画尚未写入 PPT 或与讲解时间不一致，请在当前页重新同步并保存该动画。');
+          if (!mirror)
+            throw new Error('讲解关联的动画尚未写入 PPT 或与讲解时间不一致，请在当前页重新同步并保存该动画。');
           claimed.add(mirror);
           effect = mirror.createDuplicate();
         }

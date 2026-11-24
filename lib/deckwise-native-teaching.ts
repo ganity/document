@@ -146,14 +146,17 @@ export function readNativeTeaching(): NativeTeaching | undefined {
 }
 
 /** A single native action replaces the carrier; native keyboard undo sees the same change. */
-export function replaceNativeTeachingPage(input: {
-  documentId: string;
-  expectedRevision: string;
-  pageId: string;
-  actions: Action[];
-  enrichment?: CoursewareEnrichment;
-  semantics?: Array<{ objectId: string; role: string; aliases: string[]; text: string; teachingTarget: boolean }>;
-}, generatedTimeline = false) {
+export function replaceNativeTeachingPage(
+  input: {
+    documentId: string;
+    expectedRevision: string;
+    pageId: string;
+    actions: Action[];
+    enrichment?: CoursewareEnrichment;
+    semantics?: Array<{ objectId: string; role: string; aliases: string[]; text: string; teachingTarget: boolean }>;
+  },
+  generatedTimeline = false,
+) {
   if (getReadonlyMode()) throw new Error('Teaching is read-only');
   const current = readNativeTeaching();
   if (!current || current.documentId !== input.documentId || current.revision !== input.expectedRevision)
@@ -193,9 +196,22 @@ export function replaceNativeTeachingPage(input: {
     const media = current.media.find((m) => m.id === action.audioAssetId && m.mimeType.startsWith('audio/'));
     if (media) resolveNativeSpeechAttention(current, input.pageId, action, media.durationMs);
     const cues = action.visualCues;
-    if (generatedTimeline && action.type === 'speech' && Array.isArray(cues) && cues.every(c =>
-      c && typeof c.id === 'string' && Number.isInteger(c.atMs) && Number.isInteger(c.endMs) && c.atMs >= 0 && c.endMs > c.atMs &&
-      ['element_animation', 'spotlight', 'highlight'].includes(c.effect?.type))) action.visualCues = sequenceSpeechFocus(cues);
+    if (
+      generatedTimeline &&
+      action.type === 'speech' &&
+      Array.isArray(cues) &&
+      cues.every(
+        (c) =>
+          c &&
+          typeof c.id === 'string' &&
+          Number.isInteger(c.atMs) &&
+          Number.isInteger(c.endMs) &&
+          c.atMs >= 0 &&
+          c.endMs > c.atMs &&
+          ['element_animation', 'spotlight', 'highlight'].includes(c.effect?.type),
+      )
+    )
+      action.visualCues = sequenceSpeechFocus(cues);
   }
   const changed = next.pages.find((p) => p.pageId === input.pageId)!;
   if (input.semantics) {
@@ -227,7 +243,13 @@ export function replaceNativeTeachingPage(input: {
   changed.actions = actions;
   changed.reviewState = 'review';
   return commitNativeTeaching(next, true, undefined, () =>
-    prepareNativeTeachingMotions(current.pages.findIndex((p) => p.pageId === input.pageId) + 1, actions, page.actions, nativeTeachingTarget, pageMotionOwners(next, input.pageId)),
+    prepareNativeTeachingMotions(
+      current.pages.findIndex((p) => p.pageId === input.pageId) + 1,
+      actions,
+      page.actions,
+      nativeTeachingTarget,
+      pageMotionOwners(next, input.pageId),
+    ),
   );
 }
 
@@ -323,8 +345,12 @@ export function replaceNativeTeachingRegion(input: {
     [input.pageId]: { objectId, actionId: input.actionId, description: input.description },
   };
   input.change.assertCurrent();
-  const timing = prepareNativeTeachingMotions(index + 1, changed.actions, page.actions, (id) =>
-    id === objectId ? nativeShape : nativeTeachingTarget(id), pageMotionOwners(next, input.pageId),
+  const timing = prepareNativeTeachingMotions(
+    index + 1,
+    changed.actions,
+    page.actions,
+    (id) => (id === objectId ? nativeShape : nativeTeachingTarget(id)),
+    pageMotionOwners(next, input.pageId),
   );
   return commitNativeTeaching(next, true, undefined, () => ({
     apply() {
@@ -509,7 +535,10 @@ export function replaceNativeAssessments(input: {
             },
             referenceAnswer: {
               summary: q.referenceAnswer ?? q.analysis ?? (q.type === 'short_answer' ? q.answer?.join('；') : '') ?? '',
-              keyPoints: q.keyPoints ?? (q.question === a.question ? (a.referenceAnswer as { keyPoints?: string[] })?.keyPoints : undefined) ?? [],
+              keyPoints:
+                q.keyPoints ??
+                (q.question === a.question ? (a.referenceAnswer as { keyPoints?: string[] })?.keyPoints : undefined) ??
+                [],
             },
           }
         : a,
@@ -552,8 +581,13 @@ export function replaceNativeAssessments(input: {
 
 function pageMotionOwners(next: NativeTeaching, pageId: string) {
   const pages = (next.speechMotionOwners ?? {}) as Record<string, SpeechMotionOwners>;
-  return { legacyGenerated: !!next.generation, previous: Object.hasOwn(pages, pageId) ? pages[pageId] : undefined,
-    save: (owners: SpeechMotionOwners) => { next.speechMotionOwners = {...pages, [pageId]: owners}; } };
+  return {
+    legacyGenerated: !!next.generation,
+    previous: Object.hasOwn(pages, pageId) ? pages[pageId] : undefined,
+    save: (owners: SpeechMotionOwners) => {
+      next.speechMotionOwners = { ...pages, [pageId]: owners };
+    },
+  };
 }
 
 function commitNativeTeaching(
@@ -806,7 +840,8 @@ export async function adoptNativeTeachingAudio(input: {
             current.pages.findIndex((p) => p.pageId === input.pageId) + 1,
             page.actions,
             current.pages.find((p) => p.pageId === input.pageId)!.actions,
-            nativeTeachingTarget, pageMotionOwners(next, input.pageId),
+            nativeTeachingTarget,
+            pageMotionOwners(next, input.pageId),
           )
       : undefined;
   return commitNativeTeaching(next, true, existing ? undefined : new XMLSerializer().serializeToString(part), motions);

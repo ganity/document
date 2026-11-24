@@ -82,7 +82,9 @@ export function inspectTeachingAnimations(page: number, grouped = false, mode: '
             effect.asc_getDuration() < 1 ||
             effect.asc_getDuration() > 5000 ||
             (native
-              ? !Number.isInteger(effect.asc_getDelay?.()) || effect.asc_getDelay() < 0 || effect.asc_getDelay() + effect.asc_getDuration() > 3_600_000
+              ? !Number.isInteger(effect.asc_getDelay?.()) ||
+                effect.asc_getDelay() < 0 ||
+                effect.asc_getDelay() + effect.asc_getDuration() > 3_600_000
               : effect.asc_getDelay?.() !== 0) ||
             (effect.asc_getRepeatCount?.() ?? 1000) !== 1000 ||
             effect.asc_getRewind?.(),
@@ -134,7 +136,9 @@ export function createTeachingSlideshow(input: {
     bound && !schedule ? 'bound' : 'native',
   );
   if (schedule && schedule.slide !== slide) throw new Error('Scheduled animation slide changed');
-  const animatedIds = new Set((schedule?.timing.getAllAnimEffects() ?? effects).map((effect: { getObjectId(): string }) => effect.getObjectId()));
+  const animatedIds = new Set(
+    (schedule?.timing.getAllAnimEffects() ?? effects).map((effect: { getObjectId(): string }) => effect.getObjectId()),
+  );
   const liveGroups = new Set();
   for (const shape of teachingShapes<{ Id: string; group?: any; spTree?: any[] }>(slide.cSld.spTree)) {
     if (!animatedIds.has(shape.Id)) continue;
@@ -440,7 +444,9 @@ export function createTeachingSlideshow(input: {
               graphics.RestoreGrState();
             }
           };
-          restoreDrawer = () => { drawer.drawObject = draw; };
+          restoreDrawer = () => {
+            drawer.drawObject = draw;
+          };
           player.onRecalculateFrame();
         }
       }

@@ -2696,8 +2696,11 @@ export function mountDeckwiseTeachingSidebar(
       panelLayout?.dispose();
       nativeDocument = doc;
       imageTools?.dispose();
-      imageTools = editorImages ? createDeckwiseImageTools(doc, (operation, args) =>
-        request(operation, args, deckwiseEditorBridge.getContext(binding))) : undefined;
+      imageTools = editorImages
+        ? createDeckwiseImageTools(doc, (operation, args) =>
+            request(operation, args, deckwiseEditorBridge.getContext(binding)),
+          )
+        : undefined;
       panelLayout = createTeachingPanelLayout(doc);
       const style = element('style');
       style.textContent =
@@ -2721,7 +2724,9 @@ export function mountDeckwiseTeachingSidebar(
         .deckwise-teaching-sidebar [role=alert] { color:#b22; }
         .deckwise-teaching-sidebar p { margin:6px 0; overflow-wrap:anywhere; }
         .deckwise-teaching-sidebar footer { padding-top:12px; border-top:1px solid #ddd; }
-      ` + teachingFlowStyles + (editorImages ? editorImageStyles : '');
+      ` +
+        teachingFlowStyles +
+        (editorImages ? editorImageStyles : '');
       doc.head.append(style);
       panel = element('aside');
       panel.className = 'deckwise-teaching-sidebar';

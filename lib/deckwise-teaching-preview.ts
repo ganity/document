@@ -306,8 +306,11 @@ export async function createTeachingAttentionPreview(input: {
         const visible = (shape: Shape) => {
           if (!drawer || !shape.Id) return true;
           const animation = drawer.getSandwich(shape.Id);
-          return drawer.isDrawingVisible(shape.Id) && animation?.isDrawingVisible(shape.Id) !== false &&
-            animation?.getOpacity(shape.Id) !== 0;
+          return (
+            drawer.isDrawingVisible(shape.Id) &&
+            animation?.isDrawingVisible(shape.Id) !== false &&
+            animation?.getOpacity(shape.Id) !== 0
+          );
         };
         const hasVisibleContent = (shape: Shape): boolean =>
           visible(shape) && (!shape.spTree?.length || shape.spTree.some(hasVisibleContent));
@@ -336,8 +339,11 @@ export async function createTeachingAttentionPreview(input: {
             width: `${g.end.X - g.origin.X}px`,
             height: `${g.end.Y - g.origin.Y}px`,
           });
-          const spot = supported.findLast((c) => c.effect.type === 'spotlight' &&
-            targets.some((t) => t.id === c.effect.elementId || c.effect.elementIds?.includes(t.id)));
+          const spot = supported.findLast(
+            (c) =>
+              c.effect.type === 'spotlight' &&
+              targets.some((t) => t.id === c.effect.elementId || c.effect.elementIds?.includes(t.id)),
+          );
           if (spot) {
             const ids = [spot.effect.elementId, ...(spot.effect.elementIds ?? [])];
             const path = input.doc.createElementNS(svg.namespaceURI, 'path');

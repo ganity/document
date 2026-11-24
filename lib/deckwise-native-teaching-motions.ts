@@ -161,7 +161,7 @@ export function prepareNativeTeachingMotions(
           next.removeEffects(removals.map((index) => copied[index]));
         }
         // Each SDK append rebuilds the tree, replacing the objects from previous appends.
-        const effects = additions.flatMap(group =>
+        const effects = additions.flatMap((group) =>
           group.map(({ shapeId, preset, duration, delay, cueId }, index) => {
             const effect = next.createEffect(shapeId, preset.presetClass, preset.presetId, preset.subtype, null);
             if (!effect) throw new Error('Native speech animation preset is unavailable');

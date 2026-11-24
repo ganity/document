@@ -41,23 +41,46 @@ test('replacing a saved speech motion removes its old native mirror and preserve
       .find((f) => f.name() === 'frameEditor')!
       .evaluate(() => {
         const slide = (window as any).editor.WordControl.m_oLogicDocument.Slides[0];
-        return (slide.timing?.getAllAnimEffects() ?? [])
-          .map((effect: any) => ({ preset: effect.cTn.presetID, duration: effect.asc_getDuration(), delay: effect.asc_getDelay() }));
+        return (slide.timing?.getAllAnimEffects() ?? []).map((effect: any) => ({
+          preset: effect.cTn.presetID,
+          duration: effect.asc_getDuration(),
+          delay: effect.asc_getDelay(),
+        }));
       });
-  const replace = (teaching: any, actions: any[]) => page.evaluate(
-    async ({ binding, teaching, actions }) => post('document:native-teaching', {
-      binding, operation: 'replace-page',
-      command: { documentId: teaching.documentId, expectedRevision: teaching.revision, pageId: teaching.pages[0].pageId, actions },
-    }), { binding, teaching, actions },
-  );
-  let before = await read(), motions = await effects();
+  const replace = (teaching: any, actions: any[]) =>
+    page.evaluate(
+      async ({ binding, teaching, actions }) =>
+        post('document:native-teaching', {
+          binding,
+          operation: 'replace-page',
+          command: {
+            documentId: teaching.documentId,
+            expectedRevision: teaching.revision,
+            pageId: teaching.pages[0].pageId,
+            actions,
+          },
+        }),
+      { binding, teaching, actions },
+    );
+  let before = await read(),
+    motions = await effects();
   if (!motions.length) {
     const actions = structuredClone(before.pages[0].actions);
-    const speech = actions.find((a: any) => a.type === 'speech' && a.audioAssetId && a.visualCues?.some((c: any) => c.effect.type === 'spotlight' || c.effect.type === 'highlight'));
+    const speech = actions.find(
+      (a: any) =>
+        a.type === 'speech' &&
+        a.audioAssetId &&
+        a.visualCues?.some((c: any) => c.effect.type === 'spotlight' || c.effect.type === 'highlight'),
+    );
     const focus = speech?.visualCues.find((c: any) => c.effect.type === 'spotlight' || c.effect.type === 'highlight');
     const elementId = focus?.effect.elementId ?? focus?.effect.elementIds?.[0];
     expect(elementId).toBeTruthy();
-    speech.visualCues.push({ id: 'first-native-cue', atMs: 0, endMs: 600, effect: { type: 'element_animation', effect: 'zoomIn', elementId } });
+    speech.visualCues.push({
+      id: 'first-native-cue',
+      atMs: 0,
+      endMs: 600,
+      effect: { type: 'element_animation', effect: 'zoomIn', elementId },
+    });
     await replace(before, actions);
     const seeded = await read();
     expect(seeded.media).toEqual(before.media);

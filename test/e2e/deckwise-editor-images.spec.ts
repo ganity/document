@@ -63,7 +63,10 @@ test('DeckWise generates an art image, retains its parameters on reopen and repl
           : operation === 'editor-image:quote'
             ? { id: 'test-quote', maxPoints: 3, expiresAt: new Date(Date.now() + 60_000).toISOString() }
             : operation === 'editor-image:submit'
-              ? { state: 'ready', image: (window as any).imageCalls.at(-2)?.args.prompt.includes('#FF00FF') ? foreground : image }
+              ? {
+                  state: 'ready',
+                  image: (window as any).imageCalls.at(-2)?.args.prompt.includes('#FF00FF') ? foreground : image,
+                }
               : [];
       frame.contentWindow!.postMessage(
         { type: 'document:teaching-response', id: event.data.id, payload: { result } },
@@ -115,7 +118,14 @@ test('DeckWise generates an art image, retains its parameters on reopen and repl
   await expect(editor.locator('.deckwise-teaching-sidebar')).toBeHidden();
   await tools.getByRole('button', { name: '插入 AI 图片艺术字' }).click();
   await expect(tools.locator('.image-presets button')).toHaveCount(14);
-  await expect.poll(() => tools.locator('.image-presets img').first().evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+  await expect
+    .poll(() =>
+      tools
+        .locator('.image-presets img')
+        .first()
+        .evaluate((image: HTMLImageElement) => image.naturalWidth),
+    )
+    .toBeGreaterThan(0);
   await tools.getByRole('button', { name: '绘本冒险字' }).click();
   await tools.getByLabel('艺术字文案').fill('快乐出发');
   await generatePreview();
@@ -166,9 +176,12 @@ test('DeckWise generates an art image, retains its parameters on reopen and repl
   const reference = tools.getByRole('checkbox', { name: '参考当前图片' });
   await expect(reference).toBeChecked();
   await generatePreview();
-  const latestQuote = () => page.evaluate(() =>
-    (window as any).imageCalls.findLast((call: { operation: string }) => call.operation === 'editor-image:quote').args,
-  );
+  const latestQuote = () =>
+    page.evaluate(
+      () =>
+        (window as any).imageCalls.findLast((call: { operation: string }) => call.operation === 'editor-image:quote')
+          .args,
+    );
   expect((await latestQuote()).reference).toMatch(/^data:image\/png;base64,/);
   await reference.uncheck();
   await tools.getByLabel('生图模型').selectOption('text-only');
@@ -179,16 +192,17 @@ test('DeckWise generates an art image, retains its parameters on reopen and repl
   await expect(tools.getByRole('status')).toHaveText('图片已替换');
   expect(await selectImage()).toBe(id);
 
-  const pictureState = () => page.evaluate(() => {
-    const editor = (window.__ooFrames.readyEditor() as any).Asc.editor;
-    return editor.WordControl.m_oLogicDocument.Slides[0].cSld.spTree
-      .filter((shape: any) => shape.isImage?.())
-      .map((shape: any) => ({
-        id: shape.Id,
-        rasterId: shape.blipFill.RasterImageId,
-        description: shape.getCNvProps().descr,
-      }));
-  });
+  const pictureState = () =>
+    page.evaluate(() => {
+      const editor = (window.__ooFrames.readyEditor() as any).Asc.editor;
+      return editor.WordControl.m_oLogicDocument.Slides[0].cSld.spTree
+        .filter((shape: any) => shape.isImage?.())
+        .map((shape: any) => ({
+          id: shape.Id,
+          rasterId: shape.blipFill.RasterImageId,
+          description: shape.getCNvProps().descr,
+        }));
+    });
   const original = await pictureState();
   await tools.getByRole('button', { name: '插入 AI 图片艺术字' }).click();
   await expect(tools.getByLabel('艺术字文案')).toHaveValue('');
@@ -202,8 +216,10 @@ test('DeckWise generates an art image, retains its parameters on reopen and repl
   expect(pictures).toHaveLength(original.length + 1);
   expect(pictures.slice(0, -1)).toEqual(original);
   expect(pictures.at(-1)?.description).toContain('新的标题');
-  const submitted = await page.evaluate(() =>
-    (window as any).imageCalls.filter((call: { operation: string }) => call.operation === 'editor-image:submit').length,
+  const submitted = await page.evaluate(
+    () =>
+      (window as any).imageCalls.filter((call: { operation: string }) => call.operation === 'editor-image:submit')
+        .length,
   );
   expect(submitted).toBe(5);
 });

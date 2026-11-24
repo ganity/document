@@ -52,7 +52,8 @@ class Timing {
     return this.effects;
   }
   createEffect(id: string, kind: number, preset: number, subtype: number) {
-    let duration = 0, delay = 0;
+    let duration = 0,
+      delay = 0;
     return {
       getObjectId: () => id,
       cTn: { presetClass: kind, presetID: preset, presetSubtype: subtype, setNodeType() {} },
@@ -61,7 +62,9 @@ class Timing {
         duration = value;
       },
       asc_getDelay: () => delay,
-      asc_putDelay(value: number) { delay = value; },
+      asc_putDelay(value: number) {
+        delay = value;
+      },
     };
   }
   addEffectsToMainSequence(effects: any[]) {
@@ -1106,7 +1109,8 @@ it('replaces and removes mirrored speech motions without accumulating old native
   });
   const repaired = structuredClone(actions);
   repaired[0].visualCues[0].effect.effect = 'fadeIn';
-  repaired[0].visualCues[0].atMs = 300; repaired[0].visualCues[0].endMs = 900;
+  repaired[0].visualCues[0].atMs = 300;
+  repaired[0].visualCues[0].endMs = 900;
   const second = replaceNativeTeachingPage({
     documentId: 'document',
     expectedRevision: first.revision,
@@ -1128,7 +1132,6 @@ it('replaces and removes mirrored speech motions without accumulating old native
   expect(third.pages[0].actions[0].text).toBe('Before');
 });
 
-
 it('adopts end-of-speech audio after an earlier speech already owns a motion on the same page', async () => {
   vi.stubGlobal('crypto', webcrypto);
   class NativeTiming extends Timing {
@@ -1139,26 +1142,73 @@ it('adopts end-of-speech audio after an earlier speech already owns a motion on 
     }
     addEffectsToMainSequence(effects: any[]) {
       // The SDK rebuilds its tree and duplicates effects that already have a parent.
-      this.effects = [...this.effects.map(e => ({ ...e, cTn: { ...e.cTn } })), ...effects];
+      this.effects = [...this.effects.map((e) => ({ ...e, cTn: { ...e.cTn } })), ...effects];
     }
   }
   try {
-    const slide = { cSld: { spTree: [{ sourceId: '4', Id: 'shape-4' }] }, timing: new NativeTiming(),
-      setTiming(value: NativeTiming) { this.timing = value; } };
+    const slide = {
+      cSld: { spTree: [{ sourceId: '4', Id: 'shape-4' }] },
+      timing: new NativeTiming(),
+      setTiming(value: NativeTiming) {
+        this.timing = value;
+      },
+    };
     mount(false, [slide]);
-    const first = { id: 'first', type: 'speech', text: 'Show', visualCues: [{ id: 'reveal', atMs: 0, endMs: 600,
-      effect: { type: 'element_animation', elementId: 'object', effect: 'fadeIn' } }] };
-    const last = { id: 'last', type: 'speech', text: 'Finish', attention: { type: 'highlight', objectIds: ['object'], animation: 'fadeOut' } };
-    const plan = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions: [first, last] });
+    const first = {
+      id: 'first',
+      type: 'speech',
+      text: 'Show',
+      visualCues: [
+        {
+          id: 'reveal',
+          atMs: 0,
+          endMs: 600,
+          effect: { type: 'element_animation', elementId: 'object', effect: 'fadeIn' },
+        },
+      ],
+    };
+    const last = {
+      id: 'last',
+      type: 'speech',
+      text: 'Finish',
+      attention: { type: 'highlight', objectIds: ['object'], animation: 'fadeOut' },
+    };
+    const plan = replaceNativeTeachingPage({
+      documentId: 'document',
+      expectedRevision: 'revision',
+      pageId: 'page',
+      actions: [first, last],
+    });
     const bytes = new TextEncoder().encode('original speech audio').buffer;
-    const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
-    const adopted = await adoptNativeTeachingAudio({ documentId: 'document', pageId: 'page', expectedRevision: plan.revision,
-      actionId: 'last', assetId: 'original', sha256, durationMs: 1800, mimeType: 'audio/mpeg', bytes });
-    expect(slide.timing.effects.map(e => [e.cTn.presetClass, e.asc_getDelay()])).toEqual([[1, 0], [2, 1800]]);
+    const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (b) =>
+      b.toString(16).padStart(2, '0'),
+    ).join('');
+    const adopted = await adoptNativeTeachingAudio({
+      documentId: 'document',
+      pageId: 'page',
+      expectedRevision: plan.revision,
+      actionId: 'last',
+      assetId: 'original',
+      sha256,
+      durationMs: 1800,
+      mimeType: 'audio/mpeg',
+      bytes,
+    });
+    expect(slide.timing.effects.map((e) => [e.cTn.presetClass, e.asc_getDelay()])).toEqual([
+      [1, 0],
+      [2, 1800],
+    ]);
     expect(adopted.pages[0].actions[1]).toMatchObject({ audioAssetId: 'original', durationMs: 1800 });
-    replaceNativeTeachingPage({ documentId: 'document', pageId: 'page', expectedRevision: adopted.revision, actions: [first] });
-    expect(slide.timing.effects.map(e => e.cTn.presetClass)).toEqual([1]);
-  } finally { vi.unstubAllGlobals(); }
+    replaceNativeTeachingPage({
+      documentId: 'document',
+      pageId: 'page',
+      expectedRevision: adopted.revision,
+      actions: [first],
+    });
+    expect(slide.timing.effects.map((e) => e.cTn.presetClass)).toEqual([1]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 it('reuses a matching teacher effect without acquiring it when the speech cue is removed', () => {
@@ -1167,14 +1217,34 @@ it('reuses a matching teacher effect without acquiring it when the speech cue is
   manual.asc_putDuration(600);
   manual.asc_putDelay(300);
   timing.effects.push(manual);
-  const slide = { cSld: { spTree: [{ sourceId: '4', Id: 'shape-4' }] }, timing, setTiming(value: Timing) { this.timing = value; } };
+  const slide = {
+    cSld: { spTree: [{ sourceId: '4', Id: 'shape-4' }] },
+    timing,
+    setTiming(value: Timing) {
+      this.timing = value;
+    },
+  };
   mount(false, [slide]);
-  const speech = { id: 'speech', type: 'speech', text: 'Before', visualCues: [{
-    id: 'cue', atMs: 300, endMs: 900, effect: { type: 'element_animation', elementId: 'object', effect: 'fadeIn' },
-  }] };
-  const update = (expectedRevision: string, actions: typeof speech[]) => replaceNativeTeachingPage({
-    documentId: 'document', expectedRevision, pageId: 'page', actions,
-  });
+  const speech = {
+    id: 'speech',
+    type: 'speech',
+    text: 'Before',
+    visualCues: [
+      {
+        id: 'cue',
+        atMs: 300,
+        endMs: 900,
+        effect: { type: 'element_animation', elementId: 'object', effect: 'fadeIn' },
+      },
+    ],
+  };
+  const update = (expectedRevision: string, actions: (typeof speech)[]) =>
+    replaceNativeTeachingPage({
+      documentId: 'document',
+      expectedRevision,
+      pageId: 'page',
+      actions,
+    });
   const first = update('revision', [speech]);
   update(first.revision, [{ ...speech, visualCues: [] }]);
   expect(slide.timing.effects).toEqual([manual]);
@@ -1183,72 +1253,167 @@ it('reuses a matching teacher effect without acquiring it when the speech cue is
 it('adopts existing audio with an eleven-part diagram focus and persists all entrance effects', async () => {
   vi.stubGlobal('crypto', webcrypto);
   try {
-    const objects = Array.from({ length: 11 }, (_, i) => ({ logicalId: `part-${i}`, sourceShapeId: String(i + 4), type: 'shape' }));
-    const slide = { cSld: { spTree: objects.map(o => ({ sourceId: o.sourceShapeId, Id: `shape-${o.sourceShapeId}` })) },
-      timing: null as Timing | null, setTiming(value: Timing | null) { this.timing = value; } };
+    const objects = Array.from({ length: 11 }, (_, i) => ({
+      logicalId: `part-${i}`,
+      sourceShapeId: String(i + 4),
+      type: 'shape',
+    }));
+    const slide = {
+      cSld: { spTree: objects.map((o) => ({ sourceId: o.sourceShapeId, Id: `shape-${o.sourceShapeId}` })) },
+      timing: null as Timing | null,
+      setTiming(value: Timing | null) {
+        this.timing = value;
+      },
+    };
     mount(false, [slide], objects);
-    const teaching = replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions: [
-      { id: 'speech', type: 'speech', text: 'Observe the whole chain.', attention: { type: 'spotlight', objectIds: objects.map(o => o.logicalId), animation: 'fadeIn' } },
-    ] });
+    const teaching = replaceNativeTeachingPage({
+      documentId: 'document',
+      expectedRevision: 'revision',
+      pageId: 'page',
+      actions: [
+        {
+          id: 'speech',
+          type: 'speech',
+          text: 'Observe the whole chain.',
+          attention: { type: 'spotlight', objectIds: objects.map((o) => o.logicalId), animation: 'fadeIn' },
+        },
+      ],
+    });
     const bytes = new TextEncoder().encode('already generated audio').buffer;
-    const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
-    const input = { documentId: 'document', expectedRevision: teaching.revision, pageId: 'page', actionId: 'speech', assetId: 'existing-audio', sha256, mimeType: 'audio/mpeg', durationMs: 4000, bytes };
+    const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (b) =>
+      b.toString(16).padStart(2, '0'),
+    ).join('');
+    const input = {
+      documentId: 'document',
+      expectedRevision: teaching.revision,
+      pageId: 'page',
+      actionId: 'speech',
+      assetId: 'existing-audio',
+      sha256,
+      mimeType: 'audio/mpeg',
+      durationMs: 4000,
+      bytes,
+    };
     const adopted = await adoptNativeTeachingAudio(input);
     expect(adopted.pages[0].actions[0].attention).toBeUndefined();
     expect(adopted.pages[0].actions[0].visualCues).toHaveLength(12);
     expect(slide.timing?.getAllAnimEffects()).toHaveLength(11);
-    expect((await adoptNativeTeachingAudio({ ...input, expectedRevision: adopted.revision })).pages[0].actions).toEqual(adopted.pages[0].actions);
-  } finally { vi.unstubAllGlobals(); }
+    expect((await adoptNativeTeachingAudio({ ...input, expectedRevision: adopted.revision })).pages[0].actions).toEqual(
+      adopted.pages[0].actions,
+    );
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 it('retains a Quiz title edit in the native carrier after reopening without changing speech', async () => {
   mount(false, [{ cSld: { spTree: [] } }]);
-  replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions: [
-    { id: 'reading', type: 'speech', text: 'Choose\nA. One\nB. Two', audioAssetId: 'old', durationMs: 1000 },
-    { id: 'q', type: 'interaction_checkpoint', checkpointKind: 'chapter_summary', checkpointId: 'q', chapterId: 'page', chapterTitle: 'Production instructions',
-      question: 'Choose', response: { answerIndices: [0], kind: 'single', options: ['One', 'Two'] },
-      referenceAnswer: { summary: 'One', keyPoints: ['One'] }, context: { chapterSummary: 'Count', sourceSceneIds: ['page'] } },
-  ] });
+  replaceNativeTeachingPage({
+    documentId: 'document',
+    expectedRevision: 'revision',
+    pageId: 'page',
+    actions: [
+      { id: 'reading', type: 'speech', text: 'Choose\nA. One\nB. Two', audioAssetId: 'old', durationMs: 1000 },
+      {
+        id: 'q',
+        type: 'interaction_checkpoint',
+        checkpointKind: 'chapter_summary',
+        checkpointId: 'q',
+        chapterId: 'page',
+        chapterTitle: 'Production instructions',
+        question: 'Choose',
+        response: { answerIndices: [0], kind: 'single', options: ['One', 'Two'] },
+        referenceAnswer: { summary: 'One', keyPoints: ['One'] },
+        context: { chapterSummary: 'Count', sourceSceneIds: ['page'] },
+      },
+    ],
+  });
   vi.stubGlobal('crypto', webcrypto);
   const bytes = new TextEncoder().encode('retained question audio').buffer;
-  const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
-  await adoptNativeTeachingAudio({ documentId: 'document', expectedRevision: readNativeTeaching()!.revision, pageId: 'page', actionId: 'reading', assetId: 'old', sha256, mimeType: 'audio/mpeg', durationMs: 1000, bytes });
+  const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (b) =>
+    b.toString(16).padStart(2, '0'),
+  ).join('');
+  await adoptNativeTeachingAudio({
+    documentId: 'document',
+    expectedRevision: readNativeTeaching()!.revision,
+    pageId: 'page',
+    actionId: 'reading',
+    assetId: 'old',
+    sha256,
+    mimeType: 'audio/mpeg',
+    durationMs: 1000,
+    bytes,
+  });
   vi.unstubAllGlobals();
   const opened = (await routeNativeTeaching('assessment-context', {}, 1))!.value as any;
-  const classroom = structuredClone(opened.classroom); classroom.scenes[0].title = 'Count';
+  const classroom = structuredClone(opened.classroom);
+  classroom.scenes[0].title = 'Count';
   delete classroom.scenes[0].content.questions[0].keyPoints;
-  await routeNativeTeaching('assessment-write', { projectId: 'document', expectedRevision: opened.revision, expectedSourceRevision: opened.sourceRevision,
-    classroom, changedPageIds: ['page'] }, 1);
+  await routeNativeTeaching(
+    'assessment-write',
+    {
+      projectId: 'document',
+      expectedRevision: opened.revision,
+      expectedSourceRevision: opened.sourceRevision,
+      classroom,
+      changedPageIds: ['page'],
+    },
+    1,
+  );
   const reopened = (await routeNativeTeaching('assessment-context', {}, 1))!.value as any;
   expect(reopened.classroom.scenes[0].title).toBe('Count');
   expect((readNativeTeaching()!.pages[0].actions[1].referenceAnswer as any).keyPoints).toEqual(['One']);
-  expect(readNativeTeaching()!.pages[0].actions[0]).toMatchObject({ text: 'Choose\nA. One\nB. Two', audioAssetId: 'old', durationMs: 1000 });
+  expect(readNativeTeaching()!.pages[0].actions[0]).toMatchObject({
+    text: 'Choose\nA. One\nB. Two',
+    audioAssetId: 'old',
+    durationMs: 1000,
+  });
 });
 
 it('saves a checkpoint page-reference correction without changing accepted speech, audio or reference keys', async () => {
   mount();
   const speech = structuredClone(readNativeTeaching()!.pages[0].actions[0]);
   replaceNativeTeachingPage({
-    documentId: 'document', expectedRevision: 'revision', pageId: 'page',
-    actions: [speech, {
-      id: 'q', type: 'interaction_checkpoint', checkpointKind: 'chapter_summary', checkpointId: 'q',
-      chapterId: 'page', chapterTitle: 'Runoff', question: speech.text,
-      referenceAnswer: { summary: 'Surface runoff', keyPoints: ['River flows to the sea'] },
-      context: { chapterSummary: 'Runoff', sourceSceneIds: ['page'] },
-    }],
+    documentId: 'document',
+    expectedRevision: 'revision',
+    pageId: 'page',
+    actions: [
+      speech,
+      {
+        id: 'q',
+        type: 'interaction_checkpoint',
+        checkpointKind: 'chapter_summary',
+        checkpointId: 'q',
+        chapterId: 'page',
+        chapterTitle: 'Runoff',
+        question: speech.text,
+        referenceAnswer: { summary: 'Surface runoff', keyPoints: ['River flows to the sea'] },
+        context: { chapterSummary: 'Runoff', sourceSceneIds: ['page'] },
+      },
+    ],
   });
   for (const hint of ['Return to page 2.', 'Return to page 3.']) {
     const current = (await routeNativeTeaching('assessment-context', {}, 1))!.value as any;
     const classroom = structuredClone(current.classroom);
     const checkpoint = classroom.scenes[0].actions.find((a: any) => a.id === 'q');
     checkpoint.constraintPrompt = hint;
-    await routeNativeTeaching('assessment-write', {
-      projectId: current.projectId, expectedRevision: current.revision,
-      expectedSourceRevision: current.sourceRevision, classroom, changedPageIds: ['page'],
-    }, 1);
+    await routeNativeTeaching(
+      'assessment-write',
+      {
+        projectId: current.projectId,
+        expectedRevision: current.revision,
+        expectedSourceRevision: current.sourceRevision,
+        classroom,
+        changedPageIds: ['page'],
+      },
+      1,
+    );
     const saved = readNativeTeaching()!;
     expect(saved.pages[0].actions[0]).toEqual(speech);
-    expect(saved.pages[0].actions[1].referenceAnswer).toEqual({ summary: 'Surface runoff', keyPoints: ['River flows to the sea'] });
+    expect(saved.pages[0].actions[1].referenceAnswer).toEqual({
+      summary: 'Surface runoff',
+      keyPoints: ['River flows to the sea'],
+    });
     expect(saved.pages[0].actions[1]).not.toHaveProperty('constraintPrompt');
     const reread = (await routeNativeTeaching('assessment-context', {}, 1))!.value as any;
     expect(reread.classroom.scenes[0].actions.find((a: any) => a.id === 'q').constraintPrompt).toBe(hint);
@@ -1258,59 +1423,109 @@ it('saves a checkpoint page-reference correction without changing accepted speec
 function regionFixture() {
   const original = { Id: 'base', sourceId: '4', getUniNvProps: () => ({ cNvPr: { id: 4, name: 'arrow' } }) };
   const crop = { Id: 'crop', getUniNvProps: () => ({ cNvPr: { id: 5, name: 'region-new' } }) };
-  const slide = { cSld: { spTree: [original] }, timing: null as any, setTiming(value: any) { this.timing = value; } };
+  const slide = {
+    cSld: { spTree: [original] },
+    timing: null as any,
+    setTiming(value: any) {
+      this.timing = value;
+    },
+  };
   const f = mount(false, [slide]);
   const data: any = f.data;
-  data.generation = { pages: [{ pageId: 'page', teaching: { pageType: 'slide', requiredEffects: ['animation', 'spotlight'] } }] };
+  data.generation = {
+    pages: [{ pageId: 'page', teaching: { pageType: 'slide', requiredEffects: ['animation', 'spotlight'] } }],
+  };
   data.pages[0].actions[0].visualCues = [
     { id: 'fade', atMs: 0, endMs: 600, effect: { type: 'element_animation', effect: 'fadeIn', elementId: 'object' } },
     { id: 'spot', atMs: 600, endMs: 1000, effect: { type: 'spotlight', elementId: 'object', elementIds: [] } },
   ];
   f.parts[0].Delete();
   const xml = document.implementation.createDocument(NATIVE_TEACHING_NAMESPACE, 'teaching');
-  xml.documentElement.textContent = JSON.stringify(data); f.add(new XMLSerializer().serializeToString(xml));
+  xml.documentElement.textContent = JSON.stringify(data);
+  f.add(new XMLSerializer().serializeToString(xml));
   const before = structuredClone(readNativeTeaching());
-  const change = { objectId: 'region-new', nativeShape: crop, assertCurrent: vi.fn(),
-    apply: vi.fn(() => { slide.cSld.spTree.unshift(crop as typeof original); }),
-    restore: vi.fn(() => { slide.cSld.spTree = [original]; }),
+  const change = {
+    objectId: 'region-new',
+    nativeShape: crop,
+    assertCurrent: vi.fn(),
+    apply: vi.fn(() => {
+      slide.cSld.spTree.unshift(crop as typeof original);
+    }),
+    restore: vi.fn(() => {
+      slide.cSld.spTree = [original];
+    }),
   };
-  return { ...f, slide, before, change, run: () => replaceNativeTeachingRegion({ documentId: 'document',
-    expectedRevision: 'revision', pageId: 'page', actionId: 'speech', description: 'River region', change }) };
+  return {
+    ...f,
+    slide,
+    before,
+    change,
+    run: () =>
+      replaceNativeTeachingRegion({
+        documentId: 'document',
+        expectedRevision: 'revision',
+        pageId: 'page',
+        actionId: 'speech',
+        description: 'River region',
+        change,
+      }),
+  };
 }
 
 it('commits region, timing and carrier together while retaining audio and original foreground IDs', () => {
-  const f = regionFixture(); const saved = f.run();
-  const speech = saved.pages[0].actions[0], previous = f.before!.pages[0].actions[0];
+  const f = regionFixture();
+  const saved = f.run();
+  const speech = saved.pages[0].actions[0],
+    previous = f.before!.pages[0].actions[0];
   const { visualCues, ...unchanged } = speech;
   const { visualCues: oldCues, ...expected } = previous;
   expect(unchanged).toEqual(expected);
   expect((visualCues as any[])[0]).toEqual((oldCues as any[])[0]);
   expect((visualCues as any[])[1].effect.elementIds).toEqual(['region-new']);
   expect((visualCues as any[])[2].effect.elementId).toBe('region-new');
-  expect(nativeTeachingObjects(1).map(o => o.objectId)).toEqual(['region-new', 'object']);
+  expect(nativeTeachingObjects(1).map((o) => o.objectId)).toEqual(['region-new', 'object']);
   expect(f.slide.timing.getAllAnimEffects().map((e: any) => e.getObjectId())).toContain('crop');
-  expect(f.logic.StartAction).toHaveBeenCalledOnce(); expect(f.logic.FinalizeAction).toHaveBeenCalledOnce();
+  expect(f.logic.StartAction).toHaveBeenCalledOnce();
+  expect(f.logic.FinalizeAction).toHaveBeenCalledOnce();
 });
 
 it('rolls back the background/crop and carrier when the compound region write fails', () => {
   const f = regionFixture();
-  f.change.apply.mockImplementation(() => { f.slide.cSld.spTree.unshift(f.change.nativeShape as any); throw new Error('crop insertion failed'); });
+  f.change.apply.mockImplementation(() => {
+    f.slide.cSld.spTree.unshift(f.change.nativeShape as any);
+    throw new Error('crop insertion failed');
+  });
   expect(f.run).toThrow('crop insertion failed');
   expect(f.change.restore).toHaveBeenCalledOnce();
   expect(readNativeTeaching()).toEqual(f.before);
-  expect(nativeTeachingObjects(1).map(o => o.objectId)).toEqual(['object']);
+  expect(nativeTeachingObjects(1).map((o) => o.objectId)).toEqual(['object']);
   expect(f.slide.timing).toBeNull();
 });
 
 it('rejects stale region writes before changing the carrier or native image', () => {
   const f = regionFixture();
-  replaceNativeTeachingPage({ documentId: 'document', expectedRevision: 'revision', pageId: 'page', actions: f.before!.pages[0].actions });
-  expect(f.run).toThrow('revision changed'); expect(f.change.apply).not.toHaveBeenCalled();
+  replaceNativeTeachingPage({
+    documentId: 'document',
+    expectedRevision: 'revision',
+    pageId: 'page',
+    actions: f.before!.pages[0].actions,
+  });
+  expect(f.run).toThrow('revision changed');
+  expect(f.change.apply).not.toHaveBeenCalled();
 });
 
 it('blocks a second crop on the same page after a successful region repair', () => {
-  const f = regionFixture(); const saved = f.run();
-  expect(() => replaceNativeTeachingRegion({ documentId: 'document', expectedRevision: saved.revision,
-    pageId: 'page', actionId: 'speech', description: 'Repeated crop', change: { ...f.change, objectId: 'region-second' } })).toThrow('already repaired');
+  const f = regionFixture();
+  const saved = f.run();
+  expect(() =>
+    replaceNativeTeachingRegion({
+      documentId: 'document',
+      expectedRevision: saved.revision,
+      pageId: 'page',
+      actionId: 'speech',
+      description: 'Repeated crop',
+      change: { ...f.change, objectId: 'region-second' },
+    }),
+  ).toThrow('already repaired');
   expect(f.change.apply).toHaveBeenCalledOnce();
 });

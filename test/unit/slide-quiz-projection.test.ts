@@ -204,7 +204,9 @@ it('refreshes a stale managed hint even when previous and next use the same upgr
   f.leaves[1].getText = () => 'Choose the best answer.';
   const prepared = await prepareQuizProjection({ ...f.input, next: structuredClone(f.previous) });
   prepared.apply();
-  expect(f.slide.cSld.spTree.find(s => s.getObjectName() === 'assessment-3_hint').getText()).toBe('Write your answer.');
+  expect(f.slide.cSld.spTree.find((s) => s.getObjectName() === 'assessment-3_hint').getText()).toBe(
+    'Write your answer.',
+  );
   expect(f.slide.cSld.spTree).toContain(f.originals[0]);
   prepared.restore();
   expect(f.slide.cSld.spTree).toEqual(f.originals);

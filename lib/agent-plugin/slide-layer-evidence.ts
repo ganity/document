@@ -37,7 +37,7 @@ export async function nativeLayerEvidence(nativeShape: unknown) {
     typeof meta.description !== 'string' ||
     !meta.description.trim() ||
     meta.description.length > 2000 ||
-    /[\u0000-\u001f\u007f-\u009f]/u.test(meta.name + meta.description)
+    /\p{Cc}/u.test(meta.name + meta.description)
   )
     return;
   const fill = shape.blipFill,
