@@ -481,6 +481,7 @@ test('native teaching sidebar edits the Host timeline and reloads saved narratio
     await panel.getByRole('button', { name: '幻灯片放映', exact: true }).click();
     await show.getByRole('button', { name: '下一步 PPT 动画', exact: true }).click();
     await expect(show.locator('[data-attention-kind=highlight]')).toBeVisible();
+    await show.locator('[data-deckwise-teaching-canvas]').hover();
     await show.getByRole('button', { name: '退出教学放映', exact: true }).click();
     await expect(show).toHaveCount(0);
     await expect(native.locator('[data-teaching-preview]')).toHaveCount(0);

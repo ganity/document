@@ -13,6 +13,7 @@ type Effect = {
   cTn: { presetClass: number; presetID: number; presetSubtype: number; setNodeType(type: number): void };
   getObjectId(): string;
   asc_getDuration(): number;
+  asc_getDelay(): number;
   createDuplicate(): Effect;
   asc_putDuration(ms: number): void;
   asc_putDelay(ms: number): void;
@@ -89,9 +90,11 @@ export function prepareSpeechNativeSchedule(
               effect.cTn.presetClass === preset.presetClass &&
               effect.cTn.presetID === preset.presetId &&
               (effect.cTn.presetSubtype ?? 0) === preset.subtype &&
+              effect.asc_getDelay() === cue.atMs &&
               effect.asc_getDuration() === cue.endMs - cue.atMs,
           );
-          if (!mirror) throw new Error('讲解关联的动画尚未写入 PPT，请先完成课件生成并保存原生动画。');
+          if (!mirror)
+            throw new Error('讲解关联的动画尚未写入 PPT 或与讲解时间不一致，请在当前页重新同步并保存该动画。');
           claimed.add(mirror);
           effect = mirror.createDuplicate();
         }
@@ -110,7 +113,20 @@ export function prepareSpeechNativeSchedule(
       })
       .map((entry, stepIndex) => ({ ...entry, stepIndex }));
     // Independent interactive sequences reuse the native renderer without advancing unrelated effects.
-    const unbound = existing.filter((effect) => !claimed.has(effect)).map((effect) => effect.createDuplicate());
+    // A native effect on a group can hide a speech-owned child and vice versa.
+    const owners = new Set([...claimed].map((effect) => effect.getObjectId()));
+    const speechTargets = new Set<string>();
+    for (const shape of shapes.filter((shape) => shape.Id && owners.has(shape.Id))) {
+      for (const child of teachingShapes([shape], shape.group as Shape | undefined)) {
+        if (child.Id) speechTargets.add(child.Id);
+      }
+      for (let parent = shape.group as Shape | undefined; parent; parent = parent.group as Shape | undefined) {
+        if (parent.Id) speechTargets.add(parent.Id);
+      }
+    }
+    const unbound = existing
+      .filter((effect) => !claimed.has(effect) && !speechTargets.has(effect.getObjectId()))
+      .map((effect) => effect.createDuplicate());
     timing.buildTree([
       ...(unbound.length ? [[null, ...unbound]] : []),
       ...scheduled.map((entry) => [entry.token, entry.effect]),

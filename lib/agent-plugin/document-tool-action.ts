@@ -84,10 +84,10 @@ function interaction(doc: Document): { revision: number } {
       doc.addEventListener(
         event,
         (input) => {
-          // Host teaching controls do not mutate the slide or its selection.
+          // Host sidebars validate slide edits separately from interaction with their forms.
           if (
             !(input.target as Element | null)?.closest?.(
-              '.deckwise-teaching-sidebar, [data-teaching-slideshow], [data-teaching-lesson]',
+              '.deckwise-teaching-sidebar, [data-teaching-slideshow], [data-teaching-lesson], [data-editor-image-tools]',
             )
           )
             observed.revision++;

@@ -297,7 +297,11 @@ async function handleCommand(message: EmbedMessage): Promise<void> {
         deckwiseEditorBridge.getContext(payload.binding);
         if (payload.nativeTeaching === true) initializeNativeTeaching();
         teachingSidebar?.dispose();
-        teachingSidebar = mountDeckwiseTeachingSidebar(payload.binding, postToParent);
+        teachingSidebar = mountDeckwiseTeachingSidebar(
+          payload.binding,
+          postToParent,
+          !!moduleSend && payload.editorImages === true,
+        );
         if (moduleUi.teachingOpen !== undefined) teachingSidebar.setOpen(moduleUi.teachingOpen);
         postToParent('document:teaching-ready');
         break;

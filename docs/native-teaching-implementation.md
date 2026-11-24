@@ -155,3 +155,58 @@ Regression coverage: `test/unit/slide-quiz-projection.test.ts` and
 `test/e2e/deckwise-grouped-quiz-recovery.spec.ts`. The latter takes a real generated
 fixture through projection, native save and reopen and checks the picture plus
 unchanged teaching actions. It uses a local PNG and makes no paid request.
+
+## Whole-diagram audio adoption
+
+Generated speech attention accepts up to 200 distinct current eligible object IDs, matching native selection and spotlight geometry. Adopting an already-generated audio result must resolve an eleven-layer diagram into one combined spotlight and all eleven entrance effects atomically. Unknown and duplicate targets, invalid effects, stale revisions and excessive timing still reject. Re-adoption retains existing media and timing. Desktop generation/repair and the staged editor must ship together with this bound.
+
+Quiz title edits must also update the checkpoint chapterTitle in the native teaching carrier. The assessment-context reader derives its title from that carrier; changing only the visible slide would resurrect the old title after reopening. Title/reference-only edits retain speech text, audio IDs and effects.
+
+Native Quiz projection compares managed text with the actual bound shape as well as the previous canonical template. Rebuilding both previous/next with an upgraded template must not hide stale on-slide hints. Unrelated shapes remain intact and the update retains native rollback.
+
+Question-change detection compares the supported response fields in a stable order. JSON object key-order changes alone must not invalidate already-generated speech/audio when updating a title or reference answer.
+
+When legacy canonical Quiz data omits keyPoints, retain existing checkpoint reference key points for the unchanged question. Explicit keyPoints (including an empty array) remain authoritative; a changed question never inherits the previous question's reference points.
+
+## Scene background teaching-region recovery (2026-11-18)
+
+`repair-background-region` takes the current view/revision, reviewed PNG SHA-256,
+saved speech action ID, normalized bounds and a semantic description. It is
+available for generated body pages requiring entrance animation and spotlight,
+with an editable ordinary opaque image background. Desktop separately requires
+the authoritative Host task to be Scene. Original import pages are protected.
+
+Partition the decoded background pixels into a white-vacancy plate and an exact
+crop inserted below the current foregrounds. The crop may include scenery; no
+silhouette segmentation or generative inpainting is required. It shares the
+selected speech's fade-in and spotlight without replacing existing cues, words
+or media. Before entrance the complete region is blank. Single-pixel edge
+resampling may differ in the renderer; source pixel samples do not change.
+
+Prepare images without history, fence reviewed pixels and source state, then
+commit image/background, teaching identity/semantics, native timing and carrier
+in one native Undo transaction. Rollback restores all affected state. A
+`backgroundRegions` carrier entry prevents repeated extraction on that page.
+Unsupported background transforms/effects, stale evidence, locks, transparency,
+whole-slide crops and missing saved audio reject before commit. No new player
+schema is used. Desktop must save and re-review before reporting success.
+
+Tests: `slide-background-region.test.ts`, `deckwise-native-teaching.test.ts` and
+`deckwise-background-region.spec.ts` (requires `DECKWISE_REGION_FIXTURE`). The
+real-model fixture test verifies stale-pixel rejection, render fidelity,
+speech/audio preservation, Undo/Redo and native save/reopen without paid calls.
+
+## Supplier layer evidence, 2026-11-18
+
+Generated Scene pictures may carry `deckwise-layer/1` in their standard alternate
+image description: bounded supplier name/description plus the SHA-256 of the
+embedded PNG. Narration context returns these hints only while the registered
+local image bytes still match. Replaced/cropped, rotated/flipped or grouped images
+use ordinary visual fallback. This read never fetches remote images or executes
+supplier text. The cache is bounded to 32 entries and 64 MiB of encoded data.
+
+`narration-visual` also returns current isolated layer PNGs with logical object
+UUIDs. The paired Desktop uses them in retained independent semantic/content
+review. Names/descriptions are identity evidence, not exact OCR. Existing native
+identity, actions, save/Undo and media ownership are unchanged. A real Office
+save/reopen regression preserves all four generated layer bindings and hints.

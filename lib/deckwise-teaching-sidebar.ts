@@ -1,3 +1,4 @@
+import { createDeckwiseImageTools, editorImageStyles } from './deckwise-editor-image-tools';
 import { assertNativeTeachingAnimations } from './deckwise-native-teaching';
 import {
   hasNativeTeaching,
@@ -25,6 +26,7 @@ import {
   createTeachingPanelLayout,
 } from './deckwise-teaching-flow';
 import { hasUnsavedChanges } from './unsaved-guard';
+import { getReadonlyMode } from './onlyoffice/readonly';
 import { createSidebarEntry } from './agent-plugin/ui/sidebar-entry';
 import { mountPanelContext } from './agent-plugin/ui/panel-context';
 import { deckwiseEditorBridge } from './deckwise-editor-bridge';
@@ -79,10 +81,16 @@ type LessonRun = {
 };
 
 /** UI only: authoritative teaching, drafts and paid media operations stay with Host. */
-export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, payload: any, id?: string) => void) {
+export function mountDeckwiseTeachingSidebar(
+  binding: any,
+  send: (type: string, payload: any, id?: string) => void,
+  editorImages = false,
+) {
+  let imageTools: ReturnType<typeof createDeckwiseImageTools> | undefined;
   let lifecycle: ReturnType<typeof mountPanelContext> | undefined;
   let disposed = false,
     open = true,
+    imagesOpen = false,
     busy = false,
     running = false;
   let nativeSlideshow = false;
@@ -122,6 +130,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
   > | null = null;
   let timeline: TimelinePreview | null = null,
     previewMode = 'idle';
+  let currentSpeechDuration: number | null = null;
   let previewVideo: HTMLVideoElement | null = null;
   const timelineUrls: string[] = [];
   let timelineRun = 0;
@@ -140,6 +149,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     timelineRun++;
     timeline?.dispose();
     timeline = null;
+    currentSpeechDuration = null;
     const show = teachingSlideshow;
     teachingSlideshow = null;
     const wasStarting = startingSlideshow;
@@ -178,7 +188,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
   const editable = () => !!view && !page()?.locked && !busy && !draftError && !lesson;
   const request = async (operation: string, args: any = {}, target = context): Promise<any> => {
     if (!target || disposed) throw new Error('Teaching context is unavailable');
-    if (hasNativeTeaching()) {
+    if (hasNativeTeaching() && !operation.startsWith('editor-image:')) {
       const native = await routeNativeTeaching(operation, args, target.page ?? 1);
       if (native && !(native.value as { nativeService?: boolean })?.nativeService) return native.value;
     }
@@ -203,7 +213,10 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     statusText = text;
     statusError = error;
     const showStatus = teachingSlideshow?.controls.querySelector('[data-show-status]');
-    if (showStatus) showStatus.textContent = lesson ? `第 ${lesson.page}/${lesson.total} 页 · ${text}` : text;
+    if (showStatus) {
+      showStatus.setAttribute('role', error ? 'alert' : 'status');
+      showStatus.textContent = text;
+    }
     if (!panel) return;
     const node = panel.querySelector<HTMLElement>('[data-status]');
     if (node) {
@@ -252,10 +265,17 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
           node.disabled =
             !view || busy || running || !!draftError || !!timeline || !actions.length || nativeSlideshow || !!lesson;
           break;
-        case 'toggle':
-          node.textContent = previewMode === 'paused' ? '继续播放' : '暂停播放';
-          node.title = node.textContent;
+        case 'toggle': {
+          const label = previewMode === 'paused' ? '继续播放' : '暂停播放';
+          if (node.textContent !== label) {
+            node.textContent = label;
+            decorateTeachingButton(node, previewMode === 'paused' ? 'play' : 'pause', true);
+          }
           node.disabled = !['playing', 'paused'].includes(previewMode);
+          break;
+        }
+        case 'skip':
+          node.disabled = previewMode !== 'playing' || currentSpeechDuration === null;
           break;
         case 'pause':
           node.disabled = previewMode !== 'playing';
@@ -779,6 +799,8 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       if (!view || draftError) throw new Error('教学页面尚未就绪');
       const content = structuredClone(actions),
         token = epoch;
+      const speechIds = content.filter((action) => action.type === 'speech').map((action) => action.id);
+      let speechSegment: HTMLSpanElement | undefined;
       if (
         content.some(
           (node) =>
@@ -957,6 +979,14 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             startingSlideshow = false;
           }
           const controls = teachingSlideshow.controls;
+          const transport = element('div');
+          transport.dataset.playbackTransport = '';
+          const pages = element('div');
+          pages.dataset.playbackPages = '';
+          pages.setAttribute('role', 'group');
+          pages.setAttribute('aria-label', '幻灯片翻页');
+          const pageCount = element('span', `${view!.pageNumber} / ${view!.project.pages.length}`);
+          pageCount.setAttribute('aria-label', `第 ${view!.pageNumber} 页，共 ${view!.project.pages.length} 页`);
           const navigate = (number: number) => {
             if (number < 1 || number > view!.project.pages.length) return;
             if (lesson) {
@@ -971,8 +1001,8 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
               void playLesson(number);
             }
           };
-          for (const [label, command, action] of [
-            ['上一页', 'previous', () => navigate(view!.pageNumber - 1)],
+          for (const [label, command, action, icon] of [
+            ['上一页', 'previous', () => navigate(view!.pageNumber - 1), 'previous'],
             [
               '暂停播放',
               'toggle',
@@ -985,24 +1015,39 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
                   timeline?.pause();
                 }
               },
+              'pause',
             ],
-            ['重播本页', 'replay', () => navigate(view!.pageNumber)],
-            ['下一页', 'next', () => navigate(view!.pageNumber + 1)],
-            ['教师继续', 'teacher', () => timeline?.continueTeacher()],
+            [
+              '跳到下一句',
+              'skip',
+              () => {
+                if (previewMode === 'playing' && currentSpeechDuration !== null) timeline?.seek(currentSpeechDuration);
+              },
+              'continue',
+            ],
+            ['重播本页', 'replay', () => navigate(view!.pageNumber), 'replay'],
+            ['下一页', 'next', () => navigate(view!.pageNumber + 1), 'next'],
+            ['教师继续', 'teacher', () => timeline?.continueTeacher(), 'continue'],
           ] as const) {
             const control = button(label, action);
             control.dataset.previewCommand = command;
-            control.title = label;
+            decorateTeachingButton(control, icon, command !== 'teacher');
             control.disabled =
               command === 'previous'
                 ? view!.pageNumber === 1
                 : command === 'next'
                   ? view!.pageNumber === view!.project.pages.length
                   : false;
-            controls.append(control);
+            if (command === 'previous' || command === 'next') pages.append(control);
+            else transport.append(control);
           }
-          const seekBar = element('label');
+          pages.firstElementChild!.after(pageCount);
+          const seekBar = element('div');
           seekBar.dataset.playbackSeek = '';
+          speechSegment = element('span');
+          speechSegment.dataset.playbackSpeech = '';
+          speechSegment.setAttribute('aria-live', 'polite');
+          speechSegment.hidden = true;
           const range = element('input');
           range.type = 'range';
           range.min = '0';
@@ -1017,19 +1062,22 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
           const seek = (ms: number) => timeline?.seek(Math.max(Number(range.min), Math.min(Number(range.max), ms)));
           range.addEventListener('input', () => seek(Number(range.value)));
           const forward = button('快进 5 秒', () => seek(Number(range.value) + 5000), true);
+          decorateTeachingButton(forward, 'forward', true);
           forward.dataset.previewCommand = 'forward';
-          seekBar.append(range, time, forward);
-          controls.append(seekBar);
-          controls.append(
+          seekBar.append(speechSegment, range, forward, time);
+          const exit = decorateTeachingButton(
             button('退出教学放映', () => {
               stopAudio();
               notice('教学放映已停止');
             }),
+            'close',
+            true,
           );
+          exit.dataset.previewCommand = 'exit';
           const status = element('span');
           status.dataset.showStatus = '';
           status.setAttribute('role', 'status');
-          controls.append(status);
+          controls.append(transport, seekBar, pages, exit, status);
           notice(
             nativeNodes.length
               ? '正在按教学时间轴自动放映 PPT 动画与讲解'
@@ -1055,7 +1103,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             if (teachingSlideshow) {
               previewVideo.controls = false;
               previewVideo.style.cssText =
-                'position:absolute;inset:0 0 var(--teaching-controls-height,112px);width:100%;height:calc(100% - var(--teaching-controls-height,112px));object-fit:contain;background:#000;z-index:40;';
+                'position:absolute;inset:0 0 var(--teaching-controls-height,57px);width:100%;height:calc(100% - var(--teaching-controls-height,57px));object-fit:contain;background:#000;z-index:40;';
               teachingSlideshow.surface.append(previewVideo);
             } else panel!.querySelector('[data-preview-command]')!.parentElement!.after(previewVideo);
           }
@@ -1063,7 +1111,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             const bar = teachingSlideshow?.controls.querySelector('[data-playback-seek]');
             if (!bar) return;
             const range = bar.querySelector('input')!;
-            const forward = bar.querySelector('button')!;
+            const forward = bar.querySelector<HTMLButtonElement>('[data-preview-command=forward]')!;
             range.disabled = forward.disabled = !progress || progress.durationMs <= 0;
             range.min = String(motionSteps.length && progress ? Math.min(progress.timeMs, progress.durationMs) : 0);
             range.max = String(progress?.durationMs ?? 0);
@@ -1093,6 +1141,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             onMode(mode) {
               if (!isCurrent()) return;
               previewMode = mode;
+              teachingSlideshow?.setPlaying(mode === 'playing');
               renderPreviewControls();
               if (mode === 'waiting_interaction') notice('等待教师继续，点击「教师继续」后播放下一段');
               else if (mode === 'paused') notice('本页教学已暂停');
@@ -1102,8 +1151,19 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             onMediaProgress: updateMediaProgress,
             onProgress(progress) {
               if (!isCurrent()) return;
-              updateMediaProgress(progress);
               const action = progress ? content.find((a) => a.id === progress.actionId) : undefined;
+              const duration =
+                action?.type === 'speech' &&
+                progress &&
+                Number.isFinite(progress.durationMs) &&
+                progress.timeMs < progress.durationMs
+                  ? progress.durationMs
+                  : null;
+              if (currentSpeechDuration !== duration) {
+                currentSpeechDuration = duration;
+                renderPreviewControls();
+              }
+              updateMediaProgress(progress);
               attention?.show(
                 progress
                   ? (action?.visualCues ?? []).filter(
@@ -1124,7 +1184,9 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
               card.setAttribute('aria-label', '课堂提问');
               card.style.cssText =
                 'max-width:600px;max-height:60vh;overflow:auto;background:white;color:#222;padding:16px;';
-              if (teachingSlideshow) card.style.cssText += 'position:absolute;bottom:64px;right:12px;';
+              if (teachingSlideshow)
+                card.style.cssText +=
+                  'position:absolute;bottom:calc(100% + 8px);right:12px;left:auto;width:calc(100% - 24px);';
               card.append(element('strong', question.question));
               if (question.response) {
                 const response = question.response;
@@ -1180,6 +1242,11 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
             },
             onNode(id) {
               if (!isCurrent()) return;
+              if (speechSegment) {
+                const index = speechIds.indexOf(id);
+                speechSegment.hidden = index < 0;
+                speechSegment.textContent = index < 0 ? '' : `讲解 ${index + 1}/${speechIds.length}`;
+              }
               panel?.querySelectorAll<HTMLElement>('[data-action-id]').forEach((node) => {
                 if (node.dataset.actionId === id) node.dataset.playing = '';
                 else node.removeAttribute('data-playing');
@@ -2579,29 +2646,45 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     flow.querySelector<HTMLElement>('[data-selected]')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   }
 
-  function setOpen(expanded: boolean) {
-    if (disposed) return;
-    const visibilityChanged = open !== expanded;
-    if (expanded && panel && (nativeDocument?.getElementById('right-menu')?.getBoundingClientRect().width ?? 0) <= 50)
+  function showPanel(next: 'teaching' | 'images' | null) {
+    if (disposed || (next === 'images' && getReadonlyMode())) return;
+    const wasOpen = open;
+    const wereImagesOpen = imagesOpen;
+    if (next && panel && (nativeDocument?.getElementById('right-menu')?.getBoundingClientRect().width ?? 0) <= 50)
       nativeDocument?.getElementById('id-right-menu-slide')?.click();
-    open = expanded;
-    if (!open) {
+    open = next === 'teaching';
+    imagesOpen = next === 'images';
+    if (!open && wasOpen) {
       clearTimeout(statusTimer);
       stopAudio();
     }
     if (panel) panel.hidden = !open;
+    if (imageTools) imageTools.element.hidden = !imagesOpen;
     sidebar.update(true, open);
-    panelLayout?.sync(open);
+    imageSidebar?.update(true, imagesOpen);
+    panelLayout?.sync(open || imagesOpen);
     send('document:ui-changed', { teachingOpen: open });
-    if (visibilityChanged) {
+    if (open !== wasOpen || imagesOpen) {
       lifecycle?.update();
       if (open) pollTasks();
     }
+    if (imagesOpen && !wereImagesOpen) imageTools?.updateSelection('opened');
+  }
+  function setOpen(expanded: boolean) {
+    if (expanded || open) showPanel(expanded ? 'teaching' : null);
   }
   const sidebar = createSidebarEntry(
     () => setOpen(!open),
     () => '教学时间轴',
   );
+  const imageSidebar = editorImages
+    ? createSidebarEntry(
+        () => showPanel(imagesOpen ? null : 'images'),
+        () => 'AI 图片工具',
+        () => !getReadonlyMode(),
+        '<path d="M16 3h5v5m-2 3v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7m5 3 4-4M3 15l4-4 6 6 2-2 4 4"/><circle cx="9" cy="8" r="1"/>',
+      )
+    : undefined;
   const mount = () => {
     for (const frame of document.querySelectorAll<HTMLIFrameElement>('#app iframe')) {
       const doc = frame.contentDocument;
@@ -2612,6 +2695,12 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       stopNativeClicks?.();
       panelLayout?.dispose();
       nativeDocument = doc;
+      imageTools?.dispose();
+      imageTools = editorImages
+        ? createDeckwiseImageTools(doc, (operation, args) =>
+            request(operation, args, deckwiseEditorBridge.getContext(binding)),
+          )
+        : undefined;
       panelLayout = createTeachingPanelLayout(doc);
       const style = element('style');
       style.textContent =
@@ -2635,20 +2724,24 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         .deckwise-teaching-sidebar [role=alert] { color:#b22; }
         .deckwise-teaching-sidebar p { margin:6px 0; overflow-wrap:anywhere; }
         .deckwise-teaching-sidebar footer { padding-top:12px; border-top:1px solid #ddd; }
-      ` + teachingFlowStyles;
+      ` +
+        teachingFlowStyles +
+        (editorImages ? editorImageStyles : '');
       doc.head.append(style);
       panel = element('aside');
       panel.className = 'deckwise-teaching-sidebar';
       panel.setAttribute('aria-label', '教学时间轴');
       panel.hidden = !open;
       // Keep native canvas shortcuts from consuming typing, selection and media controls.
-      for (const type of ['keydown', 'keyup', 'keypress', 'pointerdown', 'mousedown', 'wheel'])
-        panel.addEventListener(type, (event) => event.stopPropagation());
       container.append(panel);
+      if (imageTools) container.append(imageTools.element);
+      for (const surface of [panel, imageTools?.element])
+        for (const type of ['keydown', 'keyup', 'keypress', 'pointerdown', 'mousedown', 'wheel'])
+          surface?.addEventListener(type, (event) => event.stopPropagation());
       const nativeClick = (event: Event) => {
         const target = event.target as Element;
         if (target.closest('#right-menu .tool-menu-btns button:not(.agent-sidebar-entry)')) {
-          setOpen(false);
+          if (open || imagesOpen) showPanel(null);
         }
       };
       doc.addEventListener('click', nativeClick);
@@ -2670,16 +2763,22 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         doc.removeEventListener('click', nativeClick);
         style.remove();
       };
-      setOpen(open);
+      showPanel(open ? 'teaching' : imagesOpen ? 'images' : null);
       render();
       return;
     }
   };
   lifecycle = mountPanelContext({
-    isActive: () => !disposed && open,
+    isActive: () => !disposed && (open || imagesOpen),
     refresh: () => {
-      if (disposed || !open) return;
+      if (disposed || (!open && !imagesOpen)) return;
       mount();
+      imageSidebar?.update(true, imagesOpen);
+      if (imagesOpen) {
+        if (getReadonlyMode()) showPanel(null);
+        else imageTools?.updateSelection();
+        return;
+      }
       try {
         if (lesson?.navigating || projectingMotions) return;
         if (hasUnsavedChanges() && !hasNativeTeaching()) {
@@ -2710,6 +2809,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
   const nativeChanged = () => queueMicrotask(() => lifecycle?.update());
   window.addEventListener('deckwise-native-teaching-changed', nativeChanged);
   sidebar.update(true, true);
+  imageSidebar?.update(true, false);
   lifecycle?.update();
   pollTasks();
   return {
@@ -2726,11 +2826,13 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     dispose() {
       window.removeEventListener('deckwise-native-teaching-changed', nativeChanged);
       disposed = true;
+      imageTools?.dispose();
       epoch++;
       clearTimeout(statusTimer);
       clearTimeout(saveTimer);
       stopAudio();
       sidebar.dispose();
+      imageSidebar?.dispose();
       panelLayout?.dispose();
       lifecycle?.dispose();
       stopNativeClicks?.();

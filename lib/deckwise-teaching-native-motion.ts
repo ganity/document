@@ -13,6 +13,7 @@ type Effect = {
   getObjectId(): string;
   asc_getDuration(): number;
   asc_getDelay(): number;
+  asc_putDelay(value: number): void;
   createDuplicate(): Effect;
   merge(effect: Effect): void;
   asc_putDuration(duration: number): void;
@@ -40,19 +41,30 @@ export function generatedMotionBindings(
     const preset = runtime.nativeMotionPreset(cue.effect.effect ?? '');
     if (
       !preset ||
-      cue.atMs !== 0 ||
+      !Number.isInteger(cue.atMs) ||
+      cue.atMs < 0 ||
       !Number.isInteger(cue.endMs) ||
-      cue.endMs < 1 ||
-      cue.endMs > 5000 ||
+      cue.endMs <= cue.atMs ||
+      cue.endMs - cue.atMs > 5000 ||
+      cue.endMs > 3_600_000 ||
       !cue.effect.elementId
     )
-      throw new Error('Generated native motion requires a bounded speech-start cue');
+      throw new Error('Generated native motion requires a bounded speech cue');
     const nodeType = previousAction === actionId ? 7 : 2;
     if (nodeType === 2) stepIndex++;
     previousAction = actionId;
     const shape = attentionTarget(inspected.slide.cSld.spTree, objects, cue.effect.elementId);
     if (typeof shape.Id !== 'string' || !shape.Id) throw new Error('Unsupported native motion target');
-    return { actionId, cueId: cue.id, stepIndex, nodeType, shape, preset, duration: cue.endMs };
+    return {
+      actionId,
+      cueId: cue.id,
+      stepIndex,
+      nodeType,
+      shape,
+      preset,
+      duration: cue.endMs - cue.atMs,
+      delay: cue.atMs,
+    };
   });
   const matches = (effect: Effect, binding: (typeof bindings)[number]) =>
     !!effect &&
@@ -61,7 +73,7 @@ export function generatedMotionBindings(
     effect.cTn.presetID === binding.preset.presetId &&
     effect.cTn.presetSubtype === binding.preset.subtype &&
     effect.cTn.nodeType === binding.nodeType &&
-    effect.asc_getDelay() === 0 &&
+    effect.asc_getDelay() === binding.delay &&
     effect.asc_getDuration() === binding.duration;
   return { ...inspected, bindings, matches };
 }
@@ -75,12 +87,7 @@ export function nativeSpeechMotionSteps(
 ) {
   const native = inspectTeachingAnimations(page, true, 'native');
   // Imported timing is owned by the native schedule, not the legacy click-step projection.
-  if (
-    native.effects.some(
-      (effect) => (effect.cTn.nodeType !== 2 && effect.cTn.nodeType !== 7) || effect.asc_getDelay() !== 0,
-    )
-  )
-    return undefined;
+  if (native.effects.some((effect) => effect.cTn.nodeType !== 2 && effect.cTn.nodeType !== 7)) return undefined;
   let planned: ReturnType<typeof generatedMotionBindings>;
   try {
     planned = generatedMotionBindings(page, actions, objects, runtime);
@@ -174,6 +181,7 @@ export function integrateGeneratedNativeMotions(
       const properties = added.createDuplicate();
       properties.merge(added);
       properties.asc_putDuration(binding.duration);
+      if (binding.delay) properties.asc_putDelay(binding.delay);
       api.asc_SetAnimationProperties(properties);
       if (binding.nodeType !== 2) {
         const start = effects().at(-1)!.createDuplicate();

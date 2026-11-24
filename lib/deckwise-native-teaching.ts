@@ -3,7 +3,8 @@ import { readPresentationShapeText } from './agent-plugin/slide-text-read';
 import { trackTeachingSlideCopy } from './onlyoffice/guards/slide-teaching-copy';
 import { importedSlideShapeId } from './onlyoffice/guards/slide-source-identity';
 import { getEditorApi } from './agent-plugin/editor-bridge';
-import { prepareNativeTeachingMotions } from './deckwise-native-teaching-motions';
+import { sequenceSpeechFocus } from './deckwise-speech-focus-timeline';
+import { prepareNativeTeachingMotions, type SpeechMotionOwners } from './deckwise-native-teaching-motions';
 import { getReadonlyMode } from './onlyoffice/readonly';
 import { markDocumentDirty } from './unsaved-guard';
 
@@ -145,14 +146,17 @@ export function readNativeTeaching(): NativeTeaching | undefined {
 }
 
 /** A single native action replaces the carrier; native keyboard undo sees the same change. */
-export function replaceNativeTeachingPage(input: {
-  documentId: string;
-  expectedRevision: string;
-  pageId: string;
-  actions: Action[];
-  enrichment?: CoursewareEnrichment;
-  semantics?: Array<{ objectId: string; role: string; aliases: string[]; text: string; teachingTarget: boolean }>;
-}) {
+export function replaceNativeTeachingPage(
+  input: {
+    documentId: string;
+    expectedRevision: string;
+    pageId: string;
+    actions: Action[];
+    enrichment?: CoursewareEnrichment;
+    semantics?: Array<{ objectId: string; role: string; aliases: string[]; text: string; teachingTarget: boolean }>;
+  },
+  generatedTimeline = false,
+) {
   if (getReadonlyMode()) throw new Error('Teaching is read-only');
   const current = readNativeTeaching();
   if (!current || current.documentId !== input.documentId || current.revision !== input.expectedRevision)
@@ -191,6 +195,23 @@ export function replaceNativeTeachingPage(input: {
   for (const action of actions) {
     const media = current.media.find((m) => m.id === action.audioAssetId && m.mimeType.startsWith('audio/'));
     if (media) resolveNativeSpeechAttention(current, input.pageId, action, media.durationMs);
+    const cues = action.visualCues;
+    if (
+      generatedTimeline &&
+      action.type === 'speech' &&
+      Array.isArray(cues) &&
+      cues.every(
+        (c) =>
+          c &&
+          typeof c.id === 'string' &&
+          Number.isInteger(c.atMs) &&
+          Number.isInteger(c.endMs) &&
+          c.atMs >= 0 &&
+          c.endMs > c.atMs &&
+          ['element_animation', 'spotlight', 'highlight'].includes(c.effect?.type),
+      )
+    )
+      action.visualCues = sequenceSpeechFocus(cues);
   }
   const changed = next.pages.find((p) => p.pageId === input.pageId)!;
   if (input.semantics) {
@@ -222,8 +243,133 @@ export function replaceNativeTeachingPage(input: {
   changed.actions = actions;
   changed.reviewState = 'review';
   return commitNativeTeaching(next, true, undefined, () =>
-    prepareNativeTeachingMotions(current.pages.findIndex((p) => p.pageId === input.pageId) + 1, actions, page.actions),
+    prepareNativeTeachingMotions(
+      current.pages.findIndex((p) => p.pageId === input.pageId) + 1,
+      actions,
+      page.actions,
+      nativeTeachingTarget,
+      pageMotionOwners(next, input.pageId),
+    ),
   );
+}
+
+/** Add an exact background crop and its effects in the same native transaction. */
+export function replaceNativeTeachingRegion(input: {
+  documentId: string;
+  expectedRevision: string;
+  pageId: string;
+  actionId: string;
+  description: string;
+  change: { objectId: string; nativeShape: LiveShape; assertCurrent(): void; apply(): void; restore(): void };
+}) {
+  const current = readNativeTeaching();
+  if (
+    getReadonlyMode() ||
+    !current ||
+    current.documentId !== input.documentId ||
+    current.revision !== input.expectedRevision
+  )
+    throw new Error('Teaching revision changed or is read-only');
+  const index = current.pages.findIndex((p) => p.pageId === input.pageId),
+    page = current.pages[index];
+  const plan = current.generation as
+    { pages?: Array<{ pageId: string; teaching?: { pageType?: string; requiredEffects?: string[] } }> } | undefined;
+  const planned = plan?.pages?.find((p) => p.pageId === input.pageId)?.teaching;
+  if (
+    !page ||
+    page.locked ||
+    planned?.pageType !== 'slide' ||
+    !planned.requiredEffects?.includes('animation') ||
+    !planned.requiredEffects.includes('spotlight') ||
+    current.enrichment?.originalPages.some((p) => p.pageId === input.pageId) ||
+    (current.backgroundRegions as Record<string, unknown> | undefined)?.[input.pageId] ||
+    typeof input.description !== 'string' ||
+    !input.description.trim() ||
+    input.description.length > 1000 ||
+    !/^[\w.-]{1,128}$/.test(input.change.objectId) ||
+    nativeTeachingTarget(input.change.objectId)
+  )
+    throw new Error('Background region is unavailable, protected or already repaired');
+  const next = structuredClone(current),
+    changed = next.pages[index];
+  const speech = changed.actions.find((a) => a.id === input.actionId && a.type === 'speech');
+  const cues = speech?.visualCues as
+    | Array<{
+        id: string;
+        atMs: number;
+        endMs: number;
+        trigger?: unknown;
+        effect: { type: string; effect?: string; elementId?: string; elementIds?: string[] };
+      }>
+    | undefined;
+  const fade = cues?.find((c) => c.effect.type === 'element_animation' && c.effect.effect === 'fadeIn');
+  const spot = cues?.find((c) => c.effect.type === 'spotlight');
+  if (
+    !speech ||
+    !speech.audioAssetId ||
+    !Number.isSafeInteger(speech.durationMs) ||
+    Number(speech.durationMs) <= 0 ||
+    speech.attention ||
+    !fade ||
+    !spot ||
+    !cues ||
+    cues.length >= 199 ||
+    !Number.isInteger(fade.atMs) ||
+    !Number.isInteger(fade.endMs) ||
+    fade.atMs < 0 ||
+    fade.endMs <= fade.atMs ||
+    fade.endMs > Number(speech.durationMs) ||
+    fade.endMs - fade.atMs > 5000 ||
+    !spot.effect.elementId ||
+    (spot.effect.elementIds?.length ?? 0) >= 198
+  )
+    throw new Error('Region repair requires saved audio and existing fade-in/spotlight cues');
+  const { objectId, nativeShape } = input.change;
+  cues.push({
+    ...structuredClone(fade),
+    id: `region-${objectId}`,
+    effect: { type: 'element_animation', effect: 'fadeIn', elementId: objectId },
+  });
+  spot.effect.elementIds = [...(spot.effect.elementIds ?? []), objectId];
+  changed.reviewState = 'review';
+  const semantics = (next.objectSemantics ?? {}) as Record<string, unknown[]>;
+  next.objectSemantics = {
+    ...semantics,
+    [input.pageId]: [
+      ...(semantics[input.pageId] ?? []),
+      { objectId, role: input.description, aliases: [input.description], text: '', teachingTarget: true },
+    ],
+  };
+  next.backgroundRegions = {
+    ...((next.backgroundRegions ?? {}) as object),
+    [input.pageId]: { objectId, actionId: input.actionId, description: input.description },
+  };
+  input.change.assertCurrent();
+  const timing = prepareNativeTeachingMotions(
+    index + 1,
+    changed.actions,
+    page.actions,
+    (id) => (id === objectId ? nativeShape : nativeTeachingTarget(id)),
+    pageMotionOwners(next, input.pageId),
+  );
+  return commitNativeTeaching(next, true, undefined, () => ({
+    apply() {
+      input.change.apply();
+      live!.objects.set(nativeShape, { logicalId: objectId, sourceObjectName: objectId, type: 'image' });
+      timing?.apply();
+    },
+    restore() {
+      try {
+        timing?.restore();
+      } finally {
+        try {
+          input.change.restore();
+        } finally {
+          live?.objects.delete(nativeShape);
+        }
+      }
+    },
+  }));
 }
 
 /** Insert one independent assessment; visible content, answer data and source binding share one Undo action. */
@@ -325,7 +471,7 @@ export function replaceNativeAssessments(input: {
   expectedRevision: string;
   changedPageIds: string[];
   change?: { apply(): void; restore(): void };
-  scenes: Array<{ id: string; content: any; actions?: Action[] }>;
+  scenes: Array<{ id: string; title?: string; content: any; actions?: Action[] }>;
 }) {
   if (getReadonlyMode()) throw new Error('Teaching is read-only');
   const current = readNativeTeaching();
@@ -339,6 +485,7 @@ export function replaceNativeAssessments(input: {
     const page = next.pages[index];
     if (!input.changedPageIds.includes(scene.id)) return;
     if (page.locked) throw new Error('Teaching page locked');
+    if (scene.title !== undefined && typeof scene.title !== 'string') throw new Error('Invalid assessment title');
     for (const speech of scene.actions ?? [])
       if (speech.type === 'speech') {
         if (typeof speech.text !== 'string' || speech.text.length > 32000 || !speech.id)
@@ -379,6 +526,7 @@ export function replaceNativeAssessments(input: {
       a.type === 'interaction_checkpoint' && a.checkpointKind === 'chapter_summary'
         ? {
             ...a,
+            chapterTitle: scene.title ?? a.chapterTitle,
             question: q.question,
             response: {
               kind: q.type,
@@ -387,7 +535,10 @@ export function replaceNativeAssessments(input: {
             },
             referenceAnswer: {
               summary: q.referenceAnswer ?? q.analysis ?? (q.type === 'short_answer' ? q.answer?.join('；') : '') ?? '',
-              keyPoints: q.keyPoints ?? [],
+              keyPoints:
+                q.keyPoints ??
+                (q.question === a.question ? (a.referenceAnswer as { keyPoints?: string[] })?.keyPoints : undefined) ??
+                [],
             },
           }
         : a,
@@ -396,9 +547,12 @@ export function replaceNativeAssessments(input: {
       (a) => a.type === 'interaction_checkpoint' && a.checkpointKind === 'chapter_summary',
     );
     const newQuestion = page.actions.find((a) => a.id === oldQuestion?.id);
+    const oldResponse = oldQuestion?.response as Record<string, unknown> | undefined;
+    const newResponse = newQuestion?.response as Record<string, unknown> | undefined;
+    // Object key order can change across JSON readers without changing the question or its audio.
     if (
-      JSON.stringify([oldQuestion?.question, oldQuestion?.response]) !==
-      JSON.stringify([newQuestion?.question, newQuestion?.response])
+      JSON.stringify([oldQuestion?.question, oldResponse?.kind, oldResponse?.options, oldResponse?.answerIndices]) !==
+      JSON.stringify([newQuestion?.question, newResponse?.kind, newResponse?.options, newResponse?.answerIndices])
     ) {
       const reading = [q.question, ...(q.options ?? []).map((o: any) => `${o.value}. ${o.label}`)].join('\n');
       page.actions = page.actions.map((a) => {
@@ -425,6 +579,17 @@ export function replaceNativeAssessments(input: {
   return commitNativeTeaching(next, true, undefined, input.change ? () => input.change! : undefined);
 }
 
+function pageMotionOwners(next: NativeTeaching, pageId: string) {
+  const pages = (next.speechMotionOwners ?? {}) as Record<string, SpeechMotionOwners>;
+  return {
+    legacyGenerated: !!next.generation,
+    previous: Object.hasOwn(pages, pageId) ? pages[pageId] : undefined,
+    save: (owners: SpeechMotionOwners) => {
+      next.speechMotionOwners = { ...pages, [pageId]: owners };
+    },
+  };
+}
+
 function commitNativeTeaching(
   next: NativeTeaching,
   revise = true,
@@ -446,10 +611,6 @@ function commitNativeTeaching(
   const anchor = motions[0]?.sourceSha256;
   for (const motion of motions) motion.sourceSha256 = anchor;
   if (revise) next.revision = crypto.randomUUID();
-  const xml = document.implementation.createDocument(NATIVE_TEACHING_NAMESPACE, 'teaching');
-  xml.documentElement.textContent = JSON.stringify(next);
-  const encoded = new XMLSerializer().serializeToString(xml);
-  if (encoded.length > 80 * 1024 * 1024) throw new Error('Teaching exceeds package budget');
   const { parts, logic, description, history } = session();
   const previous = parts.GetByNamespace(NATIVE_TEACHING_NAMESPACE).filter((p) => decode(p));
   const before = previous.map((part) => part.GetXml());
@@ -459,6 +620,10 @@ function commitNativeTeaching(
   if (revise) logic.StartAction(description);
   else history?.TurnOff();
   try {
+    const xml = document.implementation.createDocument(NATIVE_TEACHING_NAMESPACE, 'teaching');
+    xml.documentElement.textContent = JSON.stringify(next);
+    const encoded = new XMLSerializer().serializeToString(xml);
+    if (encoded.length > 80 * 1024 * 1024) throw new Error('Teaching exceeds package budget');
     if (mediaXml) added.push(parts.Add(mediaXml));
     added.push(parts.Add(encoded));
     previous.forEach((p) => p.Delete());
@@ -545,32 +710,35 @@ function resolveNativeSpeechAttention(current: NativeTeaching, pageId: string, a
       !['highlight', 'spotlight'].includes(String(intent.type)) ||
       !Array.isArray(ids) ||
       ids.length < 1 ||
-      ids.length > 8 ||
+      // Match selection, spotlight geometry and the existing native animation target bound.
+      ids.length > 200 ||
       new Set(ids).size !== ids.length ||
       ids.some((id) => typeof id !== 'string' || !objects.some((o) => o.objectId === id && o.effectTargetEligible)) ||
       Object.keys(intent).some((key) => !['type', 'objectIds', 'animation'].includes(key)) ||
       (intent.animation !== undefined &&
-        !['fadeIn', 'pulse', 'zoomIn', 'slideInLeft', 'slideInRight', 'gentleRotate'].includes(
+        !['fadeIn', 'fadeOut', 'pulse', 'zoomIn', 'slideInLeft', 'slideInRight', 'gentleRotate'].includes(
           String(intent.animation),
         )) ||
       durationMs > 3600000
     )
       throw new Error('Native speech attention target or timing changed');
-    const duration = Math.min(durationMs, 600);
-    const reveal = ['fadeIn', 'zoomIn', 'slideInLeft', 'slideInRight'].includes(String(intent.animation));
+    const exit = intent.animation === 'fadeOut';
+    const duration = durationMs <= 600 && !exit ? Math.max(1, Math.floor(durationMs / 2)) : Math.min(durationMs, 600);
+    const atMs = exit ? durationMs : 0;
+    if (atMs + duration > 3600000) throw new Error('Speech animation exceeds the supported timeline');
     const added = [
       ...(intent.animation
         ? ids.map((id, index) => ({
             id: `motion-${action!.id}-${index}`,
-            atMs: 0,
-            endMs: duration,
-            trigger: { version: 1, kind: 'start' },
+            atMs,
+            endMs: atMs + duration,
+            trigger: { version: 1, kind: exit ? 'end' : 'start' },
             effect: { type: 'element_animation', elementId: id, effect: intent.animation },
           }))
         : []),
       {
         id: `focus-${action.id}`,
-        atMs: reveal ? Math.min(duration, durationMs - 1) : 0,
+        atMs: intent.animation && !exit ? Math.min(duration, durationMs - 1) : 0,
         endMs: durationMs,
         effect:
           intent.type === 'highlight'
@@ -579,7 +747,8 @@ function resolveNativeSpeechAttention(current: NativeTeaching, pageId: string, a
       },
     ];
     const existing = Array.isArray(action.visualCues) ? action.visualCues : [];
-    action.visualCues = [...existing.filter((cue) => !added.some((next) => next.id === cue.id)), ...added];
+    const retained = existing.filter((cue) => !added.some((next) => next.id === cue.id));
+    action.visualCues = sequenceSpeechFocus([...retained, ...added]);
     delete action.attention;
   }
 }
@@ -671,6 +840,8 @@ export async function adoptNativeTeachingAudio(input: {
             current.pages.findIndex((p) => p.pageId === input.pageId) + 1,
             page.actions,
             current.pages.find((p) => p.pageId === input.pageId)!.actions,
+            nativeTeachingTarget,
+            pageMotionOwners(next, input.pageId),
           )
       : undefined;
   return commitNativeTeaching(next, true, existing ? undefined : new XMLSerializer().serializeToString(part), motions);

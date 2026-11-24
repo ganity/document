@@ -10,17 +10,18 @@ function fixture(kinds: number[]) {
   const createEffect = vi.fn(() => {
     throw new Error('Playback must never invent an animation');
   });
-  const effect = (kind: number, Id: string): any => ({
+  const effect = (kind: number, Id: string, delay: number): any => ({
     Id,
     cTn: { presetClass: kind, presetID: 10, presetSubtype: 0, setNodeType() {} },
     getObjectId: () => 'shape',
     asc_getDuration: () => 600,
+    asc_getDelay: () => delay,
     asc_putDelay() {},
     isIdle: () => true,
     isAtEnd: () => false,
-    createDuplicate: () => effect(kind, `${Id}-copy`),
+    createDuplicate: () => effect(kind, `${Id}-copy`, delay),
   });
-  const effects = kinds.map((kind, index) => effect(kind, `effect-${index}`));
+  const effects = kinds.map((kind, index) => effect(kind, `effect-${index}`, index * 1000));
   const saved = { getAllAnimEffects: () => effects };
   const slide = {
     timing: saved,
@@ -96,4 +97,26 @@ it('binds entrance and exit on the same object to their actual saved native effe
   expect(f.slide.timing).toBe(schedule.timing);
   schedule.restore();
   expect(f.slide.timing).toBe(f.saved);
+});
+
+it('identifies a stale native delay before starting the speech', () => {
+  const f = fixture([1, 2]);
+  f.saved.getAllAnimEffects()[1].asc_getDelay = () => 0;
+  expect(f.run).toThrow('与讲解时间不一致');
+  expect(f.slide.timing).toBe(f.saved);
+});
+
+it('suppresses a page-entry exit on a speech-owned ancestor and preserves a sibling animation', () => {
+  const f = fixture([2]);
+  const child = f.slide.cSld.spTree[0];
+  const group = { Id: 'group', spTree: [child], getUniNvProps: () => ({ cNvPr: { name: 'Group' } }) };
+  Object.assign(child, { group });
+  f.slide.cSld.spTree.splice(0, 1, group);
+  const saved = f.saved.getAllAnimEffects();
+  const additional = (id: string) => ({ ...saved[0], getObjectId: () => id });
+  saved.push(additional('group'), additional('unrelated'));
+  const schedule = f.run()!;
+  expect(schedule.unboundCount).toBe(1);
+  expect(schedule.scheduled).toHaveLength(1);
+  expect(saved).toHaveLength(3);
 });

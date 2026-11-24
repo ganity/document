@@ -7,7 +7,7 @@ test('replacing a saved speech motion removes its old native mirror and preserve
 }, info) => {
   test.setTimeout(180000);
   const fixture = process.env.DECKWISE_NATIVE_MOTION_REPLACEMENT_FIXTURE;
-  test.skip(!fixture, 'Requires the preserved real lesson with a saved zoomIn or pulse speech cue and embedded audio');
+  test.skip(!fixture, 'Requires a saved native lesson with embedded narration and a teaching target');
   const binding = { projectId: 'motion-replacement', documentId: 'lesson', sessionId: 'isolated' };
   await page.goto('/embed-demo.html');
   await page.evaluate(() => {
@@ -41,12 +41,54 @@ test('replacing a saved speech motion removes its old native mirror and preserve
       .find((f) => f.name() === 'frameEditor')!
       .evaluate(() => {
         const slide = (window as any).editor.WordControl.m_oLogicDocument.Slides[0];
-        return slide.timing
-          .getAllAnimEffects()
-          .map((effect: any) => ({ preset: effect.cTn.presetID, duration: effect.asc_getDuration() }));
+        return (slide.timing?.getAllAnimEffects() ?? []).map((effect: any) => ({
+          preset: effect.cTn.presetID,
+          duration: effect.asc_getDuration(),
+          delay: effect.asc_getDelay(),
+        }));
       });
-  const before = await read(),
+  const replace = (teaching: any, actions: any[]) =>
+    page.evaluate(
+      async ({ binding, teaching, actions }) =>
+        post('document:native-teaching', {
+          binding,
+          operation: 'replace-page',
+          command: {
+            documentId: teaching.documentId,
+            expectedRevision: teaching.revision,
+            pageId: teaching.pages[0].pageId,
+            actions,
+          },
+        }),
+      { binding, teaching, actions },
+    );
+  let before = await read(),
     motions = await effects();
+  if (!motions.length) {
+    const actions = structuredClone(before.pages[0].actions);
+    const speech = actions.find(
+      (a: any) =>
+        a.type === 'speech' &&
+        a.audioAssetId &&
+        a.visualCues?.some((c: any) => c.effect.type === 'spotlight' || c.effect.type === 'highlight'),
+    );
+    const focus = speech?.visualCues.find((c: any) => c.effect.type === 'spotlight' || c.effect.type === 'highlight');
+    const elementId = focus?.effect.elementId ?? focus?.effect.elementIds?.[0];
+    expect(elementId).toBeTruthy();
+    speech.visualCues.push({
+      id: 'first-native-cue',
+      atMs: 0,
+      endMs: 600,
+      effect: { type: 'element_animation', effect: 'zoomIn', elementId },
+    });
+    await replace(before, actions);
+    const seeded = await read();
+    expect(seeded.media).toEqual(before.media);
+    expect(seeded.pages[0].actions).toEqual(actions);
+    before = seeded;
+    motions = await effects();
+    expect(motions).toHaveLength(1);
+  }
   const actions = structuredClone(before.pages[0].actions);
   const originalEffect = actions.some((a: any) => a.visualCues?.some((c: any) => c.effect?.effect === 'zoomIn'))
     ? 'zoomIn'
@@ -58,23 +100,14 @@ test('replacing a saved speech motion removes its old native mirror and preserve
   expect(speech?.audioAssetId).toBeTruthy();
   const cue = speech.visualCues.find((c: any) => c.effect?.effect === originalEffect);
   cue.effect.effect = replacementEffect;
-  await page.evaluate(
-    async ({ binding, before, actions }) =>
-      post('document:native-teaching', {
-        binding,
-        operation: 'replace-page',
-        command: {
-          documentId: before.documentId,
-          expectedRevision: before.revision,
-          pageId: before.pages[0].pageId,
-          actions,
-        },
-      }),
-    { binding, before, actions },
-  );
+  delete cue.trigger;
+  cue.atMs += 300;
+  cue.endMs += 300;
+  await replace(before, actions);
   const changed = await read(),
     updated = await effects();
   expect(updated).toHaveLength(motions.length);
+  expect(updated.some((e: any) => e.preset === replacementPreset && e.delay === 300)).toBe(true);
   expect(updated.filter((e: any) => e.preset === originalPreset)).toHaveLength(
     motions.filter((e: any) => e.preset === originalPreset).length - 1,
   );
@@ -104,20 +137,7 @@ test('replacing a saved speech motion removes its old native mirror and preserve
   const current = await read();
   const removed = structuredClone(current.pages[0].actions);
   removed.find((a: any) => a.id === speech.id).visualCues = speech.visualCues.filter((c: any) => c.id !== cue.id);
-  await page.evaluate(
-    async ({ binding, current, removed }) =>
-      post('document:native-teaching', {
-        binding,
-        operation: 'replace-page',
-        command: {
-          documentId: current.documentId,
-          expectedRevision: current.revision,
-          pageId: current.pages[0].pageId,
-          actions: removed,
-        },
-      }),
-    { binding, current, removed },
-  );
+  await replace(current, removed);
   expect(await effects()).toHaveLength(updated.length - 1);
   expect((await read()).media).toEqual(before.media);
 });

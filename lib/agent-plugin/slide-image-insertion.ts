@@ -12,6 +12,8 @@ export interface SlideImageBox {
 }
 interface ImageShape {
   Id: string;
+  setDescription?(description: string): void;
+  getCNvProps?(): { descr?: string };
   getDocContent?: SlideTextShape['getDocContent'];
   group?: unknown;
   isPlaceholder?(): boolean;
@@ -92,7 +94,8 @@ function current(emptySelection: boolean) {
     !slide ||
     !controller ||
     !Array.isArray(controller.selectedObjects) ||
-    (emptySelection && (controller.selectedObjects.length !== 0 || controller.getTargetDocContent?.())) ||
+    (emptySelection && controller.selectedObjects.length !== 0) ||
+    controller.getTargetDocContent?.() ||
     !common.c_oAscLockTypes ||
     !Number.isInteger(lock) ||
     ![common.c_oAscLockTypes.kLockTypeNone, common.c_oAscLockTypes.kLockTypeMine].includes(lock!) ||
@@ -111,7 +114,11 @@ function current(emptySelection: boolean) {
     typeof common.g_oDocumentUrls?.getImageLocal !== 'function' ||
     typeof common.g_oDocumentUrls.imagePath2Local !== 'function'
   )
-    throw new Error('Image insertion requires a writable slide with an empty canvas selection and native image APIs');
+    throw new Error(
+      emptySelection
+        ? 'Image insertion requires a writable slide with an empty canvas selection and native image APIs'
+        : 'Image insertion requires a writable slide outside text editing and native image APIs',
+    );
   const width = logic.GetWidthMM(),
     height = logic.GetHeightMM();
   if (![width, height].every((value) => Number.isFinite(value) && value > 0))
@@ -138,7 +145,20 @@ export function canInsertSlideImage(): boolean {
   }
 }
 /** Host-only: caller must authorize/review these PNG bytes and the explicit box. No public tool or save. */
-export async function prepareSlideImageInsertion(png: Uint8Array, box: SlideImageBox, signal?: AbortSignal) {
+export function centeredSlideImageBox(width: number, height: number): SlideImageBox {
+  const slide = current(false);
+  const scale = Math.min((slide.width * 0.55) / width, (slide.height * 0.32) / height);
+  const widthMm = width * scale;
+  const heightMm = height * scale;
+  return { xMm: (slide.width - widthMm) / 2, yMm: (slide.height - heightMm) / 2, widthMm, heightMm };
+}
+
+export async function prepareSlideImageInsertion(
+  png: Uint8Array,
+  box: SlideImageBox,
+  signal?: AbortSignal,
+  { description, allowSelectedObjects = false }: { description?: string; allowSelectedObjects?: boolean } = {},
+) {
   const dimensions = validateSlidePng(png, signal);
   const { xMm, yMm, widthMm, heightMm } = box;
   if (
@@ -149,7 +169,7 @@ export async function prepareSlideImageInsertion(png: Uint8Array, box: SlideImag
     heightMm < 1
   )
     throw new TypeError('Image box requires finite nonnegative millimeter positions and dimensions of at least 1 mm');
-  const before = current(true),
+  const before = current(!allowSelectedObjects),
     target = captureDocumentToolTarget();
   if (target.context.kind !== 'slide' || !target.isCurrent(true)) throw new Error('Read fresh editor context');
   if (xMm + widthMm > before.width || yMm + heightMm > before.height)
@@ -162,7 +182,7 @@ export async function prepareSlideImageInsertion(png: Uint8Array, box: SlideImag
     );
   const assertCurrent = () => {
     signal?.throwIfAborted();
-    const now = current(true);
+    const now = current(!allowSelectedObjects);
     if (
       !target.isCurrent(true) ||
       now.api !== before.api ||
@@ -196,6 +216,11 @@ export async function prepareSlideImageInsertion(png: Uint8Array, box: SlideImag
         try {
           before.controller.resetSelection();
           image = before.controller.createImage(full, xMm, yMm, widthMm, heightMm);
+          if (description !== undefined) {
+            image.setDescription?.(description);
+            if (image.getCNvProps?.()?.descr !== description)
+              throw new Error('Native image description could not be saved');
+          }
           image.setParent(before.slide);
           image.addToDrawingObjects();
           before.controller.selectObject(image, 0);
