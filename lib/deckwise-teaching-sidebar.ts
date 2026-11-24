@@ -1,3 +1,4 @@
+import { createDeckwiseImageTools, editorImageStyles } from './deckwise-editor-image-tools';
 import { assertNativeTeachingAnimations } from './deckwise-native-teaching';
 import {
   hasNativeTeaching,
@@ -25,6 +26,7 @@ import {
   createTeachingPanelLayout,
 } from './deckwise-teaching-flow';
 import { hasUnsavedChanges } from './unsaved-guard';
+import { getReadonlyMode } from './onlyoffice/readonly';
 import { createSidebarEntry } from './agent-plugin/ui/sidebar-entry';
 import { mountPanelContext } from './agent-plugin/ui/panel-context';
 import { deckwiseEditorBridge } from './deckwise-editor-bridge';
@@ -79,10 +81,16 @@ type LessonRun = {
 };
 
 /** UI only: authoritative teaching, drafts and paid media operations stay with Host. */
-export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, payload: any, id?: string) => void) {
+export function mountDeckwiseTeachingSidebar(
+  binding: any,
+  send: (type: string, payload: any, id?: string) => void,
+  editorImages = false,
+) {
+  let imageTools: ReturnType<typeof createDeckwiseImageTools> | undefined;
   let lifecycle: ReturnType<typeof mountPanelContext> | undefined;
   let disposed = false,
     open = true,
+    imagesOpen = false,
     busy = false,
     running = false;
   let nativeSlideshow = false;
@@ -180,7 +188,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
   const editable = () => !!view && !page()?.locked && !busy && !draftError && !lesson;
   const request = async (operation: string, args: any = {}, target = context): Promise<any> => {
     if (!target || disposed) throw new Error('Teaching context is unavailable');
-    if (hasNativeTeaching()) {
+    if (hasNativeTeaching() && !operation.startsWith('editor-image:')) {
       const native = await routeNativeTeaching(operation, args, target.page ?? 1);
       if (native && !(native.value as { nativeService?: boolean })?.nativeService) return native.value;
     }
@@ -2638,29 +2646,45 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     flow.querySelector<HTMLElement>('[data-selected]')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   }
 
-  function setOpen(expanded: boolean) {
-    if (disposed) return;
-    const visibilityChanged = open !== expanded;
-    if (expanded && panel && (nativeDocument?.getElementById('right-menu')?.getBoundingClientRect().width ?? 0) <= 50)
+  function showPanel(next: 'teaching' | 'images' | null) {
+    if (disposed || (next === 'images' && getReadonlyMode())) return;
+    const wasOpen = open;
+    const wereImagesOpen = imagesOpen;
+    if (next && panel && (nativeDocument?.getElementById('right-menu')?.getBoundingClientRect().width ?? 0) <= 50)
       nativeDocument?.getElementById('id-right-menu-slide')?.click();
-    open = expanded;
-    if (!open) {
+    open = next === 'teaching';
+    imagesOpen = next === 'images';
+    if (!open && wasOpen) {
       clearTimeout(statusTimer);
       stopAudio();
     }
     if (panel) panel.hidden = !open;
+    if (imageTools) imageTools.element.hidden = !imagesOpen;
     sidebar.update(true, open);
-    panelLayout?.sync(open);
+    imageSidebar?.update(true, imagesOpen);
+    panelLayout?.sync(open || imagesOpen);
     send('document:ui-changed', { teachingOpen: open });
-    if (visibilityChanged) {
+    if (open !== wasOpen || imagesOpen) {
       lifecycle?.update();
       if (open) pollTasks();
     }
+    if (imagesOpen && !wereImagesOpen) imageTools?.updateSelection('opened');
+  }
+  function setOpen(expanded: boolean) {
+    if (expanded || open) showPanel(expanded ? 'teaching' : null);
   }
   const sidebar = createSidebarEntry(
     () => setOpen(!open),
     () => '教学时间轴',
   );
+  const imageSidebar = editorImages
+    ? createSidebarEntry(
+        () => showPanel(imagesOpen ? null : 'images'),
+        () => 'AI 图片工具',
+        () => !getReadonlyMode(),
+        '<path d="M16 3h5v5m-2 3v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7m5 3 4-4M3 15l4-4 6 6 2-2 4 4"/><circle cx="9" cy="8" r="1"/>',
+      )
+    : undefined;
   const mount = () => {
     for (const frame of document.querySelectorAll<HTMLIFrameElement>('#app iframe')) {
       const doc = frame.contentDocument;
@@ -2671,6 +2695,9 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
       stopNativeClicks?.();
       panelLayout?.dispose();
       nativeDocument = doc;
+      imageTools?.dispose();
+      imageTools = editorImages ? createDeckwiseImageTools(doc, (operation, args) =>
+        request(operation, args, deckwiseEditorBridge.getContext(binding))) : undefined;
       panelLayout = createTeachingPanelLayout(doc);
       const style = element('style');
       style.textContent =
@@ -2694,20 +2721,22 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         .deckwise-teaching-sidebar [role=alert] { color:#b22; }
         .deckwise-teaching-sidebar p { margin:6px 0; overflow-wrap:anywhere; }
         .deckwise-teaching-sidebar footer { padding-top:12px; border-top:1px solid #ddd; }
-      ` + teachingFlowStyles;
+      ` + teachingFlowStyles + (editorImages ? editorImageStyles : '');
       doc.head.append(style);
       panel = element('aside');
       panel.className = 'deckwise-teaching-sidebar';
       panel.setAttribute('aria-label', '教学时间轴');
       panel.hidden = !open;
       // Keep native canvas shortcuts from consuming typing, selection and media controls.
-      for (const type of ['keydown', 'keyup', 'keypress', 'pointerdown', 'mousedown', 'wheel'])
-        panel.addEventListener(type, (event) => event.stopPropagation());
       container.append(panel);
+      if (imageTools) container.append(imageTools.element);
+      for (const surface of [panel, imageTools?.element])
+        for (const type of ['keydown', 'keyup', 'keypress', 'pointerdown', 'mousedown', 'wheel'])
+          surface?.addEventListener(type, (event) => event.stopPropagation());
       const nativeClick = (event: Event) => {
         const target = event.target as Element;
         if (target.closest('#right-menu .tool-menu-btns button:not(.agent-sidebar-entry)')) {
-          setOpen(false);
+          if (open || imagesOpen) showPanel(null);
         }
       };
       doc.addEventListener('click', nativeClick);
@@ -2729,16 +2758,22 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
         doc.removeEventListener('click', nativeClick);
         style.remove();
       };
-      setOpen(open);
+      showPanel(open ? 'teaching' : imagesOpen ? 'images' : null);
       render();
       return;
     }
   };
   lifecycle = mountPanelContext({
-    isActive: () => !disposed && open,
+    isActive: () => !disposed && (open || imagesOpen),
     refresh: () => {
-      if (disposed || !open) return;
+      if (disposed || (!open && !imagesOpen)) return;
       mount();
+      imageSidebar?.update(true, imagesOpen);
+      if (imagesOpen) {
+        if (getReadonlyMode()) showPanel(null);
+        else imageTools?.updateSelection();
+        return;
+      }
       try {
         if (lesson?.navigating || projectingMotions) return;
         if (hasUnsavedChanges() && !hasNativeTeaching()) {
@@ -2769,6 +2804,7 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
   const nativeChanged = () => queueMicrotask(() => lifecycle?.update());
   window.addEventListener('deckwise-native-teaching-changed', nativeChanged);
   sidebar.update(true, true);
+  imageSidebar?.update(true, false);
   lifecycle?.update();
   pollTasks();
   return {
@@ -2785,11 +2821,13 @@ export function mountDeckwiseTeachingSidebar(binding: any, send: (type: string, 
     dispose() {
       window.removeEventListener('deckwise-native-teaching-changed', nativeChanged);
       disposed = true;
+      imageTools?.dispose();
       epoch++;
       clearTimeout(statusTimer);
       clearTimeout(saveTimer);
       stopAudio();
       sidebar.dispose();
+      imageSidebar?.dispose();
       panelLayout?.dispose();
       lifecycle?.dispose();
       stopNativeClicks?.();

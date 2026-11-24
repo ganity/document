@@ -1,7 +1,7 @@
 import { COMPACT_VIEWPORT_MAX_WIDTH } from '../../onlyoffice/viewport';
 
 /** Use the editor's left rail when compact chrome hides its right rail. */
-export function createSidebarEntry(toggle: () => void, label: () => string, isAvailable?: () => boolean) {
+export function createSidebarEntry(toggle: () => void, label: () => string, isAvailable?: () => boolean, icon?: string) {
   let button: HTMLButtonElement | null = null;
   let ready = false,
     open = false;
@@ -67,7 +67,9 @@ export function createSidebarEntry(toggle: () => void, label: () => string, isAv
       button.type = 'button';
       button.className = 'btn btn-category canfocused agent-sidebar-entry';
       button.innerHTML =
-        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/></svg>';
+        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        (icon ?? '<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/>') +
+        '</svg>';
       button.style.cssText =
         'display:flex;align-items:center;justify-content:center;padding:0;color:inherit;cursor:pointer;';
       button.addEventListener('click', (event) => {

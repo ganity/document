@@ -5,6 +5,7 @@ import { getReadonlyMode } from '../onlyoffice/readonly';
 
 interface ImageShape {
   Id: string;
+  getCNvProps?(): { descr?: string };
   group?: unknown;
   isPlaceholder?(): boolean;
   getObjectType?(): number;
@@ -16,7 +17,13 @@ interface ImageApi extends PngApi {
   isSlideShow?(): boolean;
   isLongAction?(): boolean;
   getCurrentPage?(): number;
-  ImgApply?(props: { ImageUrl?: string; Width?: number; Height?: number; Position?: { X: number; Y: number } }): void;
+  ImgApply?(props: {
+    ImageUrl?: string;
+    description?: string;
+    Width?: number;
+    Height?: number;
+    Position?: { X: number; Y: number };
+  }): void;
   WordControl?: {
     m_oLogicDocument?: {
       Slides: Array<{ cSld: { spTree: ImageShape[] } }>;
@@ -120,9 +127,10 @@ export function canReplaceSlideImage(): boolean {
 }
 
 /** Host-only preparation. No model URLs, tool registration, save or source-file writes. */
-export async function prepareSlideImageReplacement(png: Uint8Array, signal?: AbortSignal) {
+export async function prepareSlideImageReplacement(png: Uint8Array, signal?: AbortSignal, description?: string) {
   const dimensions = validateSlidePng(png, signal);
   const before = requireSlideImage();
+  if (description !== undefined && !before.image.getCNvProps?.()) throw new Error('Image description is unavailable');
   const target = captureDocumentToolTarget();
   if (target.context.kind !== 'slide' || !target.isCurrent(true)) throw new Error('Read fresh editor context');
   const assertCurrent = () => {
@@ -156,7 +164,7 @@ export async function prepareSlideImageReplacement(png: Uint8Array, signal?: Abo
       ready();
       // Native ImgApply is synchronous only for a registered, already-loaded image.
       try {
-        before.api.ImgApply!({ ImageUrl: full });
+        before.api.ImgApply!({ ImageUrl: full, ...(description === undefined ? {} : { description }) });
         const after = requireSlideImage();
         const expected = before.common.g_oDocumentUrls.getImageLocal(full);
         if (
@@ -168,7 +176,8 @@ export async function prepareSlideImageReplacement(png: Uint8Array, signal?: Abo
           after.geometry !== before.geometry ||
           after.width !== before.width ||
           after.height !== before.height ||
-          after.image.blipFill?.RasterImageId !== expected
+          after.image.blipFill?.RasterImageId !== expected ||
+          (description !== undefined && after.image.getCNvProps?.()?.descr !== description)
         )
           throw new Error('Native image readback mismatch');
       } catch (cause) {
