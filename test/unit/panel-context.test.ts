@@ -164,6 +164,10 @@ it('refreshes content, sheet, protection and review changes without a selection 
   const context = mountPanelContext({ isActive: () => true, refresh, getApi: () => sdk.api });
   cleanup = context.dispose;
   refresh.mockClear();
+  sdk.callbacks.get('asc_onApplyChanges')!();
+  vi.advanceTimersByTime(20);
+  expect(refresh).toHaveBeenCalledOnce();
+  refresh.mockClear();
   sdk.callbacks.get('asc_onDocumentChanged')!();
   for (const name of [
     'asc_onActiveSheetChanged',

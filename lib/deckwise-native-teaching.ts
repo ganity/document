@@ -28,8 +28,9 @@ type Logic = { StartAction(description: number): void; FinalizeAction(): void };
 
 function session(): { parts: Parts; logic: Logic; description: number; history?: { TurnOff(): void; TurnOn(): void } } {
   const api = getEditorApi() as unknown as { WordControl?: { m_oLogicDocument?: Logic } } | null;
-  for (const frame of document.querySelectorAll<HTMLIFrameElement>('iframe')) {
-    const scope = frame.contentWindow as unknown as {
+  const windows = [window, ...Array.from(document.querySelectorAll('iframe'), (frame) => frame.contentWindow)];
+  for (const current of windows) {
+    const scope = current as unknown as {
       editor?: unknown;
       AscBuilder?: { ApiCustomXmlParts?: new (logic: Logic) => Parts };
       AscCommon?: { History?: { TurnOff(): void; TurnOn(): void } };
@@ -152,6 +153,7 @@ export function replaceNativeTeachingPage(
     expectedRevision: string;
     pageId: string;
     actions: Action[];
+    verifiedNativeAnimationBindings?: Record<string, string>;
     enrichment?: CoursewareEnrichment;
     semantics?: Array<{ objectId: string; role: string; aliases: string[]; text: string; teachingTarget: boolean }>;
   },
@@ -171,6 +173,11 @@ export function replaceNativeTeachingPage(
   )
     throw new Error('Invalid teaching actions');
   const next: NativeTeaching = { ...current, pages: structuredClone(current.pages), media: [...current.media] };
+  if (input.verifiedNativeAnimationBindings)
+    next.nativeAnimationBindings = {
+      ...(current.nativeAnimationBindings as Record<string, string> | undefined),
+      ...input.verifiedNativeAnimationBindings,
+    };
   if (input.enrichment !== undefined) {
     if (!isCoursewareEnrichment(input.enrichment)) throw new Error('Unsupported or invalid teaching enrichment');
     if (
@@ -242,7 +249,7 @@ export function replaceNativeTeachingPage(
   }
   changed.actions = actions;
   changed.reviewState = 'review';
-  return commitNativeTeaching(next, true, undefined, () =>
+  return commitNativeTeaching(next, 'edit', undefined, () =>
     prepareNativeTeachingMotions(
       current.pages.findIndex((p) => p.pageId === input.pageId) + 1,
       actions,
@@ -352,7 +359,7 @@ export function replaceNativeTeachingRegion(input: {
     (id) => (id === objectId ? nativeShape : nativeTeachingTarget(id)),
     pageMotionOwners(next, input.pageId),
   );
-  return commitNativeTeaching(next, true, undefined, () => ({
+  return commitNativeTeaching(next, 'edit', undefined, () => ({
     apply() {
       input.change.apply();
       live!.objects.set(nativeShape, { logicalId: objectId, sourceObjectName: objectId, type: 'image' });
@@ -420,7 +427,7 @@ export function insertNativeTeachingAssessment(input: {
   });
   if (input.quiz)
     next.assessments = { ...((current.assessments ?? {}) as object), [input.pageId]: structuredClone(input.quiz) };
-  return commitNativeTeaching(next, true, undefined, () => ({
+  return commitNativeTeaching(next, 'edit', undefined, () => ({
     apply() {
       const slide = input.change.apply();
       if (!live) throw new Error('Native page identity is unavailable');
@@ -432,16 +439,26 @@ export function insertNativeTeachingAssessment(input: {
   }));
 }
 
-function nativeAnimationSignature(pageNumber: number, stepIndex: number): string {
+export function nativeAnimationSignatures(pageNumber: number, online = false): string[] {
   const api = getEditorApi() as any;
   const slide = api?.WordControl?.m_oLogicDocument?.Slides?.[pageNumber - 1];
-  const effect = slide?.timing?.getAllAnimEffects?.()[stepIndex];
-  if (!effect) throw new Error('Native teaching animation is missing; bind the current animations again');
-  const target = slideShapes(slide).find((shape) => (shape as any).Id === effect.getObjectId?.());
+  const effects: any[] = slide?.timing?.getAllAnimEffects?.() ?? [];
+  if (online && effects.some((effect) => effect.cTn?.nodeType !== 2 || effect.asc_getDelay?.() !== 0))
+    throw new Error('整页绑定支持逐个点击触发的动画。请保留当前动画，或在讲解段中单独关联支持的动画。');
+  return effects.map((effect) => nativeAnimationSignature(slide, effect, online));
+}
+
+function nativeAnimationSignature(slide: any, effect: any, online: boolean): string {
+  const shapes = slideShapes(slide);
+  const target = shapes.find((shape) => (shape as any).Id === effect.getObjectId?.());
   const object = target && live?.objects.get(target);
   if (!object) throw new Error('Native teaching animation target is unavailable');
+  const name = target.getUniNvProps?.()?.cNvPr?.name;
+  if (online && (!name || shapes.filter((shape) => shape.getUniNvProps?.()?.cNvPr?.name === name).length !== 1))
+    throw new Error('动画对象需要唯一名称，请在 PPT 中核对动画目标后重新关联');
   return JSON.stringify([
-    object.logicalId,
+    // Document Server may renumber shape IDs when saving. The unique PPT shape name survives.
+    online ? ['ooxml-name', name] : object.logicalId,
     effect.cTn?.presetClass,
     effect.cTn?.presetID,
     effect.cTn?.presetSubtype,
@@ -460,9 +477,16 @@ export function assertNativeTeachingAnimations(pageNumber: number): void {
   const page = teaching.pages[pageNumber - 1];
   const bindings = teaching.nativeAnimationBindings as Record<string, string> | undefined;
   const actions = page?.actions.filter((action) => action.type === 'native_animation') ?? [];
-  for (const action of actions)
-    if (!bindings || bindings[action.id] !== nativeAnimationSignature(pageNumber, Number(action.stepIndex)))
-      throw new Error('PPT 动画顺序或属性已变化，请移除动画绑定后重新关联');
+  if (!actions.length) return;
+  const online = actions.some((action) => bindings?.[action.id]?.startsWith('[["ooxml-name",'));
+  const current = nativeAnimationSignatures(pageNumber, online);
+  if (
+    actions.length !== current.length ||
+    actions.some(
+      (action, index) => action.stepIndex !== index || !bindings?.[action.id] || bindings[action.id] !== current[index],
+    )
+  )
+    throw new Error('PPT 动画顺序或属性已变化，请移除动画绑定后重新关联');
 }
 
 /** Assessment editor writes share the carrier CAS and native Undo transaction. */
@@ -549,10 +573,10 @@ export function replaceNativeAssessments(input: {
     const newQuestion = page.actions.find((a) => a.id === oldQuestion?.id);
     const oldResponse = oldQuestion?.response as Record<string, unknown> | undefined;
     const newResponse = newQuestion?.response as Record<string, unknown> | undefined;
-    // Object key order can change across JSON readers without changing the question or its audio.
+    // Grading changes do not affect the read-aloud text.
     if (
-      JSON.stringify([oldQuestion?.question, oldResponse?.kind, oldResponse?.options, oldResponse?.answerIndices]) !==
-      JSON.stringify([newQuestion?.question, newResponse?.kind, newResponse?.options, newResponse?.answerIndices])
+      JSON.stringify([oldQuestion?.question, oldResponse?.options]) !==
+      JSON.stringify([newQuestion?.question, newResponse?.options])
     ) {
       const reading = [q.question, ...(q.options ?? []).map((o: any) => `${o.value}. ${o.label}`)].join('\n');
       page.actions = page.actions.map((a) => {
@@ -576,7 +600,7 @@ export function replaceNativeAssessments(input: {
     page.reviewState = 'review';
   });
   next.assessments = assessments;
-  return commitNativeTeaching(next, true, undefined, input.change ? () => input.change! : undefined);
+  return commitNativeTeaching(next, 'edit', undefined, input.change ? () => input.change! : undefined);
 }
 
 function pageMotionOwners(next: NativeTeaching, pageId: string) {
@@ -592,7 +616,7 @@ function pageMotionOwners(next: NativeTeaching, pageId: string) {
 
 function commitNativeTeaching(
   next: NativeTeaching,
-  revise = true,
+  mode: 'edit' | 'export' | 'structure' = 'edit',
   mediaXml?: string,
   prepareTiming?: () => { apply(): void; restore(): void } | undefined,
 ): NativeTeaching {
@@ -600,9 +624,14 @@ function commitNativeTeaching(
   const bindings = (next.nativeAnimationBindings ?? {}) as Record<string, string>;
   const active: Record<string, string> = {};
   next.pages.forEach((page, index) => {
-    for (const action of page.actions)
-      if (action.type === 'native_animation')
-        active[action.id] = bindings[action.id] ?? nativeAnimationSignature(index + 1, Number(action.stepIndex));
+    let signatures: string[] | undefined;
+    for (const action of page.actions) {
+      if (action.type !== 'native_animation') continue;
+      const signature =
+        bindings[action.id] ?? (signatures ??= nativeAnimationSignatures(index + 1))[Number(action.stepIndex)];
+      if (!signature) throw new Error('Native teaching animation is missing; bind the current animations again');
+      active[action.id] = signature;
+    }
   });
   next.nativeAnimationBindings = active;
   // The saved action union retains one source anchor; live views and fixed snapshots
@@ -610,16 +639,17 @@ function commitNativeTeaching(
   const motions = next.pages.flatMap((page) => page.actions).filter((action) => action.type === 'native_animation');
   const anchor = motions[0]?.sourceSha256;
   for (const motion of motions) motion.sourceSha256 = anchor;
-  if (revise) next.revision = crypto.randomUUID();
+  if (mode !== 'export') next.revision = crypto.randomUUID();
   const { parts, logic, description, history } = session();
   const previous = parts.GetByNamespace(NATIVE_TEACHING_NAMESPACE).filter((p) => decode(p));
   const before = previous.map((part) => part.GetXml());
   const added: Part[] = [];
   const timingChange = prepareTiming?.();
   // Export identity is derived metadata, so saving must not add an extra Undo step.
-  if (revise) logic.StartAction(description);
-  else history?.TurnOff();
+  if (mode === 'edit') logic.StartAction(description);
+  if (mode === 'export') history?.TurnOff();
   try {
+    timingChange?.apply();
     const xml = document.implementation.createDocument(NATIVE_TEACHING_NAMESPACE, 'teaching');
     xml.documentElement.textContent = JSON.stringify(next);
     const encoded = new XMLSerializer().serializeToString(xml);
@@ -627,7 +657,6 @@ function commitNativeTeaching(
     if (mediaXml) added.push(parts.Add(mediaXml));
     added.push(parts.Add(encoded));
     previous.forEach((p) => p.Delete());
-    timingChange?.apply();
   } catch (cause) {
     // A failed compound write must retain the old carrier and cannot strand audio.
     const recoveryErrors: unknown[] = [];
@@ -647,10 +676,10 @@ function commitNativeTeaching(
       throw new AggregateError([cause, ...recoveryErrors], 'Native teaching write and rollback failed');
     throw cause;
   } finally {
-    if (revise) logic.FinalizeAction();
-    else history?.TurnOn();
+    if (mode === 'edit') logic.FinalizeAction();
+    if (mode === 'export') history?.TurnOn();
   }
-  if (revise) {
+  if (mode === 'edit') {
     markDocumentDirty();
     window.dispatchEvent(new Event('deckwise-native-teaching-changed'));
   }
@@ -844,7 +873,7 @@ export async function adoptNativeTeachingAudio(input: {
             pageMotionOwners(next, input.pageId),
           )
       : undefined;
-  return commitNativeTeaching(next, true, existing ? undefined : new XMLSerializer().serializeToString(part), motions);
+  return commitNativeTeaching(next, 'edit', existing ? undefined : new XMLSerializer().serializeToString(part), motions);
 }
 
 export function setNativeTeachingLock(input: {
@@ -870,11 +899,12 @@ export function setNativeTeachingLock(input: {
 }
 
 type LiveShape = {
+  Id?: string;
   spTree?: LiveShape[];
   getUniNvProps?(): { cNvPr?: { id?: number | string; name?: string } };
   group?: unknown;
 };
-type LiveSlide = { cSld?: { spTree?: LiveShape[] }; createDuplicate?: (...args: unknown[]) => LiveSlide };
+type LiveSlide = { Id?: string; cSld?: { spTree?: LiveShape[] }; createDuplicate?: (...args: unknown[]) => LiveSlide };
 type ObjectIdentity = { logicalId: string; sourceShapeId?: string; sourceObjectName?: string; type?: string };
 function slideShapes(slide: LiveSlide): LiveShape[] {
   const visit = (shapes: LiveShape[]): LiveShape[] => shapes.flatMap((shape) => [shape, ...visit(shape.spTree ?? [])]);
@@ -897,9 +927,18 @@ let live:
 
 /** Native object references keep identities stable through reorder, rename, undo and duplication. */
 function projectNativeTeaching(source: NativeTeaching): NativeTeaching {
-  const api = getEditorApi() as unknown as { WordControl?: { m_oLogicDocument?: { Slides?: LiveSlide[] } } };
+  const api = getEditorApi() as unknown as {
+    WordControl?: { m_oLogicDocument?: { Slides?: LiveSlide[] } };
+    CoAuthoringApi?: { getDocId?(): string | undefined };
+  };
   const slides = api?.WordControl?.m_oLogicDocument?.Slides;
   if (!Array.isArray(slides)) return structuredClone(source);
+  const onlineKey = api.CoAuthoringApi?.getDocId?.();
+  // SDK edit IDs are shared by collaborators and can repeat in a new Document Server session.
+  const newId = (kind: 'page' | 'object', id?: string) =>
+    onlineKey && /^[\w.-]{1,96}$/.test(onlineKey) && id && /^\d{1,12}_\d{1,12}$/.test(id)
+      ? `${kind}-${onlineKey}-${id}`
+      : crypto.randomUUID();
   const identity = source.identity as { pages?: Array<{ pageId?: string; objects?: ObjectIdentity[] }> } | undefined;
   if (!live || live.api !== api || live.documentId !== source.documentId) {
     live = {
@@ -916,11 +955,25 @@ function projectNativeTeaching(source: NativeTeaching): NativeTeaching {
     slides.forEach((slide, index) => {
       const page = source.pages[index];
       if (page) live!.pages.set(slide, page.pageId);
-      for (const shape of slideShapes(slide)) {
-        const id = importedSlideShapeId(shape);
+      const stored = identity?.pages?.[index]?.objects ?? [];
+      const shapes = slideShapes(slide).map((shape) => ({
+        shape,
+        id: importedSlideShapeId(shape),
+        name: shape.getUniNvProps?.()?.cNvPr?.name,
+      }));
+      for (const { shape, id, name } of shapes) {
+        const exact = stored.filter(
+          (object) =>
+            id !== undefined &&
+            object.sourceShapeId === id &&
+            (!object.sourceObjectName || !name || object.sourceObjectName === name),
+        );
+        // Document Server may renumber shapes on save. Recover only a unique name on the same slide.
         const matches =
-          identity?.pages?.[index]?.objects?.filter((o) => id !== undefined && o.sourceShapeId === id) ?? [];
-        if (matches.length === 1) live!.objects.set(shape, structuredClone(matches[0]));
+          exact.length || !name || shapes.filter((candidate) => candidate.name === name).length !== 1
+            ? exact
+            : stored.filter((object) => object.sourceObjectName === name);
+        if (matches.length === 1) live!.objects.set(shape, { ...matches[0], sourceShapeId: id });
       }
     });
   }
@@ -932,7 +985,7 @@ function projectNativeTeaching(source: NativeTeaching): NativeTeaching {
   slides.forEach((slide) => {
     let pageId = live!.pages.get(slide);
     if (!pageId) {
-      pageId = crypto.randomUUID();
+      pageId = newId('page', slide.Id);
       live!.pages.set(slide, pageId);
     }
     const page: Page = structuredClone(
@@ -966,7 +1019,7 @@ function projectNativeTeaching(source: NativeTeaching): NativeTeaching {
     const objects = slideShapes(slide).map((shape) => {
       let object = live!.objects.get(shape);
       if (!object) {
-        object = { logicalId: crypto.randomUUID(), type: 'shape' };
+        object = { logicalId: newId('object', shape.Id), type: 'shape' };
         live!.objects.set(shape, object);
       }
       return { ...object, sourceObjectName: shape.getUniNvProps?.()?.cNvPr?.name ?? object.logicalId };
@@ -979,14 +1032,14 @@ function projectNativeTeaching(source: NativeTeaching): NativeTeaching {
       if (!from) return;
       const copied = structuredClone(from),
         remap = new Map<string, string>();
-      copied.pageId = crypto.randomUUID();
+      copied.pageId = newId('page', copy.Id);
       copied.locked = false;
       copied.reviewState = 'review';
       slideShapes(slide).forEach((shape, index) => {
         const previous = live!.objects.get(shape),
           destination = slideShapes(copy)[index];
         if (previous && destination) {
-          const logicalId = crypto.randomUUID();
+          const logicalId = newId('object', destination.Id);
           remap.set(previous.logicalId, logicalId);
           live!.objects.set(destination, { ...previous, logicalId, sourceShapeId: undefined });
         }
@@ -1083,7 +1136,31 @@ export function prepareNativeTeachingSave(): void {
     }));
   });
   const current = readNativeTeachingCarrier();
-  if (JSON.stringify(current) !== JSON.stringify(teaching)) commitNativeTeaching(teaching, false);
+  if (JSON.stringify(current) !== JSON.stringify(teaching)) commitNativeTeaching(teaching, 'export');
+}
+
+export function synchronizeNativeTeachingStructure(): void {
+  const current = readNativeTeachingCarrier();
+  if (!current) return;
+  const teaching = projectNativeTeaching(current);
+  const saved = current.identity as { pages?: Array<{ objects: ObjectIdentity[] }> } | undefined;
+  const projected = teaching.identity as typeof saved;
+  // Document Server can renumber shapes at export, so keep names current for bound objects.
+  const renamed = projected?.pages?.some((page, index) => {
+    const previous = saved?.pages?.[index]?.objects ?? [];
+    const currentObjects = new Map(page.objects.map((object) => [object.logicalId, object]));
+    return previous.some((object) => {
+      const updated = currentObjects.get(object.logicalId);
+      return updated && updated.sourceObjectName !== object.sourceObjectName;
+    });
+  });
+  if (
+    teaching.pages.length !== current.pages.length ||
+    teaching.pages.some((page, index) => page.pageId !== current.pages[index].pageId) ||
+    renamed
+  ) {
+    commitNativeTeaching(teaching, 'structure');
+  }
 }
 
 /** New-format activation reads notes already loaded in Office; it never opens a parser job or legacy database. */

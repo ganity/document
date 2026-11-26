@@ -13,6 +13,7 @@ import {
   insertNativeTeachingAssessment,
   replaceNativeAssessments,
   assertNativeTeachingAnimations,
+  nativeAnimationSignatures,
   readNativeTeaching,
   replaceNativeTeachingPage,
   replaceNativeTeachingRegion,
@@ -28,12 +29,14 @@ export async function routeNativeTeaching(
   operation: string,
   args: Record<string, unknown>,
   pageNumber: number,
+  online = false,
 ): Promise<{ value: unknown } | undefined> {
   const teaching = readNativeTeaching();
   if (!teaching) return;
   const sourceSha256 = deckwisePageLineage.context()?.sourceSha256 ?? '';
-  for (const current of teaching.pages)
-    for (const action of current.actions) if (action.type === 'native_animation') action.sourceSha256 = sourceSha256;
+  if (sourceSha256)
+    for (const current of teaching.pages)
+      for (const action of current.actions) if (action.type === 'native_animation') action.sourceSha256 = sourceSha256;
   const page = teaching.pages[pageNumber - 1];
   if (!page) throw new Error('Native teaching page is unavailable');
   const generation =
@@ -308,8 +311,46 @@ export async function routeNativeTeaching(
     }
     for (const scene of (args.classroom as any).scenes) {
       const index = teaching.pages.findIndex((p) => p.pageId === scene.id);
-      if (!(args.changedPageIds as string[]).includes(scene.id) || scene.content.type === 'quiz') continue;
+      if (!(args.changedPageIds as string[]).includes(scene.id)) continue;
       const old = before[index];
+      if (scene.content.type === 'quiz') {
+        if (!online) continue;
+        if (old?.content.type !== 'quiz') throw new Error('Online Quiz page changed');
+        const [previous] = old.content.questions;
+        const [next] = scene.content.questions;
+        if (
+          !previous ||
+          scene.content.questions.length !== 1 ||
+          next.type !== previous.type ||
+          JSON.stringify(next.image) !== JSON.stringify(previous.image) ||
+          JSON.stringify(next.options?.map(({ value, image }: any) => [value, image])) !==
+            JSON.stringify(previous.options?.map(({ value, image }: any) => [value, image]))
+        )
+          throw new Error('题型、选项数量和配图需要在桌面本地编辑后再同步。');
+        const text = [
+          { suffix: '_title', before: `Quiz · ${old.title}`, after: `Quiz · ${scene.title}` },
+          { suffix: '_q0_question', before: previous.question, after: next.question },
+          ...(previous.options ?? []).map((option: any, position: number) => ({
+            suffix: `_q0_option${position}_label`,
+            before: `${option.value}  ${option.label}`,
+            after: `${option.value}  ${next.options[position].label}`,
+          })),
+        ].filter((entry) => entry.before !== entry.after);
+        if (!text.length) continue;
+        const objects = nativeTeachingObjects(index + 1);
+        const anchors = objects.filter(
+          ({ name, nativeShape }) =>
+            name.endsWith('_q0_question') && readPresentationShapeText(nativeShape).trim() === previous.question.trim(),
+        );
+        if (anchors.length !== 1) throw new Error('题目文本框已修改，请核对 PPT 后重试。');
+        const prefix = anchors[0].name.slice(0, -'_q0_question'.length);
+        for (const { suffix, before, after } of text) {
+          const matches = objects.filter(({ name }) => name === prefix + suffix);
+          if (matches.length !== 1) throw new Error('题目文本框已修改，请核对 PPT 后重试。');
+          changes.push(prepareAssessmentText(index + 1, matches[0].nativeShape, before, after));
+        }
+        continue;
+      }
       for (const action of scene.actions ?? [])
         if (action.type === 'interaction_checkpoint') {
           const previous = old?.actions.find((a) => a?.id === action.id) as Record<string, any> | undefined;
@@ -520,6 +561,46 @@ export async function routeNativeTeaching(
   }
   if (operation === 'write') {
     if (args.viewId !== teaching.documentId + '.' + page.pageId) throw new Error('Native teaching view changed');
+    const actions = structuredClone(args.actions) as Parameters<typeof replaceNativeTeachingPage>[0]['actions'];
+    let verifiedNativeAnimationBindings: Record<string, string> | undefined;
+    if (online && Array.isArray(actions)) {
+      const steps = actions.filter((action) => action?.type === 'native_animation');
+      const saved = page.actions.filter((action) => action.type === 'native_animation');
+      if (
+        steps.length &&
+        !steps.every(
+          (step, index) => step.id === saved[index]?.id && step.stepIndex === index && steps.length === saved.length,
+        )
+      ) {
+        const expected = steps.map((step) => step.expectedAnimation);
+        if (steps.length > 200 || expected.some((signature) => typeof signature !== 'string'))
+          throw new Error('请重新选择本页 PPT 动画后再保存');
+        // The carrier uses a common anchor. Fixed exports re-pin it to the saved package hash.
+        const hash = await crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(JSON.stringify([teaching.documentId, page.pageId, expected])),
+        );
+        const anchor = [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+        const current = nativeAnimationSignatures(pageNumber, true);
+        if (
+          current.length !== steps.length ||
+          steps.some(
+            (step, index) => step.version !== 1 || step.stepIndex !== index || expected[index] !== current[index],
+          )
+        )
+          throw new Error('本页 PPT 动画在绑定后发生变化，请移除草稿中的动画绑定并重新关联');
+        for (const step of steps) {
+          step.sourceSha256 = anchor;
+          delete step.expectedAnimation;
+        }
+        verifiedNativeAnimationBindings = Object.fromEntries(steps.map((step, index) => [step.id, current[index]]));
+      } else {
+        for (const [index, step] of steps.entries()) {
+          step.sourceSha256 = saved[index].sourceSha256;
+          delete step.expectedAnimation;
+        }
+      }
+    }
     const next = replaceNativeTeachingPage(
       {
         documentId: teaching.documentId,
@@ -527,7 +608,8 @@ export async function routeNativeTeaching(
         pageId: page.pageId,
         enrichment: args.enrichment as Parameters<typeof replaceNativeTeachingPage>[0]['enrichment'],
         semantics: args.semantics as Parameters<typeof replaceNativeTeachingPage>[0]['semantics'],
-        actions: args.actions as Parameters<typeof replaceNativeTeachingPage>[0]['actions'],
+        actions,
+        verifiedNativeAnimationBindings,
       },
       true,
     );

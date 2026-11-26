@@ -12,6 +12,7 @@ const CONTEXT_EVENTS = [
   'asc_onActiveSheetChanged',
   'asc_onDocumentChanged',
   'asc_onDocumentModifiedChanged',
+  'asc_onApplyChanges',
   'asc_onUserActionEnd',
   'asc_onSheetsChanged',
   'asc_onModifiedDocument',
@@ -97,7 +98,13 @@ export function mountPanelContext(options: {
     // Native input is also needed for interaction-based proposal invalidation,
     // and provides a fallback for SDKs without disposable callbacks.
     if (api && !editorDocument) {
+      const own = window as Window & { editor?: EditorApi; Asc?: { editor?: EditorApi } };
+      if ((own.editor ?? own.Asc?.editor) === api) {
+        editorDocument = document;
+        for (const name of INPUT_EVENTS) editorDocument.addEventListener(name, scheduleRefresh, true);
+      }
       for (const frame of document.querySelectorAll<HTMLIFrameElement>('iframe')) {
+        if (editorDocument) break;
         try {
           const win = frame.contentWindow as (Window & { editor?: EditorApi; Asc?: { editor?: EditorApi } }) | null;
           if ((win?.editor ?? win?.Asc?.editor) !== api || !frame.contentDocument) continue;

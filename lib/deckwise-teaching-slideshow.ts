@@ -123,6 +123,7 @@ export function createTeachingSlideshow(input: {
   page: number;
   timelineStepCount?: number;
   generatedMotions?: boolean;
+  online?: boolean;
   schedule?: SpeechNativeSchedule;
   onReady(): void;
   onExit(): void;
@@ -406,7 +407,7 @@ export function createTeachingSlideshow(input: {
     for (const event of events) api.asc_unregisterCallback(event, changed);
     for (const type of blockedEvents) input.doc.removeEventListener(type, blockAdvance, true);
     try {
-      if (manager.Mode && manager.DemonstrationDiv === canvas) api.EndDemonstration();
+      if (manager.Mode && manager.DemonstrationDiv === canvas) api.EndDemonstration(input.online);
     } finally {
       restoreDrawer?.();
       schedule?.restore();
@@ -531,7 +532,16 @@ export function createTeachingSlideshow(input: {
   };
   try {
     schedule?.install();
-    api.StartDemonstration(canvas.id, input.page - 1);
+    if (input.online) {
+      // The online toolbar responds to this notification by starting its own slideshow.
+      const notify = api.sync_startDemonstration;
+      api.sync_startDemonstration = () => {};
+      try {
+        api.StartDemonstration(canvas.id, input.page - 1, undefined, true);
+      } finally {
+        api.sync_startDemonstration = notify;
+      }
+    } else api.StartDemonstration(canvas.id, input.page - 1);
     if (!manager.Mode || manager.DemonstrationDiv !== canvas) throw new Error('原生放映未能启动');
     frame = requestAnimationFrame(check);
   } catch (error) {

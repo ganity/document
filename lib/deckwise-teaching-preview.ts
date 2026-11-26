@@ -105,7 +105,8 @@ export type Runtime = {
 };
 let runtime: Promise<Runtime> | undefined;
 export const loadTeachingPreviewRuntime = (): Promise<Runtime> => {
-  const url = new URL('/deckwise-runtime/teaching-preview.mjs?v=5', location.href).href;
+  const base = location.pathname.startsWith('/deckwise-office/') ? '/deckwise-office/client' : '';
+  const url = new URL(base + '/deckwise-runtime/teaching-preview.mjs?v=5', location.href).href;
   return (runtime ??= import(/* @vite-ignore */ url).catch((error) => {
     runtime = undefined;
     throw error;
@@ -222,7 +223,7 @@ export function attentionGeometry(
 export async function createTeachingAttentionPreview(input: {
   doc: Document;
   page: number;
-  sourceSha256: string;
+  sourceSha256?: string;
   objects: PreviewObject[];
   onError(error: Error): void;
   slideshow?: HTMLElement;
@@ -239,7 +240,9 @@ export async function createTeachingAttentionPreview(input: {
     throw new Error(
       `Native preview unavailable: slide=${!!slide}, coordinates=${!!drawing?.ConvertCoordsToCursor3}, viewport=${!!viewport}`,
     );
-  if (deckwisePageLineage.context()?.sourceSha256 !== input.sourceSha256)
+  const sourceMatches = () =>
+    input.sourceSha256 ? deckwisePageLineage.context()?.sourceSha256 === input.sourceSha256 : hasNativeTeaching();
+  if (!sourceMatches())
     throw new Error('页面来源已变化，请保存并重新打开当前 PPT 后预览教学提示');
   if (hasUnsavedChanges() && !hasNativeTeaching()) throw new Error('请先保存并重新打开 PPT，再预览教学提示');
   const layer = input.doc.createElement('div');
@@ -267,7 +270,7 @@ export async function createTeachingAttentionPreview(input: {
         (input.slideshow
           ? !manager?.Mode || manager.DemonstrationDiv !== input.slideshow || manager.SlideNum !== input.page - 1
           : api.getCurrentPage() !== input.page - 1 || api.isSlideShow?.()) ||
-        deckwisePageLineage.context()?.sourceSha256 !== input.sourceSha256
+        !sourceMatches()
       )
         throw new Error('教学预览页面已变化');
       const supported = cues.filter((c) => ['highlight', 'spotlight'].includes(c.effect.type));

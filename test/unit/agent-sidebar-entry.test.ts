@@ -39,6 +39,19 @@ it('only mounts a native rail entry when ready and removes it when unavailable',
   expect(doc.querySelector('.agent-sidebar-entry')).toBeNull();
   entry.dispose();
 });
+it('mounts in the presentation document when the runtime runs beside the SDK', async () => {
+  const toggle = vi.fn();
+  const entry = createSidebarEntry(toggle, () => 'Teaching timeline', undefined, undefined, () => document);
+  entry.update(true, false);
+  document.body.innerHTML = '<div id="right-menu"><div class="tool-menu-btns"></div></div>';
+  await flushMutations();
+  const button = document.querySelector<HTMLButtonElement>('#right-menu .agent-sidebar-entry')!;
+  button.click();
+  expect(button.getAttribute('aria-label')).toBe('Teaching timeline');
+  expect(toggle).toHaveBeenCalledOnce();
+  entry.dispose();
+  expect(button.isConnected).toBe(false);
+});
 it('moves the same entry to the left rail in compact layouts and restores it on widening', () => {
   const iframe = document.createElement('iframe');
   document.body.append(iframe);

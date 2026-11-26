@@ -148,12 +148,14 @@ export class EditorNotReadyError extends Error {
 }
 
 /**
- * Locate the editor iframe and return its window (with `editor` + `Asc`), or
- * null. Tried named iframe first, then any iframe whose window exposes `editor`.
- * Looked up fresh each call — the editor is destroyed/recreated across documents.
+ * Locate the running SDK, including entry points loaded in the presentation document.
+ * Resolve it on each call because opening a document can replace the editor iframe.
  */
-function findEditorWindow(): EditorWindow | null {
+export function findEditorWindow(): (Window & EditorWindow) | null {
   if (typeof document === 'undefined') return null;
+  const ownWindow = window as Window & EditorWindow;
+  // The embedding page also has window.editor, but that is a DocsAPI wrapper.
+  if (typeof resolveApi(ownWindow)?.asc_registerCallback === 'function') return ownWindow;
   const named = document.querySelector(`iframe[name="${EDITOR_FRAME_NAME}"]`);
   const iframes: Element[] = [];
   if (named) iframes.push(named);
@@ -162,7 +164,7 @@ function findEditorWindow(): EditorWindow | null {
   }
   for (const iframe of iframes) {
     try {
-      const win = (iframe as HTMLIFrameElement).contentWindow as unknown as EditorWindow | null;
+      const win = (iframe as HTMLIFrameElement).contentWindow as (Window & EditorWindow) | null;
       if (win && resolveApi(win)) return win;
     } catch {
       // Cross-origin access would throw; in a same-origin deploy this never

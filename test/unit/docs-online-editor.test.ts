@@ -302,6 +302,16 @@ describe('isolated online editor lifecycle', () => {
     }
   });
 
+  it('loads the Docs API through the DeckWise reverse proxy path', async () => {
+    const url = 'https://trainwise.efrobot.com/deckwise-office/web-apps/apps/api/documents/api.js';
+    const run = await launch(undefined, url);
+    expect(run.script!.src).toBe(url);
+    const native = fakeApi(run.frame!);
+    run.script!.dispatchEvent(new Event('load'));
+    (await run.mounted).destroy();
+    expect(native.destroyEditor).toHaveBeenCalledTimes(1);
+  });
+
   it('cleans an aborted load and never creates a late editor', async () => {
     const controller = new AbortController();
     const run = await launch(controller.signal);

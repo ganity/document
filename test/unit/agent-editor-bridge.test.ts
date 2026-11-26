@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EditorNotReadyError,
   getEditorApi,
@@ -26,6 +26,7 @@ describe('agent editor-bridge', () => {
   });
   afterEach(() => {
     document.body.innerHTML = '';
+    vi.unstubAllGlobals();
   });
 
   describe('getEditorApi', () => {
@@ -33,8 +34,17 @@ describe('agent editor-bridge', () => {
       expect(getEditorApi()).toBeNull();
     });
 
+    it('resolves a presentation SDK in the same document', () => {
+      const api = { asc_registerCallback: () => {} };
+      vi.stubGlobal('editor', api);
+      vi.stubGlobal('Asc', {});
+      expect(getEditorApi()).toBe(api);
+    });
+
     it('returns the api from the named frameEditor iframe', () => {
       const api = { pluginMethod_PasteHtml: () => {} };
+      vi.stubGlobal('editor', { destroyEditor() {} });
+      vi.stubGlobal('Asc', {});
       mountIframe({ editor: api }, { name: 'frameEditor' });
       expect(getEditorApi()).toBe(api);
     });

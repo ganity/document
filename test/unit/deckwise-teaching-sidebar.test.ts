@@ -38,6 +38,7 @@ const slideshowState = vi.hoisted(() => ({
   api: null as any,
 }));
 vi.mock('../../lib/agent-plugin/editor-bridge', () => ({
+  findEditorWindow: () => document.querySelector('iframe')?.contentWindow ?? window,
   requireEditorContext: () => ({ api: slideshowState.api, AscCommon: { changestype_Timing: 7 } }),
   getEditorApi: () =>
     slideshowState.api ?? {
@@ -95,7 +96,7 @@ beforeEach(async () => {
   clearFailure = false;
   slideshowState.active = false;
   slideshowState.callbacks.clear();
-  state.context = { ...state.context, page: 1, editGeneration: 0 };
+  state.context = { ...state.context, page: 1, editGeneration: 0, readOnly: false };
   document.body.innerHTML = '<div id="app"><iframe></iframe></div>';
   doc = document.querySelector('iframe')!.contentDocument!;
   doc.body.innerHTML =
@@ -144,6 +145,7 @@ beforeEach(async () => {
           case 'open':
             result = {
               teachingObjects,
+              readOnly: payload.context.readOnly,
               viewId: 'view-' + payload.context.page,
               project: project(),
               pageId: 'p' + payload.context.page,
@@ -239,6 +241,41 @@ const click = (label: string) => {
   expect(button.disabled).toBe(false);
   button.click();
 };
+
+it('renders the existing sidebar inside a presentation editor that owns its window', async () => {
+  sidebar.dispose();
+  document.body.innerHTML = doc.body.innerHTML;
+  doc = document;
+  remount();
+  await flush();
+  const narration = document.querySelector<HTMLTextAreaElement>('.deckwise-teaching-sidebar textarea')!;
+  expect(narration.value).toBe('Hello');
+  expect(narration.disabled).toBe(false);
+});
+
+it('does not autosave a recovered draft when the editor is read-only', async () => {
+  vi.useFakeTimers();
+  state.context.readOnly = true;
+  sidebar.dispose();
+  remount();
+  await flush();
+  const project = {
+    teachingRevision: 'rev',
+    pages: [
+      { pageId: 'p1', locked: false, actions: [first()] },
+      { pageId: 'p2', locked: false, actions: [{ id: 's2', type: 'speech', text: 'Page two', audioAssetId: 'second-tts' }] },
+    ],
+  };
+  storedRecovery = { revision: 'draft', baseline: project, actions: [{ ...first(), text: 'Recovered' }] };
+  sidebar.dispose();
+  remount();
+  await flush();
+  const narration = doc.querySelector<HTMLTextAreaElement>('textarea')!;
+  expect(narration.value).toBe('Recovered');
+  expect(narration.disabled).toBe(true);
+  await vi.advanceTimersByTimeAsync(1500);
+  expect(calls.some((c) => c.operation === 'write')).toBe(false);
+});
 
 it('offers deletion of a stale draft and restores saved teaching without writing it', async () => {
   storedRecovery = {

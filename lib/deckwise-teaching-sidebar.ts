@@ -1,5 +1,5 @@
 import { createDeckwiseImageTools, editorImageStyles } from './deckwise-editor-image-tools';
-import { assertNativeTeachingAnimations } from './deckwise-native-teaching';
+import { assertNativeTeachingAnimations, nativeAnimationSignatures } from './deckwise-native-teaching';
 import {
   hasNativeTeaching,
   nativeTeachingObjects,
@@ -30,7 +30,7 @@ import { getReadonlyMode } from './onlyoffice/readonly';
 import { createSidebarEntry } from './agent-plugin/ui/sidebar-entry';
 import { mountPanelContext } from './agent-plugin/ui/panel-context';
 import { deckwiseEditorBridge } from './deckwise-editor-bridge';
-import { getEditorApi } from './agent-plugin/editor-bridge';
+import { findEditorWindow, getEditorApi } from './agent-plugin/editor-bridge';
 import { deckwisePageLineage } from './deckwise-page-lineage';
 import { integrateGeneratedNativeMotions, nativeSpeechMotionSteps } from './deckwise-teaching-native-motion';
 import { createTeachingSlideshow, inspectTeachingAnimations } from './deckwise-teaching-slideshow';
@@ -58,6 +58,7 @@ type View = {
     sourceObjectName?: string;
   }>;
   viewId: string;
+  readOnly?: boolean;
   pageId: string;
   pageNumber: number;
   project: {
@@ -85,6 +86,7 @@ export function mountDeckwiseTeachingSidebar(
   binding: any,
   send: (type: string, payload: any, id?: string) => void,
   editorImages = false,
+  route = routeNativeTeaching,
 ) {
   let imageTools: ReturnType<typeof createDeckwiseImageTools> | undefined;
   let lifecycle: ReturnType<typeof mountPanelContext> | undefined;
@@ -136,6 +138,7 @@ export function mountDeckwiseTeachingSidebar(
   let timelineRun = 0;
   let previewRequest = 0;
   let restoreFocus: (() => void) | undefined;
+  let refreshAfterAction = false;
   let lesson: LessonRun | null = null;
   let teachingSlideshow: ReturnType<typeof createTeachingSlideshow> | null = null;
   let startingSlideshow = false;
@@ -182,14 +185,16 @@ export function mountDeckwiseTeachingSidebar(
   };
   const pending = new Map<string, Pending>();
   const localDrafts = new Map<string, { actions: Action[]; baseline: string }>();
+  const onlineNative = route !== routeNativeTeaching;
   let stopNativeClicks: (() => void) | undefined;
   const page = () => view?.project.pages.find((entry) => entry.pageId === view?.pageId);
   const changed = () => JSON.stringify(actions) !== baseline;
-  const editable = () => !!view && !page()?.locked && !busy && !draftError && !lesson;
+  const editable = () =>
+    !!view && !view.readOnly && !context?.readOnly && !page()?.locked && !busy && !draftError && !lesson;
   const request = async (operation: string, args: any = {}, target = context): Promise<any> => {
     if (!target || disposed) throw new Error('Teaching context is unavailable');
     if (hasNativeTeaching() && !operation.startsWith('editor-image:')) {
-      const native = await routeNativeTeaching(operation, args, target.page ?? 1);
+      const native = await route(operation, args, target.page ?? 1);
       if (native && !(native.value as { nativeService?: boolean })?.nativeService) return native.value;
     }
     return new Promise<any>((resolve, reject) => {
@@ -247,6 +252,10 @@ export function mountDeckwiseTeachingSidebar(
       restoreFocus?.();
       restoreFocus = undefined;
       if (token === epoch) renderControls();
+      if (refreshAfterAction) {
+        refreshAfterAction = false;
+        queueMicrotask(() => lifecycle?.update());
+      }
     }
   };
   function renderPreviewControls() {
@@ -294,7 +303,7 @@ export function mountDeckwiseTeachingSidebar(
     renderPreviewControls();
     panel?.querySelectorAll<HTMLButtonElement>('[data-teaching-history]').forEach((node) => {
       const entries = node.dataset.teachingHistory === 'undo' ? undoActions : redoActions;
-      node.disabled = !editable() || running || (!hasNativeTeaching() && !entries.length);
+      node.disabled = !editable() || running || ((!hasNativeTeaching() || onlineNative) && !entries.length);
     });
     panel?.querySelectorAll<HTMLButtonElement>('[data-adopt-media]').forEach((node) => {
       const select = panel?.querySelector<HTMLSelectElement>('[data-media-library]');
@@ -313,6 +322,12 @@ export function mountDeckwiseTeachingSidebar(
     });
   const persistDraft = () => {
     if (!view || !context) return;
+    if (onlineNative) {
+      localDrafts.set(view.pageId, { actions: structuredClone(actions), baseline });
+      scheduleSave();
+      renderControls();
+      return;
+    }
     if (hasNativeTeaching()) {
       const next = readNativeTeaching()!;
       const updated = replaceNativeTeachingPageForSidebar(next);
@@ -359,21 +374,20 @@ export function mountDeckwiseTeachingSidebar(
       return;
     }
     stopAudio();
-    if (!hasNativeTeaching()) remember(undoActions, JSON.stringify(actions));
+    if (!hasNativeTeaching() || onlineNative) remember(undoActions, JSON.stringify(actions));
     redoActions.length = 0;
     actions = next;
     persistDraft();
     if (redraw) render();
   };
   const changeHistory = (undo: boolean) => {
-    if (hasNativeTeaching()) {
-      if (!view || page()?.locked || running || lesson || draftError) return;
+    if (!editable() || running) return;
+    if (hasNativeTeaching() && !onlineNative) {
       stopAudio();
       nativeTeachingHistory(undo);
       void load(deckwiseEditorBridge.getContext(binding));
       return;
     }
-    if (!editable() || running) return;
     const from = undo ? undoActions : redoActions,
       to = undo ? redoActions : undoActions;
     if (!from.length) return;
@@ -406,8 +420,11 @@ export function mountDeckwiseTeachingSidebar(
     }
     const local = localDrafts.get(next.pageId);
     if (local) {
-      if (local.baseline === JSON.stringify(next.project)) actions = local.actions;
-      else draftError = '未保存修改与当前版本冲突。可删除草稿，继续使用已保存内容。';
+      if (local.baseline === (onlineNative ? baseline : JSON.stringify(next.project))) actions = local.actions;
+      else {
+        if (onlineNative) actions = local.actions;
+        draftError = '未保存修改与当前版本冲突。可删除草稿，继续使用已保存内容。';
+      }
     }
     render(preserveLesson);
   };
@@ -501,6 +518,9 @@ export function mountDeckwiseTeachingSidebar(
       render(preserveLesson);
       if (changed() && !draftError) scheduleSave();
       if (
+        !onlineNative &&
+        !data.readOnly &&
+        !target.readOnly &&
         !preserveLesson &&
         !changed() &&
         data.project.taskType === 'scene' &&
@@ -602,6 +622,7 @@ export function mountDeckwiseTeachingSidebar(
     if (!view || !context) throw new Error('教学页面尚未就绪');
     if (draftError) throw new Error(draftError);
     if (!changed()) return;
+    if (view.readOnly || context.readOnly) throw new Error('当前课件为只读，无法保存教学修改');
     if (page()?.locked) throw new Error('本页已锁定，无法保存教学修改');
     const target = context,
       currentView = view,
@@ -701,8 +722,9 @@ export function mountDeckwiseTeachingSidebar(
   };
   function scheduleSave() {
     clearTimeout(saveTimer);
+    if (view?.readOnly || context?.readOnly) return;
     saveTimer = setTimeout(() => {
-      if (disposed || !changed() || draftError || page()?.locked) return;
+      if (disposed || !changed() || draftError || view?.readOnly || context?.readOnly || page()?.locked) return;
       if (
         busy ||
         running ||
@@ -769,12 +791,12 @@ export function mountDeckwiseTeachingSidebar(
   const previewAttention = async (isCurrent = () => true, slideshow?: HTMLElement) => {
     if (nativeSlideshow && !slideshow) throw new Error('请先退出原生幻灯片放映，再预览教学提示');
     const runId = timelineRun;
-    if (!view?.project.source?.sha256 || !nativeDocument) throw new Error('请重新读取本页教学以获取当前来源');
+    if (!view || !nativeDocument) throw new Error('请重新读取本页教学以获取当前来源');
     const token = epoch;
     const next = await createTeachingAttentionPreview({
       doc: nativeDocument,
       page: view.pageNumber,
-      sourceSha256: view.project.source.sha256,
+      sourceSha256: view.project.source?.sha256,
       objects: view.teachingObjects ?? [],
       slideshow,
       onError: (error) => {
@@ -837,13 +859,15 @@ export function mountDeckwiseTeachingSidebar(
       if (
         nativeNodes.some(
           (node, index) =>
-            node.version !== 1 || node.stepIndex !== index || node.sourceSha256 !== view!.project.source?.sha256,
+            node.version !== 1 ||
+            node.stepIndex !== index ||
+            (!onlineNative && node.sourceSha256 !== view!.project.source?.sha256),
         )
       )
         throw new Error('PPT 动画绑定已过期，请重新绑定已保存的当前页');
       if (nativeNodes.length) {
         assertNativeTeachingAnimations(view!.pageNumber);
-        if (deckwisePageLineage.context()?.sourceSha256 !== view!.project.source?.sha256)
+        if (!onlineNative && deckwisePageLineage.context()?.sourceSha256 !== view!.project.source?.sha256)
           throw new Error('请保存并重新打开当前 PPT 后放映');
         const { effects, slide } = inspectTeachingAnimations(view!.pageNumber);
         if (effects.length !== nativeNodes.length) throw new Error('PPT 动画步骤数量已变化，请重新绑定');
@@ -952,6 +976,7 @@ export function mountDeckwiseTeachingSidebar(
               page: view!.pageNumber,
               timelineStepCount: stepCount || undefined,
               generatedMotions: true,
+              online: onlineNative,
               schedule,
               onReady: () => {
                 if (isCurrent())
@@ -1131,7 +1156,8 @@ export function mountDeckwiseTeachingSidebar(
             speechMotions: motionSteps.length ? motionSteps : undefined,
             native: inSlideshow
               ? {
-                  sourceSha256: view!.project.source!.sha256,
+                  sourceSha256:
+                    onlineNative && nativeNodes.length ? nativeNodes[0].sourceSha256 : view!.project.source!.sha256,
                   stepCount,
                   next: (index: number) => teachingSlideshow!.next(index),
                   pause: () => teachingSlideshow?.pause(),
@@ -1828,7 +1854,8 @@ export function mountDeckwiseTeachingSidebar(
     text.rows = 1;
     text.className = 'teaching-speech-text';
     text.value = action.text;
-    text.disabled = !editable();
+    text.readOnly = onlineNative && !editable();
+    text.disabled = !onlineNative && !editable();
     text.setAttribute('aria-label', `第 ${index + 1} 段讲解`);
     text.addEventListener('select', () => {
       if (text.selectionEnd > text.selectionStart)
@@ -2013,9 +2040,11 @@ export function mountDeckwiseTeachingSidebar(
             ? t('teachingVoiceGenerated')
             : task.task?.state === 'failed'
               ? t('teachingVoiceFailed')
-              : task.phase === 'submitted'
-                ? t('teachingVoiceGenerating')
-                : t('teachingVoicePrepared'),
+              : onlineNative && task.phase === 'submission-unknown'
+                ? '配音生成结果待确认，请勿重复提交'
+                : task.phase === 'submitted'
+                  ? t('teachingVoiceGenerating')
+                  : t('teachingVoicePrepared'),
         ),
       );
       const technical = element('small', `${task.model} · ${task.voice ?? '默认音色'}`);
@@ -2609,18 +2638,19 @@ export function mountDeckwiseTeachingSidebar(
         () => {
           try {
             const source = view?.project.source?.sha256;
-            if (!source || deckwisePageLineage.context()?.sourceSha256 !== source)
+            if (!onlineNative && (!source || deckwisePageLineage.context()?.sourceSha256 !== source))
               throw new Error('请先保存并重新打开 PPT，再绑定当前页动画');
             const { effects } = inspectTeachingAnimations(view!.pageNumber);
             if (!effects.length) throw new Error('本页没有可绑定的 PPT 动画，请先用原生动画功能添加并保存');
             if (actions.length + effects.length > 1000) throw new Error('本页教学节点超过数量限制');
+            const signatures = onlineNative ? nativeAnimationSignatures(view!.pageNumber, true) : undefined;
             edit([
               ...actions,
               ...effects.map((_, stepIndex) => ({
                 id: crypto.randomUUID(),
                 type: 'native_animation',
                 version: 1,
-                sourceSha256: source,
+                ...(signatures ? { expectedAnimation: signatures[stepIndex] } : { sourceSha256: source }),
                 stepIndex,
               })),
             ]);
@@ -2673,9 +2703,13 @@ export function mountDeckwiseTeachingSidebar(
   function setOpen(expanded: boolean) {
     if (expanded || open) showPanel(expanded ? 'teaching' : null);
   }
+  const localEditorDocument = () => (findEditorWindow() === window ? document : undefined);
   const sidebar = createSidebarEntry(
     () => setOpen(!open),
     () => '教学时间轴',
+    undefined,
+    undefined,
+    localEditorDocument,
   );
   const imageSidebar = editorImages
     ? createSidebarEntry(
@@ -2686,10 +2720,10 @@ export function mountDeckwiseTeachingSidebar(
       )
     : undefined;
   const mount = () => {
-    for (const frame of document.querySelectorAll<HTMLIFrameElement>('#app iframe')) {
-      const doc = frame.contentDocument;
-      const container = doc?.querySelector<HTMLElement>('#right-menu .right-panel');
-      if (!doc || !container) continue;
+    const doc = findEditorWindow()?.document;
+    if (doc) {
+      const container = doc.querySelector<HTMLElement>('#right-menu .right-panel');
+      if (!container) return;
       if (panel?.ownerDocument === doc) return;
       panel?.remove();
       stopNativeClicks?.();
@@ -2781,6 +2815,10 @@ export function mountDeckwiseTeachingSidebar(
       }
       try {
         if (lesson?.navigating || projectingMotions) return;
+        if (onlineNative && running) {
+          refreshAfterAction = true;
+          return;
+        }
         if (hasUnsavedChanges() && !hasNativeTeaching()) {
           notice('PPT 正在自动保存，完成后将同步教学时间轴。');
           return;

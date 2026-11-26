@@ -4,6 +4,7 @@ import {
   initializeNativeTeaching,
   insertNativeTeachingAssessment,
   assertNativeTeachingAnimations,
+  nativeAnimationSignatures,
   hasNativeTeaching,
   readNativeTeaching,
   replaceNativeTeachingPage,
@@ -16,6 +17,7 @@ import {
   nativeTeachingTarget,
   setNativeTeachingLock,
   prepareNativeTeachingSave,
+  synchronizeNativeTeachingStructure,
 } from '../../lib/deckwise-native-teaching';
 import { routeNativeTeaching } from '../../lib/deckwise-native-teaching-router';
 import { attentionGeometry, selectedAttentionTargets } from '../../lib/deckwise-teaching-preview';
@@ -74,7 +76,13 @@ class Timing {
     this.effects = this.effects.filter((effect) => !effects.includes(effect));
   }
 }
-function mount(locked = false, slides?: any[], objects = [{ logicalId: 'object', sourceShapeId: '4', type: 'shape' }]) {
+function mount(
+  locked = false,
+  slides?: any[],
+  objects: Array<{ logicalId: string; sourceShapeId: string; sourceObjectName?: string; type: string }> = [
+    { logicalId: 'object', sourceShapeId: '4', type: 'shape' },
+  ],
+) {
   const data = {
     schemaVersion: 'deckwise-native-teaching/1',
     documentId: 'document',
@@ -157,6 +165,41 @@ it('checks native presence without serializing the metadata on every object or s
   expect(readNativeTeaching()?.revision).toBe('revision');
   expect(read).toHaveBeenCalledOnce();
 });
+it('records an online page reorder in the existing history action', () => {
+  const first = { cSld: { spTree: [] } };
+  const second = { cSld: { spTree: [] } };
+  const { logic, parts } = mount(false, [first, second]);
+  synchronizeNativeTeachingStructure();
+  const original = readNativeTeaching()!;
+  const savedPart = parts[0];
+  synchronizeNativeTeachingStructure();
+  expect(parts[0]).toBe(savedPart);
+
+  logic.Slides!.reverse();
+  synchronizeNativeTeachingStructure();
+  const xml = new DOMParser().parseFromString(parts[0].GetXml(), 'application/xml');
+  const saved = JSON.parse(xml.documentElement.textContent!);
+  expect(saved.revision).not.toBe(original.revision);
+  expect(saved.pages).toEqual([...original.pages].reverse());
+  expect(saved.identity.pages.map((page: { pageId: string }) => page.pageId)).toEqual(
+    saved.pages.map((page: { pageId: string }) => page.pageId),
+  );
+  expect(logic.StartAction).not.toHaveBeenCalled();
+  expect(logic.FinalizeAction).not.toHaveBeenCalled();
+});
+it('persists renamed teaching objects so a new native session can restore their references', () => {
+  let name = 'Before';
+  const shape = { sourceId: '4', getUniNvProps: () => ({ cNvPr: { id: 8, name } }) };
+  const slides = [{ cSld: { spTree: [shape] } }];
+  const { parts } = mount(false, slides, [{ logicalId: 'object', sourceShapeId: '4', sourceObjectName: name, type: 'shape' }]);
+  expect(nativeTeachingTarget('object')).toBeUndefined();
+  expect(nativeTeachingObjects(1)[0].objectId).toBe('object');
+  const original = parts[0];
+  name = 'After';
+  synchronizeNativeTeachingStructure();
+  expect(parts[0]).not.toBe(original);
+  expect(parts[0].GetXml()).toContain('"sourceObjectName":"After"');
+});
 it('marks teaching writes dirty so the host saves them before reporting success', () => {
   mount();
   resetUnsavedChanges();
@@ -222,28 +265,33 @@ it('adopts verified media atomically and rejects late results after a narration 
   }
 });
 
-it('keeps logical targets through rename, slide duplication, reorder and native undo references', () => {
-  const shape = () => ({ sourceId: '4', getUniNvProps: () => ({ cNvPr: { id: 8, name: 'Same name' } }) });
-  const firstShape = shape();
+it.each([false, true])('preserves teaching references through native slide changes (online=%s)', (online) => {
+  const shape = (Id: string) => ({ Id, sourceId: '4', getUniNvProps: () => ({ cNvPr: { id: 8, name: 'Same name' } }) });
+  const firstShape = shape('1_2');
   const slide = {
     cSld: { spTree: [firstShape] },
     createDuplicate() {
-      return { cSld: { spTree: [shape()] } };
+      return { Id: '1_3', cSld: { spTree: [shape('1_4')] } };
     },
   };
-  const slides = [slide];
+  const slides: Array<{ Id?: string; cSld: typeof slide.cSld }> = [slide];
   mount(false, slides);
+  if (online) Object.assign(state.api, { CoAuthoringApi: { getDocId: () => 'shared-doc' } });
   expect(nativeTeachingObjects(1)[0].objectId).toBe('object');
   expect(nativeTeachingTarget('object')).toBe(firstShape);
   firstShape.getUniNvProps = () => ({ cNvPr: { id: 8, name: 'Renamed' } });
   expect(nativeTeachingObjects(1)[0].objectId).toBe('object');
   const copy = slide.createDuplicate();
-  slides.push(copy as typeof slide);
+  slides.push(copy);
   const duplicated = readNativeTeaching()!;
   expect(duplicated.pages[1].actions[0].text).toBe('Before');
   expect(duplicated.pages[1].pageId).not.toBe(duplicated.pages[0].pageId);
   expect(duplicated.pages[1].actions[0].id).not.toBe('speech');
   expect(nativeTeachingObjects(2)[0].objectId).not.toBe('object');
+  if (online) {
+    expect(duplicated.pages[1].pageId).toBe('page-shared-doc-1_3');
+    expect(nativeTeachingObjects(2)[0].objectId).toBe('object-shared-doc-1_4');
+  }
   expect(nativeTeachingTarget('object')).toBe(firstShape);
   slides.reverse();
   expect(readNativeTeaching()!.pages[1].pageId).toBe('page');
@@ -307,6 +355,69 @@ it('resolves nested native teaching targets without replacing them with their pa
   expect(() => geometry()).toThrow('不在当前页');
   slides[1].cSld.spTree.splice(0);
   expect(() => geometry()).toThrow('已删除');
+});
+
+it('recovers a uniquely named target when the saved PPTX renumbers it', () => {
+  const shape = { sourceId: '9', getUniNvProps: () => ({ cNvPr: { name: 'Album cover' } }) };
+  const reused = { sourceId: '4', getUniNvProps: () => ({ cNvPr: { name: 'Photo frame' } }) };
+  mount(
+    false,
+    [{ cSld: { spTree: [reused, shape] } }],
+    [{ logicalId: 'object', sourceShapeId: '4', sourceObjectName: 'Album cover', type: 'shape' }],
+  );
+  expect(nativeTeachingObjects(1)[1].objectId).toBe('object');
+  expect(nativeTeachingTarget('object')).toBe(shape);
+});
+
+it('leaves a renumbered target unresolved when the shape name is ambiguous', () => {
+  const shape = (sourceId: string, name: string) => ({ sourceId, getUniNvProps: () => ({ cNvPr: { name } }) });
+  mount(
+    false,
+    [{ cSld: { spTree: [shape('4', 'Frame'), shape('8', 'Photo'), shape('9', 'Photo')] } }],
+    [{ logicalId: 'object', sourceShapeId: '4', sourceObjectName: 'Photo', type: 'shape' }],
+  );
+  nativeTeachingObjects(1);
+  expect(nativeTeachingTarget('object')).toBeUndefined();
+});
+
+it('shares a new native object identity across editors while keeping it scoped to the online document', () => {
+  const open = (key: string) => {
+    const shape = { Id: '1_2', getUniNvProps: () => ({ cNvPr: { name: 'New shape' } }) };
+    mount(false, [{ cSld: { spTree: [shape] } }]);
+    Object.assign(state.api, { CoAuthoringApi: { getDocId: () => key } });
+    return nativeTeachingObjects(1)[0].objectId;
+  };
+  const objectId = open('session-1');
+  expect(open('session-1')).toBe(objectId);
+  expect(open('session-2')).not.toBe(objectId);
+});
+
+it('routes narration on an inserted slide to the same page in connected editors', () => {
+  const open = (key: string) => {
+    const slides = [{ Id: '42', cSld: { spTree: [] } }];
+    const { add, parts } = mount(false, slides);
+    Object.assign(state.api, { CoAuthoringApi: { getDocId: () => key } });
+    readNativeTeaching();
+    slides.unshift({ Id: '1_8', cSld: { spTree: [] } });
+    const teaching = readNativeTeaching()!;
+    expect(teaching.pages[1].pageId).toBe('page');
+    expect(teaching.pages[1].actions[0].text).toBe('Before');
+    return { add, parts, pageId: teaching.pages[0].pageId };
+  };
+  const writer = open('session-1');
+  const saved = replaceNativeTeachingPage({
+    documentId: 'document',
+    expectedRevision: 'revision',
+    pageId: writer.pageId,
+    actions: [{ id: 'inserted-speech', type: 'speech', text: 'New slide narration' }],
+  });
+  const peer = open('session-1');
+  peer.parts[0].Delete();
+  const xml = document.implementation.createDocument(NATIVE_TEACHING_NAMESPACE, 'teaching');
+  xml.documentElement.textContent = JSON.stringify(saved);
+  peer.add(new XMLSerializer().serializeToString(xml));
+  expect(readNativeTeaching()!.pages[0].actions[0]?.text).toBe('New slide narration');
+  expect(open('session-2').pageId).not.toBe(writer.pageId);
 });
 
 it('routes write, confirmation and local reads through native history with no Host fallback', async () => {
@@ -419,6 +530,79 @@ it('detects same-count native animation reorder before playing a different objec
   expect(() => assertNativeTeachingAnimations(1)).toThrow('动画顺序');
   effects.reverse();
   expect(() => assertNativeTeachingAnimations(1)).not.toThrow();
+});
+
+it('rejects an online binding when a peer reordered the animation steps after selection', async () => {
+  vi.stubGlobal('crypto', webcrypto);
+  try {
+    const shapes = ['4', '5'].map((sourceId) => ({
+      sourceId,
+      Id: sourceId,
+      getUniNvProps: () => ({ cNvPr: { id: sourceId, name: 'Shape ' + sourceId } }),
+    }));
+    const effects = shapes.map((shape) => ({
+      getObjectId: () => shape.Id,
+      cTn: { presetClass: 1, presetID: 10, presetSubtype: 0, nodeType: 2 },
+      asc_getDuration: () => 500,
+      asc_getDelay: () => 0,
+    }));
+    const { logic } = mount(false, [{ cSld: { spTree: shapes }, timing: { getAllAnimEffects: () => effects } }]);
+    readNativeTeaching();
+    const payload = {
+      viewId: 'document.page',
+      expectedTeachingRevision: 'revision',
+      actions: nativeAnimationSignatures(1, true).map((expectedAnimation, stepIndex) => ({
+        id: 'step-' + stepIndex,
+        type: 'native_animation',
+        version: 1,
+        stepIndex,
+        expectedAnimation,
+      })),
+    };
+    effects.reverse();
+    await expect(routeNativeTeaching('write', payload, 1, true)).rejects.toThrow('在绑定后发生变化');
+    expect(logic.StartAction).not.toHaveBeenCalled();
+    effects.reverse();
+    await routeNativeTeaching('write', payload, 1, true);
+    expect(readNativeTeaching()?.pages[0].actions[0]).toMatchObject({ sourceSha256: /^[a-f0-9]{64}$/ });
+    expect(readNativeTeaching()?.pages[0].actions[0]).not.toHaveProperty('expectedAnimation');
+    expect(() => assertNativeTeachingAnimations(1)).not.toThrow();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it('leaves the original timing tree alone on a teaching-only edit even if an existing cue has no native mirror', () => {
+  const timing = new Timing();
+  const slide = {
+    cSld: { spTree: [{ sourceId: '4', Id: 'shape-4' }] },
+    timing,
+    setTiming: vi.fn(),
+  };
+  const { data, parts, add } = mount(false, [slide]);
+  const speech = {
+    id: 'speech',
+    type: 'speech',
+    text: 'Before',
+    visualCues: [
+      { id: 'fade', atMs: 0, endMs: 500, effect: { type: 'element_animation', effect: 'fadeIn', elementId: 'object' } },
+    ],
+  };
+  const root = document.implementation.createDocument(NATIVE_TEACHING_NAMESPACE, 'teaching');
+  root.documentElement.textContent = JSON.stringify({
+    ...data,
+    pages: [{ ...data.pages[0], actions: [speech] }],
+  });
+  parts[0].Delete();
+  add(new XMLSerializer().serializeToString(root));
+  const updated = replaceNativeTeachingPage({
+    documentId: 'document',
+    expectedRevision: 'revision',
+    pageId: 'page',
+    actions: [{ ...speech, text: 'After' }],
+  });
+  expect(updated.pages[0].actions[0].text).toBe('After');
+  expect(slide.setTiming).not.toHaveBeenCalled();
 });
 
 it('activates a fresh document from loaded notes once without a Host or parser', () => {
@@ -1306,7 +1490,7 @@ it('adopts existing audio with an eleven-part diagram focus and persists all ent
   }
 });
 
-it('retains a Quiz title edit in the native carrier after reopening without changing speech', async () => {
+it('saves Quiz title and correct answer edits without invalidating matching speech', async () => {
   mount(false, [{ cSld: { spTree: [] } }]);
   replaceNativeTeachingPage({
     documentId: 'document',
@@ -1368,6 +1552,22 @@ it('retains a Quiz title edit in the native carrier after reopening without chan
     audioAssetId: 'old',
     durationMs: 1000,
   });
+  const answered = structuredClone(reopened.classroom);
+  answered.scenes[0].content.questions[0].answer = ['B'];
+  await routeNativeTeaching(
+    'assessment-write',
+    {
+      projectId: reopened.projectId,
+      expectedRevision: reopened.revision,
+      expectedSourceRevision: reopened.sourceRevision,
+      classroom: answered,
+      changedPageIds: ['page'],
+    },
+    1,
+    true,
+  );
+  expect(readNativeTeaching()!.pages[0].actions[1].response).toMatchObject({ answerIndices: [1] });
+  expect(readNativeTeaching()!.pages[0].actions[0]).toMatchObject({ audioAssetId: 'old', durationMs: 1000 });
 });
 
 it('saves a checkpoint page-reference correction without changing accepted speech, audio or reference keys', async () => {

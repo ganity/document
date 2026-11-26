@@ -30,13 +30,13 @@ function mount() {
     getSelectedEffects: () => [],
     getEffectsSequences: () => (effects.length ? [[null, ...effects]] : []),
   };
-  const slide = { cSld: { spTree: [shape] }, timing };
+  const slide = { cSld: { spTree: [shape] }, timing, timingLock: { Lock: { Is_Locked: () => false } } };
   const controller = { selectedObjects: [shape], getTargetDocContent: () => undefined };
   const logic = {
     Slides: [slide],
     CanEdit: () => true,
     IsMasterMode: () => false,
-    IsSelectionLocked: () => false,
+    IsSelectionLocked: vi.fn(() => false),
     GetWidthMM: () => 320,
     GetHeightMM: () => 200,
     GetCurrentController: () => controller,
@@ -128,6 +128,7 @@ it('binds the capability and one-shot command to the current native generation',
   const context = bridge.getContext(owner);
   expect(context.selectedText).toBe('');
   expect(context.capabilities.some((c) => c.name === 'add_slide_object_animation')).toBe(true);
+  expect(s.logic.IsSelectionLocked).not.toHaveBeenCalled();
   const command = {
     ...owner,
     editGeneration: context.editGeneration,
@@ -180,7 +181,7 @@ it.each([
 ])('rejects %s before native dispatch', (change) => {
   const s = mount();
   if (change === 'readonly') setReadonlyState(true);
-  if (change === 'locked') s.logic.IsSelectionLocked = () => true;
+  if (change === 'locked') s.slide.timingLock.Lock.Is_Locked = () => true;
   if (change === 'preview') s.api.asc_IsStartedAnimationPreview = () => true;
   if (change === 'group') Reflect.set(s.shape, 'group', {});
   if (change === 'placeholder') s.shape.isPlaceholder = () => true;

@@ -6,6 +6,7 @@ export function createSidebarEntry(
   label: () => string,
   isAvailable?: () => boolean,
   icon?: string,
+  editorDocument?: () => Document | undefined,
 ) {
   let button: HTMLButtonElement | null = null;
   let ready = false,
@@ -20,6 +21,8 @@ export function createSidebarEntry(
     onMediaChange: () => void;
   };
   const frames = new Map<HTMLIFrameElement, FrameBinding>();
+  let ownMedia: MediaQueryList | undefined;
+  const compactQuery = `(max-width: ${COMPACT_VIEWPORT_MAX_WIDTH}px), (pointer: coarse) and (max-height: ${COMPACT_VIEWPORT_MAX_WIDTH}px)`;
   const enabled = () => !disposed && ready && (!isAvailable || isAvailable());
   const removeButton = () => {
     button?.remove();
@@ -35,6 +38,8 @@ export function createSidebarEntry(
   const stopWatching = () => {
     frameObserver?.disconnect();
     frameObserver = null;
+    ownMedia?.removeEventListener?.('change', sync);
+    ownMedia = undefined;
     for (const [frame, binding] of frames) {
       frame.removeEventListener('load', binding.onLoad);
       unbindDocument(binding);
@@ -47,15 +52,17 @@ export function createSidebarEntry(
       removeButton();
       return;
     }
-    let rail: Element | null = null;
+    const findRail = (doc: Document | null | undefined, compact: boolean) =>
+      doc?.querySelector(compact ? '#left-menu .tool-menu-btns' : '#right-menu .tool-menu-btns') ??
+      doc?.querySelector('#left-menu .tool-menu-btns') ??
+      null;
+    let rail = findRail(editorDocument?.(), ownMedia?.matches ?? false);
     for (const binding of frames.values()) {
+      if (rail) break;
       try {
         const doc = binding.doc;
         const compact = binding.media?.matches ?? false;
-        rail =
-          doc?.querySelector(compact ? '#left-menu .tool-menu-btns' : '#right-menu .tool-menu-btns') ??
-          doc?.querySelector('#left-menu .tool-menu-btns') ??
-          null;
+        rail = findRail(doc, compact);
       } catch {
         /* Cross-origin frames are not editor targets. */
       }
@@ -113,10 +120,7 @@ export function createSidebarEntry(
       if (!doc) return;
       binding.doc = doc;
       // Match the editor's compact chrome CSS, including touch landscape.
-      binding.media =
-        frame.contentWindow?.matchMedia?.(
-          `(max-width: ${COMPACT_VIEWPORT_MAX_WIDTH}px), (pointer: coarse) and (max-height: ${COMPACT_VIEWPORT_MAX_WIDTH}px)`,
-        ) ?? null;
+      binding.media = frame.contentWindow?.matchMedia?.(compactQuery) ?? null;
       binding.media?.addEventListener?.('change', binding.onMediaChange);
       binding.observer = new MutationObserver((records) => {
         if (enabled() && frames.get(frame) === binding && changesRails(records)) sync();
@@ -157,8 +161,13 @@ export function createSidebarEntry(
   };
   const startWatching = () => {
     if (frameObserver) return;
+    if (editorDocument?.() === document) {
+      ownMedia = window.matchMedia?.(compactQuery);
+      ownMedia?.addEventListener?.('change', sync);
+    }
     frameObserver = new MutationObserver((records) => {
       if (!enabled()) return;
+      if (editorDocument?.() === document && changesRails(records)) sync();
       const changed = records.some((record) =>
         [...record.addedNodes, ...record.removedNodes].some(
           (node) =>

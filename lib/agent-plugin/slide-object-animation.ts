@@ -43,10 +43,9 @@ interface AnimationApi {
   ): void;
   WordControl?: {
     m_oLogicDocument?: {
-      Slides: Array<{ cSld: { spTree: Shape[] }; timing?: Timing }>;
+      Slides: Array<{ cSld: { spTree: Shape[] }; timing?: Timing; timingLock?: { Lock?: { Is_Locked?(): boolean } } }>;
       CanEdit?(): boolean;
       IsMasterMode?(): boolean;
-      IsSelectionLocked?(changeType: number): boolean;
       GetWidthMM(): number;
       GetHeightMM(): number;
       GetCurrentController?(): { selectedObjects?: Shape[]; getTargetDocContent?(): unknown };
@@ -158,9 +157,10 @@ function current() {
     api.asc_IsStartedAnimationPreview?.() !== false ||
     logic.IsMasterMode?.() ||
     context.AscCommon?.CollaborativeEditing?.Get_GlobalLock() ||
-    logic.IsSelectionLocked?.(changeType) !== false ||
     typeof api.asc_AddAnimation !== 'function' ||
     !slide ||
+    // The SDK's IsSelectionLocked requests a lock. Context refresh must only read it.
+    slide.timingLock?.Lock?.Is_Locked?.() !== false ||
     !shape ||
     controller?.selectedObjects?.length !== 1 ||
     !slide.cSld.spTree.includes(shape) ||

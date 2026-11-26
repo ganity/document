@@ -361,10 +361,13 @@ export const i18n = new I18n();
 
 // Hold every importer until the active table is in. A chunk that fails to load
 // must not keep the page from starting: the shell then reads in English.
-try {
-  await loadLocale(i18n.getLanguage());
-} catch {
-  // English is already in place.
+declare const __WISEOFFICE_DOCS_NATIVE__: boolean;
+if (typeof __WISEOFFICE_DOCS_NATIVE__ === 'undefined' || !__WISEOFFICE_DOCS_NATIVE__) {
+  try {
+    await loadLocale(i18n.getLanguage());
+  } catch {
+    // English is already in place.
+  }
 }
 
 // Export convenience functions

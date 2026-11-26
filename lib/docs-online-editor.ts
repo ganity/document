@@ -188,7 +188,8 @@ export async function mountDocsOnlineEditor(
   const config = parseDocsOnlineConfig(configJson, binding);
   const requiresCommunityReads = binding.communityPluginConfigUrl !== undefined;
   const url = remoteUrl(apiUrl, 'apiUrl');
-  requireValue(url.pathname === '/web-apps/apps/api/documents/api.js' && !url.search, 'apiUrl');
+  const apiPath = '/web-apps/apps/api/documents/api.js';
+  requireValue((url.pathname === apiPath || url.pathname === '/deckwise-office' + apiPath) && !url.search, 'apiUrl');
   const host = remoteUrl(hostUrl, 'hostUrl');
   requireValue(
     host.origin === window.location.origin && host.pathname.endsWith('/docs-online-host.html') && !host.search,

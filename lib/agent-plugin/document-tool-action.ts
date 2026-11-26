@@ -113,7 +113,9 @@ function captureTarget(full: boolean): DocumentToolTarget {
   if (!api.isDocumentLoadComplete || !api.isLoadFullApi) throw new Error('Editor is still loading');
   const context = captureDocumentContext();
   if (!context) throw new Error('Editor is still loading');
-  const frame = [...document.querySelectorAll<HTMLIFrameElement>('iframe')].find((element) => {
+  const local = window as Window & { editor?: unknown; Asc?: { editor?: unknown } };
+  const inEditor = (local.editor ?? local.Asc?.editor) === api;
+  const frame = inEditor ? undefined : [...document.querySelectorAll<HTMLIFrameElement>('iframe')].find((element) => {
     try {
       const win = element.contentWindow as unknown as { editor?: unknown; Asc?: { editor?: unknown } };
       return (win?.editor ?? win?.Asc?.editor) === api;
@@ -121,8 +123,9 @@ function captureTarget(full: boolean): DocumentToolTarget {
       return false;
     }
   });
-  if (!frame?.contentWindow || !frame.contentDocument) throw new Error('Editor frame is unavailable');
-  const win = frame.contentWindow as unknown as { AscCommon?: { History?: History } };
+  const doc = inEditor ? document : frame?.contentDocument;
+  const win = (inEditor ? window : frame?.contentWindow) as { AscCommon?: { History?: History } } | null | undefined;
+  if (!win || !doc) throw new Error('Editor frame is unavailable');
   const pdf = context.kind === 'pdf' ? getPdfDocument(api) : undefined;
   const history = pdf?.History ?? win.AscCommon?.History;
   const historyIndex = history?.Index;
@@ -137,7 +140,7 @@ function captureTarget(full: boolean): DocumentToolTarget {
   const selectedObjects = controller?.selectedObjects?.slice();
   const selectedContent = controller?.getTargetDocContent?.();
   const model = context.kind === 'cell' ? api.wb?.getWorksheet().model : undefined;
-  const state = interaction(frame.contentDocument),
+  const state = interaction(doc),
     revision = state.revision;
   const position = () => {
     if (context.kind === 'pdf')
@@ -175,7 +178,7 @@ function captureTarget(full: boolean): DocumentToolTarget {
   const viewMode = api.isViewMode;
   const beforeReview = full && reviewMode ? captureReviewCharacters(logic) : undefined;
   const sameDocument = () =>
-    frame.isConnected &&
+    (inEditor || frame?.isConnected === true) &&
     getEditorApi() === api &&
     api.WordControl?.m_oLogicDocument === logic &&
     (!pdf || getPdfDocument(api) === pdf) &&
